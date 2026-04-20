@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="320" rx="350" ry="180" fill="#4ade80" opacity="0.012"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Code Review &amp; Planning</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Git Diffs • Plan Editor • Syntax Preview • IDE Integration</text>
+
+  <!-- ═══ Code Review Panel (left) ═══ -->
+  <rect x="40" y="80" width="460" height="330" rx="10" fill="#1e1f2e" stroke="#4ade80" stroke-width="1.5"/>
+  <text x="270" y="104" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="14" font-weight="bold">Code Review Panel (Cmd+Shift+R)</text>
+  <text x="270" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Git diff viewer with file tree and annotations</text>
+
+  <!-- File tree sidebar -->
+  <rect x="52" y="132" width="140" height="260" rx="4" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <text x="122" y="148" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="8" font-weight="bold">Changed Files</text>
+
+  <text x="62" y="166" fill="#4ade80" font-family="monospace" font-size="7">M  src/api/auth.ts</text>
+  <rect x="52" y="156" width="140" height="16" rx="2" fill="#4ade80" opacity="0.05"/>
+  <text x="62" y="182" fill="#4ade80" font-family="monospace" font-size="7">M  src/middleware.ts</text>
+  <text x="62" y="198" fill="#f59e0b" font-family="monospace" font-size="7">A  src/utils/jwt.ts</text>
+  <text x="62" y="214" fill="#ef4444" font-family="monospace" font-size="7">D  src/old-auth.ts</text>
+  <text x="62" y="230" fill="#4ade80" font-family="monospace" font-size="7">M  package.json</text>
+  <text x="62" y="246" fill="#4ade80" font-family="monospace" font-size="7">M  tests/auth.test.ts</text>
+
+  <text x="122" y="270" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">6 files changed</text>
+  <text x="122" y="284" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7">+142 lines</text>
+  <text x="122" y="298" text-anchor="middle" fill="#ef4444" font-family="monospace" font-size="7">-37 lines</text>
+
+  <!-- Search -->
+  <rect x="58" y="310" width="128" height="18" rx="3" fill="#1a1b26" stroke="#475569" stroke-width="0.3"/>
+  <text x="66" y="322" fill="#475569" font-family="monospace" font-size="6">Search diffs...</text>
+
+  <!-- Open in IDE -->
+  <rect x="58" y="336" width="128" height="18" rx="3" fill="#8b5cf6" opacity="0.15" stroke="#8b5cf6" stroke-width="0.5"/>
+  <text x="122" y="349" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="7">Open in IDE</text>
+
+  <!-- Diff view -->
+  <rect x="200" y="132" width="288" height="260" rx="4" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+  <text x="344" y="148" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="8" font-weight="bold">src/api/auth.ts</text>
+
+  <!-- Diff lines -->
+  <text x="210" y="168" fill="#475569" font-family="monospace" font-size="7">  24</text>
+  <text x="240" y="168" fill="#94a3b8" font-family="monospace" font-size="7">  import { verify } from 'jsonwebtoken';</text>
+
+  <rect x="200" y="172" width="288" height="14" fill="#4ade80" opacity="0.06"/>
+  <text x="210" y="182" fill="#475569" font-family="monospace" font-size="7">  25</text>
+  <text x="228" y="182" fill="#4ade80" font-family="monospace" font-size="7">+ import { refreshToken } from './jwt';</text>
+
+  <text x="210" y="196" fill="#475569" font-family="monospace" font-size="7">  26</text>
+  <text x="240" y="196" fill="#94a3b8" font-family="monospace" font-size="7">  export async function authenticate(</text>
+
+  <text x="210" y="210" fill="#475569" font-family="monospace" font-size="7">  27</text>
+  <text x="240" y="210" fill="#94a3b8" font-family="monospace" font-size="7">    req: Request,</text>
+
+  <rect x="200" y="214" width="288" height="14" fill="#ef4444" opacity="0.06"/>
+  <text x="210" y="224" fill="#475569" font-family="monospace" font-size="7">  28</text>
+  <text x="228" y="224" fill="#ef4444" font-family="monospace" font-size="7">-   const token = req.headers.auth;</text>
+
+  <rect x="200" y="228" width="288" height="14" fill="#4ade80" opacity="0.06"/>
+  <text x="210" y="238" fill="#475569" font-family="monospace" font-size="7">  28</text>
+  <text x="228" y="238" fill="#4ade80" font-family="monospace" font-size="7">+   const token = extractBearerToken(</text>
+
+  <rect x="200" y="242" width="288" height="14" fill="#4ade80" opacity="0.06"/>
+  <text x="210" y="252" fill="#475569" font-family="monospace" font-size="7">  29</text>
+  <text x="228" y="252" fill="#4ade80" font-family="monospace" font-size="7">+     req.headers.authorization</text>
+
+  <rect x="200" y="256" width="288" height="14" fill="#4ade80" opacity="0.06"/>
+  <text x="210" y="266" fill="#475569" font-family="monospace" font-size="7">  30</text>
+  <text x="228" y="266" fill="#4ade80" font-family="monospace" font-size="7">+   );</text>
+
+  <text x="210" y="280" fill="#475569" font-family="monospace" font-size="7">  31</text>
+  <text x="240" y="280" fill="#94a3b8" font-family="monospace" font-size="7">    try {</text>
+
+  <!-- Annotation on diff -->
+  <rect x="350" y="300" width="130" height="30" rx="4" fill="#f59e0b" opacity="0.15" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="415" y="314" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="7" font-weight="bold">Annotation</text>
+  <text x="415" y="326" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="6">Add error handling here</text>
+
+  <!-- ═══ Plan Editor (right top) ═══ -->
+  <rect x="520" y="80" width="400" height="200" rx="10" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="720" y="104" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="14" font-weight="bold">Plan Editor</text>
+  <text x="720" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Edit PLAN.md with live feedback — auto-reopen on changes</text>
+
+  <!-- Plan content -->
+  <rect x="536" y="132" width="368" height="130" rx="4" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+
+  <text x="546" y="150" fill="#a5b4fc" font-family="monospace" font-size="8" font-weight="bold"># Auth Migration Plan</text>
+  <text x="546" y="166" fill="#94a3b8" font-family="monospace" font-size="7">## Phase 1: JWT Refresh Tokens</text>
+  <text x="546" y="180" fill="#4ade80" font-family="monospace" font-size="7">- [x] Implement token rotation</text>
+  <text x="546" y="194" fill="#4ade80" font-family="monospace" font-size="7">- [x] Add refresh endpoint</text>
+  <text x="546" y="208" fill="#f59e0b" font-family="monospace" font-size="7">- [ ] Token revocation list</text>
+  <text x="546" y="222" fill="#64748b" font-family="monospace" font-size="7">- [ ] Rate limit refresh calls</text>
+  <text x="546" y="236" fill="#94a3b8" font-family="monospace" font-size="7">## Phase 2: OAuth2 PKCE</text>
+  <text x="546" y="250" fill="#64748b" font-family="monospace" font-size="7">- [ ] Authorization flow</text>
+
+  <!-- Feedback loop -->
+  <rect x="536" y="266" width="164" height="6" rx="2" fill="#8b5cf6" opacity="0.15"/>
+  <rect x="536" y="266" width="100" height="6" rx="2" fill="#8b5cf6" opacity="0.3"/>
+  <text x="618" y="260" text-anchor="middle" fill="#475569" font-family="monospace" font-size="6">60% complete</text>
+
+  <!-- ═══ Syntax Preview (right middle) ═══ -->
+  <rect x="520" y="296" width="190" height="114" rx="8" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1.2"/>
+  <text x="615" y="316" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="11" font-weight="bold">Code Preview</text>
+  <text x="615" y="330" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Syntax highlighting, 20+ langs</text>
+
+  <rect x="530" y="340" width="170" height="60" rx="3" fill="#0a0a14" stroke="#334155" stroke-width="0.3"/>
+  <text x="538" y="354" fill="#d946ef" font-family="monospace" font-size="7">export</text>
+  <text x="572" y="354" fill="#00d4ff" font-family="monospace" font-size="7">function</text>
+  <text x="614" y="354" fill="#fbbf24" font-family="monospace" font-size="7">auth(</text>
+  <text x="546" y="368" fill="#94a3b8" font-family="monospace" font-size="7">  req: Request</text>
+  <text x="538" y="382" fill="#94a3b8" font-family="monospace" font-size="7">) {</text>
+  <text x="546" y="396" fill="#67e8f9" font-family="monospace" font-size="7">  return verify(</text>
+
+  <!-- ═══ Git Integration (right middle) ═══ -->
+  <rect x="730" y="296" width="190" height="114" rx="8" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="825" y="316" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="11" font-weight="bold">Git Status</text>
+  <text x="825" y="330" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Per-workspace git integration</text>
+
+  <text x="744" y="350" fill="#4ade80" font-family="monospace" font-size="7">branch: feature/auth-v2</text>
+  <text x="744" y="366" fill="#fbbf24" font-family="monospace" font-size="7">6 files changed</text>
+  <text x="744" y="382" fill="#4ade80" font-family="monospace" font-size="7">+142 -37 lines</text>
+  <text x="744" y="398" fill="#94a3b8" font-family="monospace" font-size="7">last: "Add JWT refresh" 2m ago</text>
+
+  <!-- ═══ Workspace Overview (bottom) ═══ -->
+  <rect x="40" y="430" width="880" height="90" rx="10" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.5" filter="url(#glow)"/>
+  <text x="480" y="454" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="14" font-weight="bold">Workspace Overview</text>
+  <text x="480" y="470" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Sessions, stats, git status, AGENTS.md — all in one view</text>
+
+  <!-- Overview features -->
+  <rect x="60" y="484" width="150" height="24" rx="4" fill="#0f1117" stroke="#00d4ff" stroke-width="0.6"/>
+  <text x="135" y="500" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="8">Active Sessions: 4</text>
+
+  <rect x="225" y="484" width="150" height="24" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="300" y="500" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="8">Git: 6 changed files</text>
+
+  <rect x="390" y="484" width="150" height="24" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="465" y="500" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">Tasks: 3 in progress</text>
+
+  <rect x="555" y="484" width="150" height="24" rx="4" fill="#0f1117" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="630" y="500" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="8">Research: 2 active</text>
+
+  <rect x="720" y="484" width="180" height="24" rx="4" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="810" y="500" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="8">Config: AGENTS.md editable</text>
+
+  <!-- ═══ Bottom features ═══ -->
+  <rect x="40" y="540" width="280" height="46" rx="8" fill="#1e1f2e" stroke="#4ade80" stroke-width="1"/>
+  <text x="180" y="560" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="10" font-weight="bold">Session Distill</text>
+  <text x="180" y="574" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">LLM-summarize any session — async background job</text>
+
+  <rect x="340" y="540" width="280" height="46" rx="8" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1"/>
+  <text x="480" y="560" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="10" font-weight="bold">Session Export</text>
+  <text x="480" y="574" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Markdown or JSON — full conversation history</text>
+
+  <rect x="640" y="540" width="280" height="46" rx="8" fill="#1e1f2e" stroke="#d946ef" stroke-width="1"/>
+  <text x="780" y="560" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="10" font-weight="bold">History Import</text>
+  <text x="780" y="574" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Import from Claude.app — progress tracking, dedup</text>
+
+  <!-- Footer -->
+  <text x="480" y="610" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">CodeReviewPanel • PlanViewer • CodePreview • git_ops.py • diffParser.js</text>
+  <text x="480" y="632" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

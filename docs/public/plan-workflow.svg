@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowSm">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowV" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#8b5cf6"/>
+    </marker>
+    <marker id="arrowC" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#00d4ff"/>
+    </marker>
+    <marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#4ade80"/>
+    </marker>
+    <marker id="arrowA" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#f59e0b"/>
+    </marker>
+    <marker id="arrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#d946ef"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="300" rx="350" ry="200" fill="#8b5cf6" opacity="0.015"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Plan Editing &amp; Approval Workflow</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Dual-Mode MD Editor • Inline Annotation • 3 Approval Modes • Plan-First Tasks</text>
+
+  <!-- ═══ PlanViewer — Edit Mode (left) ═══ -->
+  <rect x="40" y="80" width="420" height="280" rx="10" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.5"/>
+
+  <!-- Tab bar -->
+  <rect x="40" y="80" width="420" height="26" rx="10" fill="#1a1b26"/>
+  <rect x="40" y="100" width="420" height="6" fill="#1a1b26"/>
+  <rect x="52" y="86" width="60" height="16" rx="3" fill="#8b5cf6" opacity="0.2" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="82" y="97" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="7" font-weight="bold">Edit</text>
+  <rect x="120" y="86" width="70" height="16" rx="3" fill="none" stroke="#334155" stroke-width="0.5"/>
+  <text x="155" y="97" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Preview</text>
+
+  <text x="350" y="97" text-anchor="end" fill="#475569" font-family="monospace" font-size="6">~/.claude/plans/auth-migration.md</text>
+  <rect x="400" y="86" width="44" height="16" rx="3" fill="#4ade80" opacity="0.15" stroke="#4ade80" stroke-width="0.5"/>
+  <text x="422" y="97" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="6">Cmd+S</text>
+
+  <!-- MD editor textarea -->
+  <rect x="52" y="112" width="396" height="200" rx="4" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+
+  <text x="62" y="130" fill="#475569" font-family="monospace" font-size="7">  1</text>
+  <text x="86" y="130" fill="#a5b4fc" font-family="monospace" font-size="8" font-weight="bold"># Auth Migration Plan</text>
+
+  <text x="62" y="148" fill="#475569" font-family="monospace" font-size="7">  2</text>
+  <text x="86" y="148" fill="#94a3b8" font-family="monospace" font-size="8">## Phase 1: JWT Refresh Tokens</text>
+
+  <text x="62" y="166" fill="#475569" font-family="monospace" font-size="7">  3</text>
+  <text x="86" y="166" fill="#4ade80" font-family="monospace" font-size="8">- [x] Implement token rotation</text>
+
+  <text x="62" y="184" fill="#475569" font-family="monospace" font-size="7">  4</text>
+  <text x="86" y="184" fill="#4ade80" font-family="monospace" font-size="8">- [x] Add refresh endpoint</text>
+
+  <text x="62" y="202" fill="#475569" font-family="monospace" font-size="7">  5</text>
+  <text x="86" y="202" fill="#f59e0b" font-family="monospace" font-size="8">- [ ] Token revocation list</text>
+
+  <text x="62" y="220" fill="#475569" font-family="monospace" font-size="7">  6</text>
+  <text x="86" y="220" fill="#64748b" font-family="monospace" font-size="8">- [ ] Rate limit refresh calls</text>
+
+  <text x="62" y="238" fill="#475569" font-family="monospace" font-size="7">  7</text>
+  <text x="86" y="238" fill="#94a3b8" font-family="monospace" font-size="8">## Phase 2: OAuth2 PKCE</text>
+
+  <text x="62" y="256" fill="#475569" font-family="monospace" font-size="7">  8</text>
+  <text x="86" y="256" fill="#64748b" font-family="monospace" font-size="8">- [ ] Authorization code flow</text>
+
+  <text x="62" y="274" fill="#475569" font-family="monospace" font-size="7">  9</text>
+  <text x="86" y="274" fill="#64748b" font-family="monospace" font-size="8">- [ ] Code verifier generation</text>
+
+  <text x="62" y="292" fill="#475569" font-family="monospace" font-size="7"> 10</text>
+  <text x="86" y="292" fill="#64748b" font-family="monospace" font-size="8">- [ ] Session cookie migration</text>
+
+  <!-- Cursor blink indicator -->
+  <rect x="248" y="247" width="1" height="12" fill="#a5b4fc" opacity="0.8"/>
+
+  <!-- Unsaved indicator -->
+  <circle cx="440" y="92" r="3" fill="#f59e0b" opacity="0.8"/>
+
+  <!-- Save & Send button -->
+  <rect x="52" y="320" width="180" height="28" rx="6" fill="#8b5cf6" opacity="0.15" stroke="#8b5cf6" stroke-width="0.8"/>
+  <text x="142" y="338" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="8" font-weight="bold">Save &amp; Send to Instance</text>
+
+  <text x="280" y="338" fill="#64748b" font-family="monospace" font-size="7">Saves file + tells agent to re-read</text>
+
+  <!-- ═══ PlanViewer — Preview Mode with Annotations (right) ═══ -->
+  <rect x="500" y="80" width="420" height="280" rx="10" fill="#1e1f2e" stroke="#d946ef" stroke-width="1.5"/>
+
+  <!-- Tab bar -->
+  <rect x="500" y="80" width="420" height="26" rx="10" fill="#1a1b26"/>
+  <rect x="500" y="100" width="420" height="6" fill="#1a1b26"/>
+  <rect x="512" y="86" width="60" height="16" rx="3" fill="none" stroke="#334155" stroke-width="0.5"/>
+  <text x="542" y="97" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Edit</text>
+  <rect x="580" y="86" width="70" height="16" rx="3" fill="#d946ef" opacity="0.2" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="615" y="97" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="7" font-weight="bold">Preview</text>
+
+  <text x="850" y="97" text-anchor="end" fill="#f0abfc" font-family="monospace" font-size="6">Select text to annotate</text>
+
+  <!-- Rendered markdown preview -->
+  <rect x="512" y="112" width="396" height="200" rx="4" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+
+  <!-- Rendered heading -->
+  <text x="524" y="134" fill="#e2e8f0" font-family="monospace" font-size="11" font-weight="bold">Auth Migration Plan</text>
+
+  <text x="524" y="154" fill="#a5b4fc" font-family="monospace" font-size="9" font-weight="bold">Phase 1: JWT Refresh Tokens</text>
+
+  <!-- Rendered checkboxes -->
+  <rect x="524" y="164" width="10" height="10" rx="2" fill="#4ade80" opacity="0.3" stroke="#4ade80" stroke-width="0.5"/>
+  <text x="530" y="172" fill="#4ade80" font-family="monospace" font-size="7">✓</text>
+  <text x="540" y="173" fill="#94a3b8" font-family="monospace" font-size="8">Implement token rotation</text>
+
+  <rect x="524" y="180" width="10" height="10" rx="2" fill="#4ade80" opacity="0.3" stroke="#4ade80" stroke-width="0.5"/>
+  <text x="530" y="188" fill="#4ade80" font-family="monospace" font-size="7">✓</text>
+  <text x="540" y="189" fill="#94a3b8" font-family="monospace" font-size="8">Add refresh endpoint</text>
+
+  <!-- HIGHLIGHTED text (annotation target) -->
+  <rect x="521" y="194" width="260" height="14" rx="2" fill="#f59e0b" opacity="0.12"/>
+  <rect x="524" y="196" width="10" height="10" rx="2" fill="none" stroke="#475569" stroke-width="0.5"/>
+  <text x="540" y="205" fill="#e2e8f0" font-family="monospace" font-size="8">Token revocation list</text>
+
+  <!-- Annotation comment bubble -->
+  <rect x="660" y="186" width="236" height="32" rx="4" fill="#f59e0b" opacity="0.15" stroke="#f59e0b" stroke-width="0.8"/>
+  <text x="670" y="200" fill="#fbbf24" font-family="monospace" font-size="7" font-weight="bold">Annotation:</text>
+  <text x="670" y="212" fill="#fbbf24" font-family="monospace" font-size="7">Use Redis for O(1) revocation checks</text>
+
+  <!-- More items -->
+  <rect x="524" y="214" width="10" height="10" rx="2" fill="none" stroke="#475569" stroke-width="0.5"/>
+  <text x="540" y="223" fill="#94a3b8" font-family="monospace" font-size="8">Rate limit refresh calls</text>
+
+  <text x="524" y="244" fill="#a5b4fc" font-family="monospace" font-size="9" font-weight="bold">Phase 2: OAuth2 PKCE</text>
+
+  <!-- Another highlight -->
+  <rect x="521" y="250" width="200" height="14" rx="2" fill="#d946ef" opacity="0.1"/>
+  <rect x="524" y="252" width="10" height="10" rx="2" fill="none" stroke="#475569" stroke-width="0.5"/>
+  <text x="540" y="261" fill="#e2e8f0" font-family="monospace" font-size="8">Authorization code flow</text>
+
+  <rect x="660" y="246" width="236" height="24" rx="4" fill="#d946ef" opacity="0.12" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="670" y="262" fill="#f0abfc" font-family="monospace" font-size="7">Consider using OIDC instead of raw OAuth2</text>
+
+  <rect x="524" y="268" width="10" height="10" rx="2" fill="none" stroke="#475569" stroke-width="0.5"/>
+  <text x="540" y="277" fill="#94a3b8" font-family="monospace" font-size="8">Code verifier generation</text>
+
+  <rect x="524" y="284" width="10" height="10" rx="2" fill="none" stroke="#475569" stroke-width="0.5"/>
+  <text x="540" y="293" fill="#94a3b8" font-family="monospace" font-size="8">Session cookie migration</text>
+
+  <!-- Send annotations button -->
+  <rect x="512" y="320" width="180" height="28" rx="6" fill="#d946ef" opacity="0.15" stroke="#d946ef" stroke-width="0.8"/>
+  <text x="602" y="338" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="8" font-weight="bold">Send 2 Annotations</text>
+
+  <text x="740" y="338" fill="#64748b" font-family="monospace" font-size="7">Structured feedback to agent</text>
+
+  <!-- ═══ 3 Approval Modes (center) ═══ -->
+  <rect x="40" y="380" width="880" height="100" rx="10" fill="#1e1f2e" stroke="#4ade80" stroke-width="2" filter="url(#glow)"/>
+  <text x="480" y="404" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="14" font-weight="bold">3 Plan Approval Modes</text>
+  <text x="480" y="420" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">When agent presents a plan, choose how to proceed</text>
+
+  <!-- Mode 1 -->
+  <rect x="60" y="434" width="260" height="34" rx="6" fill="#0f1117" stroke="#4ade80" stroke-width="1"/>
+  <circle cx="76" cy="451" r="8" fill="#4ade80" opacity="0.2" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="76" y="455" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="8" font-weight="bold">1</text>
+  <text x="92" y="448" fill="#4ade80" font-family="monospace" font-size="9" font-weight="bold">Approve &amp; Auto-accept</text>
+  <text x="92" y="462" fill="#64748b" font-family="monospace" font-size="7">Agent proceeds, all edits accepted immediately</text>
+
+  <!-- Mode 2 -->
+  <rect x="350" y="434" width="260" height="34" rx="6" fill="#0f1117" stroke="#f59e0b" stroke-width="1"/>
+  <circle cx="366" cy="451" r="8" fill="#f59e0b" opacity="0.2" stroke="#f59e0b" stroke-width="0.8"/>
+  <text x="366" y="455" text-anchor="middle" fill="#f59e0b" font-family="monospace" font-size="8" font-weight="bold">2</text>
+  <text x="382" y="448" fill="#fbbf24" font-family="monospace" font-size="9" font-weight="bold">Approve &amp; Review Edits</text>
+  <text x="382" y="462" fill="#64748b" font-family="monospace" font-size="7">Agent proceeds, you approve each individual edit</text>
+
+  <!-- Mode 3 -->
+  <rect x="640" y="434" width="260" height="34" rx="6" fill="#0f1117" stroke="#d946ef" stroke-width="1"/>
+  <circle cx="656" cy="451" r="8" fill="#d946ef" opacity="0.2" stroke="#d946ef" stroke-width="0.8"/>
+  <text x="656" y="455" text-anchor="middle" fill="#d946ef" font-family="monospace" font-size="8" font-weight="bold">3</text>
+  <text x="672" y="448" fill="#f0abfc" font-family="monospace" font-size="9" font-weight="bold">Send Feedback</text>
+  <text x="672" y="462" fill="#64748b" font-family="monospace" font-size="7">Send annotations or typed feedback, agent revises</text>
+
+  <!-- ═══ Plan-First Tasks (bottom-left) ═══ -->
+  <rect x="40" y="500" width="300" height="90" rx="8" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1.2"/>
+  <text x="190" y="522" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="12" font-weight="bold">Plan-First Mode</text>
+  <text x="190" y="538" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Force agents to plan before coding</text>
+
+  <text x="56" y="558" fill="#67e8f9" font-family="monospace" font-size="7">1. Research codebase</text>
+  <text x="56" y="572" fill="#67e8f9" font-family="monospace" font-size="7">2. Present plan → STOP</text>
+  <text x="56" y="586" fill="#67e8f9" font-family="monospace" font-size="7">3. Wait for approval → then implement</text>
+
+  <text x="220" y="558" fill="#475569" font-family="monospace" font-size="7">Task status auto-transitions</text>
+  <text x="220" y="572" fill="#475569" font-family="monospace" font-size="7">to "planning" when plan ready</text>
+
+  <!-- ═══ Auto-Approve (bottom-center) ═══ -->
+  <rect x="360" y="500" width="240" height="90" rx="8" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="480" y="522" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="12" font-weight="bold">Auto-Approve</text>
+  <text x="480" y="538" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Skip review when you trust the agent</text>
+
+  <text x="376" y="558" fill="#fbbf24" font-family="monospace" font-size="7">Cascade-level auto-approve</text>
+  <text x="376" y="572" fill="#fbbf24" font-family="monospace" font-size="7">Session-level auto-approve</text>
+  <text x="376" y="586" fill="#fbbf24" font-family="monospace" font-size="7">Task-level auto-approve</text>
+
+  <!-- ═══ Multi-Session Plans (bottom-right) ═══ -->
+  <rect x="620" y="500" width="300" height="90" rx="8" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="770" y="522" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="12" font-weight="bold">Multi-Session Plans</text>
+  <text x="770" y="538" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Browse plans across all workspace sessions</text>
+
+  <!-- Plan selector -->
+  <rect x="636" y="550" width="130" height="18" rx="3" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="646" y="562" fill="#a5b4fc" font-family="monospace" font-size="7">auth-migration.md</text>
+
+  <rect x="774" y="550" width="130" height="18" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.4"/>
+  <text x="784" y="562" fill="#64748b" font-family="monospace" font-size="7">api-refactor.md</text>
+
+  <text x="770" y="584" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Auto-reopen viewer after feedback sent</text>
+
+  <!-- Footer -->
+  <text x="480" y="616" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">PlanViewer.jsx • outputParser.js (plan detection) • terminal.js (plan choice navigation)</text>
+  <text x="480" y="632" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

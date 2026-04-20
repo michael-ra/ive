@@ -1,0 +1,202 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowCy" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#00d4ff"/>
+    </marker>
+    <marker id="arrowVi" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#8b5cf6"/>
+    </marker>
+    <marker id="arrowAm" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#f59e0b"/>
+    </marker>
+    <marker id="arrowGn" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#4ade80"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="320" rx="340" ry="200" fill="#8b5cf6" opacity="0.015"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Workspaces &amp; Memory</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Multi-Workspace • Hub-and-Spoke Memory • Event Bus • Hook State Detection</text>
+
+  <!-- ═══ Workspace Sidebar (left) ═══ -->
+  <rect x="40" y="80" width="200" height="330" rx="10" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="140" y="104" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="12" font-weight="bold">Workspaces</text>
+
+  <!-- Workspace entries -->
+  <rect x="52" y="118" width="176" height="44" rx="4" fill="#00d4ff" opacity="0.06" stroke="#00d4ff" stroke-width="0.8"/>
+  <circle cx="66" cy="140" r="6" fill="#00d4ff" opacity="0.4"/>
+  <text x="80" y="136" fill="#67e8f9" font-family="monospace" font-size="8" font-weight="bold">IVE Backend</text>
+  <text x="80" y="150" fill="#64748b" font-family="monospace" font-size="6">~/Documents/ive/backend</text>
+  <text x="210" y="136" text-anchor="end" fill="#4ade80" font-family="monospace" font-size="6">4 active</text>
+
+  <rect x="52" y="168" width="176" height="44" rx="4" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <circle cx="66" cy="190" r="6" fill="#d946ef" opacity="0.4"/>
+  <text x="80" y="186" fill="#f0abfc" font-family="monospace" font-size="8" font-weight="bold">IVE Frontend</text>
+  <text x="80" y="200" fill="#64748b" font-family="monospace" font-size="6">~/Documents/ive/frontend</text>
+  <text x="210" y="186" text-anchor="end" fill="#f59e0b" font-family="monospace" font-size="6">2 idle</text>
+
+  <rect x="52" y="218" width="176" height="44" rx="4" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <circle cx="66" cy="240" r="6" fill="#4ade80" opacity="0.4"/>
+  <text x="80" y="236" fill="#4ade80" font-family="monospace" font-size="8" font-weight="bold">API Service</text>
+  <text x="80" y="250" fill="#64748b" font-family="monospace" font-size="6">~/projects/api-service</text>
+  <text x="210" y="236" text-anchor="end" fill="#64748b" font-family="monospace" font-size="6">1 active</text>
+
+  <rect x="52" y="268" width="176" height="44" rx="4" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <circle cx="66" cy="290" r="6" fill="#f59e0b" opacity="0.4"/>
+  <text x="80" y="286" fill="#fbbf24" font-family="monospace" font-size="8" font-weight="bold">Research</text>
+  <text x="80" y="300" fill="#64748b" font-family="monospace" font-size="6">~/research/ml-papers</text>
+  <text x="210" y="286" text-anchor="end" fill="#64748b" font-family="monospace" font-size="6">0</text>
+
+  <!-- Workspace features -->
+  <text x="140" y="336" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Drag-drop reorder</text>
+  <text x="140" y="350" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Color-coded workspace palette</text>
+  <text x="140" y="364" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Per-workspace settings</text>
+  <text x="140" y="378" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Oversight level config</text>
+  <text x="140" y="392" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Research model picker</text>
+
+  <!-- ═══ Memory Hub (center) ═══ -->
+  <rect x="270" y="80" width="340" height="220" rx="10" fill="#1e1f2e" stroke="#4ade80" stroke-width="2" filter="url(#glow)"/>
+  <text x="440" y="106" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="14" font-weight="bold">Memory Hub</text>
+  <text x="440" y="122" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Hub-and-Spoke Sync — Three-Way Git Merge</text>
+
+  <!-- Central hub -->
+  <circle cx="440" cy="190" r="34" fill="#4ade80" opacity="0.08" stroke="#4ade80" stroke-width="1.5"/>
+  <text x="440" y="186" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="9" font-weight="bold">Central</text>
+  <text x="440" y="200" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7">Hub</text>
+
+  <!-- CLI provider spokes -->
+  <circle cx="320" cy="160" r="20" fill="#0f1117" stroke="#00d4ff" stroke-width="1"/>
+  <text x="320" y="164" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="6">Claude</text>
+  <line x1="340" y1="165" x2="406" y2="183" stroke="#00d4ff" stroke-width="1.2" stroke-dasharray="4 2" opacity="0.6"/>
+
+  <circle cx="560" cy="160" r="20" fill="#0f1117" stroke="#d946ef" stroke-width="1"/>
+  <text x="560" y="164" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="6">Gemini</text>
+  <line x1="540" y1="165" x2="474" y2="183" stroke="#d946ef" stroke-width="1.2" stroke-dasharray="4 2" opacity="0.6"/>
+
+  <circle cx="320" cy="220" r="20" fill="#0f1117" stroke="#f59e0b" stroke-width="1"/>
+  <text x="320" y="224" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="6">Custom</text>
+  <line x1="340" y1="217" x2="406" y2="197" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 2" opacity="0.6"/>
+
+  <circle cx="560" cy="220" r="20" fill="#0f1117" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="560" y="224" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="6">Server</text>
+  <line x1="540" y1="217" x2="474" y2="197" stroke="#8b5cf6" stroke-width="1.2" stroke-dasharray="4 2" opacity="0.6"/>
+
+  <!-- Merge conflict indicator -->
+  <rect x="368" y="252" width="144" height="30" rx="4" fill="#f59e0b" opacity="0.08" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="440" y="266" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8" font-weight="bold">Conflict Resolution</text>
+  <text x="440" y="278" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="6">git merge-file three-way merge</text>
+
+  <!-- ═══ Memory Types (right) ═══ -->
+  <rect x="640" y="80" width="280" height="220" rx="10" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="780" y="104" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="12" font-weight="bold">Memory Taxonomy</text>
+  <text x="780" y="118" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Unified types across all CLI providers</text>
+
+  <rect x="656" y="132" width="248" height="24" rx="4" fill="#0f1117" stroke="#00d4ff" stroke-width="0.6"/>
+  <text x="666" y="148" fill="#67e8f9" font-family="monospace" font-size="8" font-weight="bold">user</text>
+  <text x="750" y="148" fill="#64748b" font-family="monospace" font-size="7">role, preferences, knowledge</text>
+
+  <rect x="656" y="162" width="248" height="24" rx="4" fill="#0f1117" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="666" y="178" fill="#f0abfc" font-family="monospace" font-size="8" font-weight="bold">feedback</text>
+  <text x="750" y="178" fill="#64748b" font-family="monospace" font-size="7">corrections, validated approaches</text>
+
+  <rect x="656" y="192" width="248" height="24" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="666" y="208" fill="#4ade80" font-family="monospace" font-size="8" font-weight="bold">project</text>
+  <text x="750" y="208" fill="#64748b" font-family="monospace" font-size="7">goals, decisions, deadlines</text>
+
+  <rect x="656" y="222" width="248" height="24" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="666" y="238" fill="#fbbf24" font-family="monospace" font-size="8" font-weight="bold">reference</text>
+  <text x="750" y="238" fill="#64748b" font-family="monospace" font-size="7">external system pointers</text>
+
+  <text x="780" y="272" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Import/export • Search • CRUD • Auto-suggestions</text>
+  <text x="780" y="286" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Frontmatter parsing without PyYAML</text>
+
+  <!-- ═══ Event Bus (center bottom) ═══ -->
+  <rect x="40" y="430" width="560" height="110" rx="10" fill="#1e1f2e" stroke="#d946ef" stroke-width="1.5" filter="url(#glow)"/>
+  <text x="320" y="454" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="14" font-weight="bold">Central Event Bus</text>
+  <text x="320" y="470" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Persist → Notify Subscribers → WebSocket Broadcast → Webhooks</text>
+
+  <!-- Event flow -->
+  <rect x="60" y="486" width="100" height="30" rx="4" fill="#0f1117" stroke="#00d4ff" stroke-width="0.6"/>
+  <text x="110" y="505" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="8">State Change</text>
+
+  <line x1="160" y1="501" x2="178" y2="501" stroke="#475569" stroke-width="1.2" marker-end="url(#arrowCy)"/>
+
+  <rect x="180" y="486" width="80" height="30" rx="4" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="220" y="505" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="8">Persist</text>
+
+  <line x1="260" y1="501" x2="278" y2="501" stroke="#475569" stroke-width="1.2" marker-end="url(#arrowVi)"/>
+
+  <rect x="280" y="486" width="80" height="30" rx="4" fill="#0f1117" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="320" y="505" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="8">Notify</text>
+
+  <line x1="360" y1="501" x2="378" y2="501" stroke="#475569" stroke-width="1.2" marker-end="url(#arrowAm)"/>
+
+  <rect x="380" y="486" width="100" height="30" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="430" y="505" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">WS Broadcast</text>
+
+  <line x1="480" y1="501" x2="498" y2="501" stroke="#475569" stroke-width="1.2" marker-end="url(#arrowGn)"/>
+
+  <rect x="500" y="486" width="86" height="30" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="543" y="505" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="8">Webhooks</text>
+
+  <text x="320" y="534" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">CommanderEvent enum: 30+ typed event categories</text>
+
+  <!-- ═══ Hook State Detection (right bottom) ═══ -->
+  <rect x="620" y="320" width="300" height="220" rx="10" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="770" y="344" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="13" font-weight="bold">Hook-Based Detection</text>
+  <text x="770" y="360" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">No ANSI parsing — structured JSON events</text>
+
+  <!-- Hook events -->
+  <rect x="636" y="374" width="268" height="22" rx="3" fill="#0f1117" stroke="#4ade80" stroke-width="0.5"/>
+  <text x="646" y="389" fill="#4ade80" font-family="monospace" font-size="7">SessionStart / SessionStop</text>
+  <text x="888" y="389" text-anchor="end" fill="#475569" font-family="monospace" font-size="6">lifecycle</text>
+
+  <rect x="636" y="400" width="268" height="22" rx="3" fill="#0f1117" stroke="#00d4ff" stroke-width="0.5"/>
+  <text x="646" y="415" fill="#67e8f9" font-family="monospace" font-size="7">PreToolUse / PostToolUse</text>
+  <text x="888" y="415" text-anchor="end" fill="#475569" font-family="monospace" font-size="6">tool exec</text>
+
+  <rect x="636" y="426" width="268" height="22" rx="3" fill="#0f1117" stroke="#d946ef" stroke-width="0.5"/>
+  <text x="646" y="441" fill="#f0abfc" font-family="monospace" font-size="7">SubagentStart / SubagentStop</text>
+  <text x="888" y="441" text-anchor="end" fill="#475569" font-family="monospace" font-size="6">agents</text>
+
+  <rect x="636" y="452" width="268" height="22" rx="3" fill="#0f1117" stroke="#f59e0b" stroke-width="0.5"/>
+  <text x="646" y="467" fill="#fbbf24" font-family="monospace" font-size="7">PreCompact / PostCompact</text>
+  <text x="888" y="467" text-anchor="end" fill="#475569" font-family="monospace" font-size="6">context</text>
+
+  <rect x="636" y="478" width="268" height="22" rx="3" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.5"/>
+  <text x="646" y="493" fill="#a5b4fc" font-family="monospace" font-size="7">Stop (idle detection)</text>
+  <text x="888" y="493" text-anchor="end" fill="#475569" font-family="monospace" font-size="6">oversight</text>
+
+  <!-- HTTP endpoint -->
+  <rect x="636" y="508" width="268" height="24" rx="4" fill="#f59e0b" opacity="0.06" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="770" y="524" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="7">POST /api/hooks/event — JSON relay</text>
+
+  <!-- ═══ Inbox / Notifications (bottom-left) ═══ -->
+  <rect x="40" y="556" width="270" height="44" rx="8" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1"/>
+  <text x="175" y="576" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="10" font-weight="bold">Inbox (Cmd+I)</text>
+  <text x="175" y="590" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Pending/idle sessions awaiting input — bulk actions</text>
+
+  <rect x="330" y="556" width="270" height="44" rx="8" fill="#1e1f2e" stroke="#d946ef" stroke-width="1"/>
+  <text x="465" y="576" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="10" font-weight="bold">Mission Control (Cmd+M)</text>
+  <text x="465" y="590" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Dashboard grid of all active sessions</text>
+
+  <!-- Footer -->
+  <text x="480" y="626" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

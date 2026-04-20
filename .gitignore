@@ -1,0 +1,57 @@
+# Build output
+dist/
+build/
+
+# Internal project docs (not for public repo)
+CLAUDE.md
+PLAN.md
+W2WCOMMS.md
+
+# Claude Code / Gemini CLI local config
+.claude/
+.gemini/
+
+# Playwright MCP
+.playwright-mcp/
+
+# OS files
+**/.DS_Store
+
+# Node
+**/node_modules/
+
+# Python
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Test files
+backend/tests/
+
+# Database
+*.db
+*.sqlite
+
+# Build scripts (internal)
+build.sh
+
+# Research output
+research/
+
+# Videos / screenshots (large assets)
+video/
+screenshots/
+
+# Env files
+.env
+.env.*
+
+# Downloaded agent skills
+.agents/
+
+# VitePress build output
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
+# Local lock files
+skills-lock.json

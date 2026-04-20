@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="300" rx="380" ry="180" fill="#f59e0b" opacity="0.015"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Feature Board &amp; Task Management</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Kanban • Voice Input • Quick Features • Drag-and-Drop • Excalidraw</text>
+
+  <!-- ═══ 6-Column Kanban Board ═══ -->
+  <rect x="25" y="78" width="910" height="360" rx="10" fill="#1a1b26" stroke="#334155" stroke-width="1"/>
+
+  <!-- Column: Backlog -->
+  <rect x="35" y="88" width="138" height="340" rx="6" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="104" y="108" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">BACKLOG</text>
+  <rect x="70" y="102" width="68" height="2" rx="1" fill="#64748b"/>
+
+  <!-- Backlog cards -->
+  <rect x="43" y="116" width="122" height="54" rx="4" fill="#1e1f2e" stroke="#475569" stroke-width="0.5"/>
+  <text x="51" y="130" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">OAuth2 PKCE Flow</text>
+  <rect x="51" y="136" width="30" height="10" rx="2" fill="#ef4444" opacity="0.3"/>
+  <text x="66" y="144" text-anchor="middle" fill="#ef4444" font-family="monospace" font-size="6">P0</text>
+  <rect x="85" y="136" width="40" height="10" rx="2" fill="#8b5cf6" opacity="0.2"/>
+  <text x="105" y="144" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="6">security</text>
+  <text x="51" y="162" fill="#475569" font-family="monospace" font-size="6">Assigned: Agent A</text>
+
+  <rect x="43" y="178" width="122" height="40" rx="4" fill="#1e1f2e" stroke="#475569" stroke-width="0.5"/>
+  <text x="51" y="192" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">Dark mode toggle</text>
+  <rect x="51" y="198" width="30" height="10" rx="2" fill="#64748b" opacity="0.3"/>
+  <text x="66" y="206" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="6">P3</text>
+
+  <!-- Column: Todo -->
+  <rect x="181" y="88" width="138" height="340" rx="6" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="250" y="108" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">TODO</text>
+  <rect x="216" y="102" width="68" height="2" rx="1" fill="#00d4ff"/>
+
+  <rect x="189" y="116" width="122" height="54" rx="4" fill="#1e1f2e" stroke="#00d4ff" stroke-width="0.6"/>
+  <text x="197" y="130" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">WebSocket reconnect</text>
+  <rect x="197" y="136" width="30" height="10" rx="2" fill="#f59e0b" opacity="0.3"/>
+  <text x="212" y="144" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="6">P1</text>
+  <rect x="231" y="136" width="46" height="10" rx="2" fill="#4ade80" opacity="0.2"/>
+  <text x="254" y="144" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="6">reliability</text>
+  <text x="197" y="162" fill="#475569" font-family="monospace" font-size="6">Assigned: Worker B</text>
+
+  <!-- Column: Planning -->
+  <rect x="327" y="88" width="138" height="340" rx="6" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="396" y="108" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">PLANNING</text>
+  <rect x="362" y="102" width="68" height="2" rx="1" fill="#8b5cf6"/>
+
+  <rect x="335" y="116" width="122" height="54" rx="4" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="343" y="130" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">Rate limiter design</text>
+  <rect x="343" y="136" width="30" height="10" rx="2" fill="#f59e0b" opacity="0.3"/>
+  <text x="358" y="144" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="6">P1</text>
+  <text x="343" y="162" fill="#475569" font-family="monospace" font-size="6">plan.md attached</text>
+
+  <!-- Column: In Progress -->
+  <rect x="473" y="88" width="138" height="340" rx="6" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="542" y="108" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">IN PROGRESS</text>
+  <rect x="508" y="102" width="68" height="2" rx="1" fill="#f59e0b"/>
+
+  <rect x="481" y="116" width="122" height="54" rx="4" fill="#1e1f2e" stroke="#f59e0b" stroke-width="0.8"/>
+  <text x="489" y="130" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">API pagination</text>
+  <rect x="489" y="136" width="30" height="10" rx="2" fill="#f59e0b" opacity="0.3"/>
+  <text x="504" y="144" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="6">P1</text>
+  <rect x="523" y="136" width="30" height="10" rx="2" fill="#00d4ff" opacity="0.2"/>
+  <text x="538" y="144" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="6">api</text>
+  <text x="489" y="162" fill="#4ade80" font-family="monospace" font-size="6">Worker C — working...</text>
+
+  <rect x="481" y="178" width="122" height="40" rx="4" fill="#1e1f2e" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="489" y="192" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">Search indexing</text>
+  <text x="489" y="208" fill="#4ade80" font-family="monospace" font-size="6">Worker D — writing tests</text>
+
+  <!-- Column: Review -->
+  <rect x="619" y="88" width="138" height="340" rx="6" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="688" y="108" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">REVIEW</text>
+  <rect x="654" y="102" width="68" height="2" rx="1" fill="#d946ef"/>
+
+  <rect x="627" y="116" width="122" height="54" rx="4" fill="#1e1f2e" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="635" y="130" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">Error boundaries</text>
+  <rect x="635" y="136" width="30" height="10" rx="2" fill="#8b5cf6" opacity="0.3"/>
+  <text x="650" y="144" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="6">P2</text>
+  <text x="635" y="162" fill="#d946ef" font-family="monospace" font-size="6">Tester verifying...</text>
+
+  <!-- Column: Done -->
+  <rect x="765" y="88" width="162" height="340" rx="6" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="846" y="108" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">DONE</text>
+  <rect x="812" y="102" width="68" height="2" rx="1" fill="#4ade80"/>
+
+  <rect x="773" y="116" width="146" height="40" rx="4" fill="#1e1f2e" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="781" y="130" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">Session cloning</text>
+  <text x="781" y="146" fill="#4ade80" font-family="monospace" font-size="6">Completed 2h ago</text>
+
+  <rect x="773" y="164" width="146" height="40" rx="4" fill="#1e1f2e" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="781" y="178" fill="#e2e8f0" font-family="monospace" font-size="7" font-weight="bold">Memory sync v2</text>
+  <text x="781" y="194" fill="#4ade80" font-family="monospace" font-size="6">Completed 5h ago</text>
+
+  <!-- Drag indicator -->
+  <rect x="481" y="280" width="122" height="40" rx="4" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 2" opacity="0.6"/>
+  <text x="542" y="302" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="7" opacity="0.8">drag to reorder</text>
+
+  <!-- ═══ Quick Feature Modal (bottom left) ═══ -->
+  <rect x="40" y="460" width="280" height="110" rx="8" fill="#1e1f2e" stroke="#d946ef" stroke-width="1.5" filter="url(#glow)"/>
+  <text x="180" y="484" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="12" font-weight="bold">Quick Feature (Cmd+Shift+F)</text>
+  <text x="180" y="500" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Fast task creation with optional voice input</text>
+
+  <!-- Voice input indicator -->
+  <rect x="60" y="514" width="240" height="28" rx="4" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="75" y="532" fill="#94a3b8" font-family="monospace" font-size="9">Add user profile image upload</text>
+
+  <!-- Microphone icon -->
+  <circle cx="282" cy="528" r="10" fill="#ef4444" opacity="0.2" stroke="#ef4444" stroke-width="0.8"/>
+  <rect x="279" y="520" width="6" height="10" rx="3" fill="#ef4444" opacity="0.8"/>
+  <line x1="282" y1="533" x2="282" y2="536" stroke="#ef4444" stroke-width="1" opacity="0.6"/>
+  <text x="180" y="558" text-anchor="middle" fill="#ef4444" font-family="monospace" font-size="7">Voice input via Web Speech API</text>
+
+  <!-- ═══ Excalidraw Integration (bottom center) ═══ -->
+  <rect x="340" y="460" width="280" height="110" rx="8" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1.5"/>
+  <text x="480" y="484" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="12" font-weight="bold">Excalidraw Diagrams</text>
+  <text x="480" y="500" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Embedded in task detail modal</text>
+
+  <!-- Mini diagram sketch -->
+  <rect x="380" y="512" width="60" height="30" rx="3" fill="none" stroke="#67e8f9" stroke-width="0.8" opacity="0.6"/>
+  <text x="410" y="531" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="6">API</text>
+  <line x1="440" y1="527" x2="470" y2="527" stroke="#67e8f9" stroke-width="0.8" opacity="0.6"/>
+  <rect x="470" y="512" width="60" height="30" rx="3" fill="none" stroke="#67e8f9" stroke-width="0.8" opacity="0.6"/>
+  <text x="500" y="531" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="6">DB</text>
+  <line x1="410" y1="542" x2="410" y2="555" stroke="#67e8f9" stroke-width="0.8" opacity="0.6"/>
+  <rect x="380" y="555" width="60" height="12" rx="2" fill="none" stroke="#67e8f9" stroke-width="0.6" opacity="0.4"/>
+
+  <!-- ═══ Task Detail Panel (bottom right) ═══ -->
+  <rect x="640" y="460" width="280" height="110" rx="8" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="780" y="480" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="12" font-weight="bold">Task Detail</text>
+  <text x="780" y="494" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Description • Scratchpad • Labels • Attachments</text>
+
+  <text x="656" y="510" fill="#475569" font-family="monospace" font-size="7">Priority: P0 P1 P2 P3</text>
+  <text x="656" y="522" fill="#475569" font-family="monospace" font-size="7">Labels: security, api, frontend, bug</text>
+  <text x="656" y="534" fill="#475569" font-family="monospace" font-size="7">Event history: status changes, comments</text>
+
+  <!-- File attachment thumbnails -->
+  <text x="656" y="550" fill="#f59e0b" font-family="monospace" font-size="7" font-weight="bold">Attachments:</text>
+  <rect x="656" y="554" width="18" height="14" rx="2" fill="#0a0a14" stroke="#f59e0b" stroke-width="0.4"/>
+  <text x="665" y="564" text-anchor="middle" fill="#f59e0b" font-family="monospace" font-size="4">png</text>
+  <rect x="678" y="554" width="18" height="14" rx="2" fill="#0a0a14" stroke="#8b5cf6" stroke-width="0.4"/>
+  <text x="687" y="564" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="4">jpg</text>
+  <rect x="700" y="554" width="18" height="14" rx="2" fill="#0a0a14" stroke="#4ade80" stroke-width="0.4"/>
+  <text x="709" y="564" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="4">gif</text>
+  <text x="726" y="564" fill="#475569" font-family="monospace" font-size="6">drag-drop + screen capture</text>
+
+  <!-- Footer -->
+  <text x="480" y="596" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">6-column Kanban with multi-workspace support — Cmd+B to open</text>
+  <text x="480" y="632" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

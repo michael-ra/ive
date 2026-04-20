@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520" width="800" height="520">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00f0ff"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#d946ef"/>
+    </linearGradient>
+    <!-- Left arm: cyan, brightens toward convergence -->
+    <linearGradient id="gl" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00f0ff" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#00f0ff" stop-opacity="0.35"/>
+    </linearGradient>
+    <!-- Right arm: magenta, brightens toward convergence -->
+    <linearGradient id="gr" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d946ef" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#d946ef" stop-opacity="0.35"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="520" fill="#04040c"/>
+
+  <!-- Ambient glow at convergence -->
+  <ellipse cx="400" cy="405" rx="160" ry="100" fill="#8b5cf6" opacity="0.05">
+    <animate attributeName="opacity" values="0.05;0.1;0.05" dur="5s" repeatCount="indefinite"/>
+    <animate attributeName="rx" values="160;180;160" dur="5s" repeatCount="indefinite"/>
+  </ellipse>
+
+  <!-- ═══ CENTER: Large convergence mark (watermark, behind lines) ═══ -->
+  <!-- Centered at (400, 215) — fills the empty middle of the V -->
+  <g transform="translate(400,215)" opacity="0.12">
+    <g transform="translate(-70,-70)">
+      <!-- 140×140 convergence mark -->
+      <path d="M0,0 L28,0 L70,95.2 L112,0 L140,0 L70,140 Z"
+            fill="#00f0ff" style="mix-blend-mode:screen"
+            transform="translate(-9.8,0) rotate(-7,70,140)"/>
+      <path d="M0,0 L28,0 L70,95.2 L112,0 L140,0 L70,140 Z"
+            fill="#8b5cf6" style="mix-blend-mode:screen"/>
+      <path d="M0,0 L28,0 L70,95.2 L112,0 L140,0 L70,140 Z"
+            fill="#d946ef" style="mix-blend-mode:screen"
+            transform="translate(9.8,0) rotate(7,70,140)"/>
+    </g>
+  </g>
+
+  <!-- ═══ COLUMN HEADERS ═══ -->
+  <text x="150" y="65" text-anchor="middle"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="10" font-weight="600" letter-spacing="3"
+        fill="#555577">IDEs</text>
+  <text x="650" y="65" text-anchor="middle"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="10" font-weight="600" letter-spacing="3"
+        fill="#555577">AI TOOLS</text>
+
+  <!-- ═══ V ARM LINES ═══ -->
+  <!-- Left: (150,75) → (400,405)  Right: (650,75) → (400,405) -->
+  <line x1="150" y1="75" x2="400" y2="405" stroke="url(#gl)" stroke-width="1.5"/>
+  <line x1="650" y1="75" x2="400" y2="405" stroke="url(#gr)" stroke-width="1.5"/>
+
+  <!-- ═══ DEPTH CROSS-LINES — gaps shrink toward convergence ═══ -->
+  <!-- x_left = 150 + (y-75)/330*250,  x_right = 650 - (y-75)/330*250 -->
+  <line x1="165" y1="95" x2="635" y2="95" stroke="#00f0ff" stroke-opacity="0.05" stroke-width="0.7"/>
+  <line x1="190" y1="128" x2="610" y2="128" stroke="#00f0ff" stroke-opacity="0.06" stroke-width="0.7"/>
+  <line x1="218" y1="165" x2="582" y2="165" stroke="#00f0ff" stroke-opacity="0.07" stroke-width="0.7"/>
+  <line x1="242" y1="197" x2="558" y2="197" stroke="#8b5cf6" stroke-opacity="0.07" stroke-width="0.7"/>
+  <line x1="264" y1="225" x2="536" y2="225" stroke="#8b5cf6" stroke-opacity="0.08" stroke-width="0.7"/>
+  <line x1="283" y1="250" x2="517" y2="250" stroke="#8b5cf6" stroke-opacity="0.08" stroke-width="0.7"/>
+  <line x1="300" y1="273" x2="500" y2="273" stroke="#8b5cf6" stroke-opacity="0.09" stroke-width="0.7"/>
+  <line x1="315" y1="293" x2="485" y2="293" stroke="#d946ef" stroke-opacity="0.09" stroke-width="0.7"/>
+  <line x1="329" y1="311" x2="471" y2="311" stroke="#d946ef" stroke-opacity="0.1" stroke-width="0.7"/>
+  <line x1="341" y1="327" x2="459" y2="327" stroke="#d946ef" stroke-opacity="0.1" stroke-width="0.6"/>
+  <line x1="351" y1="340" x2="449" y2="340" stroke="#d946ef" stroke-opacity="0.11" stroke-width="0.6"/>
+  <line x1="360" y1="352" x2="440" y2="352" stroke="#d946ef" stroke-opacity="0.12" stroke-width="0.6"/>
+  <line x1="368" y1="362" x2="432" y2="362" stroke="#fff" stroke-opacity="0.08" stroke-width="0.5"/>
+  <line x1="375" y1="371" x2="425" y2="371" stroke="#fff" stroke-opacity="0.09" stroke-width="0.5"/>
+  <line x1="381" y1="378" x2="419" y2="378" stroke="#fff" stroke-opacity="0.1" stroke-width="0.4"/>
+  <line x1="386" y1="385" x2="414" y2="385" stroke="#fff" stroke-opacity="0.12" stroke-width="0.4"/>
+  <line x1="390" y1="391" x2="410" y2="391" stroke="#fff" stroke-opacity="0.14" stroke-width="0.3"/>
+  <line x1="394" y1="396" x2="406" y2="396" stroke="#fff" stroke-opacity="0.16" stroke-width="0.3"/>
+
+  <!-- ═══ FLOWING DOTS — Left arm (cyan) ═══ -->
+  <circle r="2.5" fill="#00f0ff">
+    <animateMotion dur="6s" repeatCount="indefinite" path="M150,75 L400,405"/>
+    <animate attributeName="opacity" dur="6s" repeatCount="indefinite"
+      values="0;0.5;0.45;0" keyTimes="0;0.06;0.82;1"/>
+  </circle>
+  <circle r="2" fill="#00f0ff">
+    <animateMotion dur="6s" begin="-2s" repeatCount="indefinite" path="M150,75 L400,405"/>
+    <animate attributeName="opacity" dur="6s" begin="-2s" repeatCount="indefinite"
+      values="0;0.35;0.3;0" keyTimes="0;0.06;0.82;1"/>
+  </circle>
+  <circle r="1.5" fill="#00f0ff">
+    <animateMotion dur="6s" begin="-4s" repeatCount="indefinite" path="M150,75 L400,405"/>
+    <animate attributeName="opacity" dur="6s" begin="-4s" repeatCount="indefinite"
+      values="0;0.25;0.2;0" keyTimes="0;0.06;0.82;1"/>
+  </circle>
+
+  <!-- ═══ FLOWING DOTS — Right arm (magenta) ═══ -->
+  <circle r="2.5" fill="#d946ef">
+    <animateMotion dur="6s" begin="-0.5s" repeatCount="indefinite" path="M650,75 L400,405"/>
+    <animate attributeName="opacity" dur="6s" begin="-0.5s" repeatCount="indefinite"
+      values="0;0.5;0.45;0" keyTimes="0;0.06;0.82;1"/>
+  </circle>
+  <circle r="2" fill="#d946ef">
+    <animateMotion dur="6s" begin="-2.5s" repeatCount="indefinite" path="M650,75 L400,405"/>
+    <animate attributeName="opacity" dur="6s" begin="-2.5s" repeatCount="indefinite"
+      values="0;0.35;0.3;0" keyTimes="0;0.06;0.82;1"/>
+  </circle>
+  <circle r="1.5" fill="#d946ef">
+    <animateMotion dur="6s" begin="-4.5s" repeatCount="indefinite" path="M650,75 L400,405"/>
+    <animate attributeName="opacity" dur="6s" begin="-4.5s" repeatCount="indefinite"
+      values="0;0.25;0.2;0" keyTimes="0;0.06;0.82;1"/>
+  </circle>
+
+  <!-- ═══════════════════════════════════════
+       LEFT ARM MILESTONES
+       Line eq: x = 150 + (y-75)/330 * 250
+       ═══════════════════════════════════════ -->
+
+  <!-- Milestone 1: Traditional IDEs — y=160, x=214 -->
+  <circle cx="214" cy="160" r="5" fill="#00f0ff" opacity="0.25"/>
+  <circle cx="214" cy="160" r="2.5" fill="#fff" opacity="0.5"/>
+  <text x="192" y="154" text-anchor="end"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="13" font-weight="600" fill="#aaaabb">Traditional IDEs</text>
+  <text x="192" y="170" text-anchor="end"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="10" fill="#555570">Eclipse · VS Code · JetBrains</text>
+
+  <!-- Milestone 2: AI-Enhanced IDEs — y=270, x=297 -->
+  <circle cx="297" cy="270" r="5" fill="#00f0ff" opacity="0.35"/>
+  <circle cx="297" cy="270" r="2.5" fill="#fff" opacity="0.6"/>
+  <text x="275" y="264" text-anchor="end"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="13" font-weight="600" fill="#aaaabb">AI-Enhanced IDEs</text>
+  <text x="275" y="280" text-anchor="end"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="10" fill="#555570">Cursor · Windsurf</text>
+
+  <!-- ═══════════════════════════════════════
+       RIGHT ARM MILESTONES
+       Line eq: x = 650 - (y-75)/330 * 250
+       ═══════════════════════════════════════ -->
+
+  <!-- Milestone 1: Autocomplete Era — y=160, x=586 -->
+  <circle cx="586" cy="160" r="5" fill="#d946ef" opacity="0.25"/>
+  <circle cx="586" cy="160" r="2.5" fill="#fff" opacity="0.5"/>
+  <text x="608" y="154" text-anchor="start"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="13" font-weight="600" fill="#aaaabb">Autocomplete Era</text>
+  <text x="608" y="170" text-anchor="start"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="10" fill="#555570">Copilot · TabNine · Codeium</text>
+
+  <!-- Milestone 2: AI Coding Agents — y=270, x=503 -->
+  <circle cx="503" cy="270" r="5" fill="#d946ef" opacity="0.35"/>
+  <circle cx="503" cy="270" r="2.5" fill="#fff" opacity="0.6"/>
+  <text x="525" y="264" text-anchor="start"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="13" font-weight="600" fill="#aaaabb">AI Coding Agents</text>
+  <text x="525" y="280" text-anchor="start"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="10" fill="#555570">Claude Code · Gemini CLI</text>
+
+  <!-- ═══════════════════════════════════════
+       CONVERGENCE POINT (400, 405)
+       ═══════════════════════════════════════ -->
+
+  <!-- Outer glow -->
+  <circle cx="400" cy="405" r="22" fill="#00f0ff" opacity="0.04">
+    <animate attributeName="opacity" values="0.04;0.1;0.04" dur="3s" repeatCount="indefinite"/>
+    <animate attributeName="r" values="22;30;22" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <!-- Mid glow -->
+  <circle cx="400" cy="405" r="11" fill="#8b5cf6" opacity="0.1">
+    <animate attributeName="opacity" values="0.1;0.2;0.1" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <!-- Core -->
+  <circle cx="400" cy="405" r="4.5" fill="#fff" opacity="0.9">
+    <animate attributeName="opacity" values="0.9;0.5;0.9" dur="3s" repeatCount="indefinite"/>
+    <animate attributeName="r" values="4.5;6;4.5" dur="3s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- ═══ IVE BRANDING ═══ -->
+  <text x="400" y="450" text-anchor="middle"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="34" font-weight="800" letter-spacing="8"
+        fill="url(#g)">IVE</text>
+  <text x="400" y="475" text-anchor="middle"
+        font-family="'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace"
+        font-size="12" font-weight="600" letter-spacing="2.5"
+        fill="#00f0ff" opacity="0.7">HUMANITY'S LAST IDE</text>
+
+</svg>

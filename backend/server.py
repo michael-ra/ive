@@ -1,0 +1,11203 @@
+"""aiohttp server — REST routes + WebSocket with PTY terminal support."""
+
+import asyncio
+import datetime
+import json
+import logging
+import uuid
+
+import aiohttp
+from aiohttp import web
+
+from config import (HOST, PORT, VERSION, AVAILABLE_MODELS, PERMISSION_MODES, EFFORT_LEVELS,
+                     COMMANDER_SYSTEM_PROMPT, TESTER_SYSTEM_PROMPT, TESTER_COMMANDER_SYSTEM_PROMPT,
+                     DOCUMENTOR_SYSTEM_PROMPT, DOCUMENTOR_ALLOWED_TOOLS,
+                     MCP_SERVER_PATH, MCP_CONFIG_DIR,
+                     GEMINI_MODELS, GEMINI_APPROVAL_MODES, CLI_TYPES)
+from cli_session import UnifiedSession
+from cli_features import Feature
+from cli_profiles import get_profile
+from history_reader import (list_projects, read_session_messages,
+                              export_session_as_markdown, normalize_jsonl_entry)
+from db import init_db, get_db
+from pty_manager import PTYManager
+from output_capture import OutputCaptureProcessor
+import plugin_manager
+import experimental
+from event_bus import bus
+from commander_events import CommanderEvent, build_event_catalog
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+pty_mgr = PTYManager()
+capture_proc = OutputCaptureProcessor()
+ws_clients: set[web.WebSocketResponse] = set()
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────
+
+import glob as _glob
+from pathlib import Path as _Path
+
+
+def _get_project_dir(workspace_path: str) -> _Path:
+    """Get the Claude Code project directory for a workspace path."""
+    normalized = workspace_path.replace("/", "-")
+    return _Path.home() / ".claude" / "projects" / normalized
+
+
+def _snapshot_jsonl_files(workspace_path: str) -> set[str]:
+    """Get set of existing .jsonl filenames in the project directory."""
+    project_dir = _get_project_dir(workspace_path)
+    if not project_dir.exists():
+        return set()
+    return {f.name for f in project_dir.glob("*.jsonl")}
+
+
+def _get_gemini_chats_dir(workspace_path: str) -> _Path:
+    """Get the Gemini CLI chats directory for a workspace path.
+
+    Gemini uses SHA256(absolute_path) as the project dir name under ~/.gemini/tmp/.
+    """
+    import hashlib
+    abs_path = os.path.abspath(workspace_path)
+    project_hash = hashlib.sha256(abs_path.encode()).hexdigest()
+    return _Path.home() / ".gemini" / "tmp" / project_hash / "chats"
+
+
+def _snapshot_gemini_sessions(workspace_path: str) -> set[str]:
+    """Get set of existing Gemini session .json filenames."""
+    chats_dir = _get_gemini_chats_dir(workspace_path)
+    if not chats_dir.exists():
+        return set()
+    return {f.name for f in chats_dir.glob("session-*.json")}
+
+
+def _resolve_gemini_resume_index(workspace_path: str, stem: str) -> str | None:
+    """Resolve a Gemini session filename stem to a --resume argument.
+
+    Gemini --resume accepts 'latest' or an index (from --list-sessions).
+    Indices shift as new sessions are added. We sort session files by mtime
+    descending and find the index of our target file.
+
+    Returns the index as a string, or None if not found.
+    """
+    chats_dir = _get_gemini_chats_dir(workspace_path)
+    if not chats_dir.exists():
+        return None
+    target_file = chats_dir / f"{stem}.json"
+    if not target_file.exists():
+        return None
+    # Sort by modification time, newest first (matches Gemini's --list-sessions order)
+    files = sorted(chats_dir.glob("session-*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    for idx, f in enumerate(files):
+        if f.name == target_file.name:
+            return str(idx)
+    return None
+
+
+async def detect_gemini_session(session_id: str, workspace_path: str,
+                                 pre_existing_files: set[str] | None = None):
+    """Detect which Gemini session file belongs to this PTY.
+
+    Similar to detect_claude_session but for Gemini's .json format.
+    Stores the filename stem (e.g. 'session-2026-04-08T...') in native_session_id.
+    Retries up to 20s to handle slow CLI startup.
+    """
+    target_file = None
+    # Retry: check every 2s for up to 20s (hooks may resolve it first)
+    for attempt in range(10):
+        await _asyncio.sleep(2)
+
+        # Check if hooks already resolved the native ID
+        db_check = await get_db()
+        try:
+            cur = await db_check.execute(
+                "SELECT native_session_id FROM sessions WHERE id = ?", (session_id,))
+            row = await cur.fetchone()
+            if row and row["native_session_id"]:
+                logger.info(f"Gemini session {session_id[:8]}: native ID already resolved by hooks")
+                return
+        finally:
+            await db_check.close()
+
+        chats_dir = _get_gemini_chats_dir(workspace_path)
+        if not chats_dir.exists():
+            continue
+
+        if pre_existing_files is not None:
+            current = {f.name for f in chats_dir.glob("session-*.json")}
+            new_files = current - pre_existing_files
+            if len(new_files) == 1:
+                target_file = chats_dir / new_files.pop()
+            elif len(new_files) > 1:
+                candidates = [chats_dir / f for f in new_files]
+                target_file = max(candidates, key=lambda f: f.stat().st_mtime)
+
+        if target_file:
+            break
+
+    if not target_file:
+        logger.info(f"Gemini session {session_id[:8]}: file detection failed after retries")
+        return
+
+    # Read the session ID and slug from the file
+    try:
+        data = json.loads(target_file.read_text())
+        gemini_sid = data.get("sessionId", target_file.stem)
+    except Exception:
+        gemini_sid = target_file.stem
+
+    # Store the filename stem (used for --resume later)
+    file_stem = target_file.stem
+
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE sessions SET native_session_id = ? WHERE id = ?",
+            (file_stem, session_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    logger.info(f"Detected Gemini session: {session_id[:8]} → {file_stem}")
+
+
+async def detect_claude_session(session_id: str, workspace_path: str,
+                                 force_rename: bool = False,
+                                 pre_existing_files: set[str] | None = None):
+    """Detect which Claude Code conversation file belongs to this session.
+
+    If pre_existing_files is provided, we diff against it to find the NEW file
+    that was created by this specific session (avoids cross-session confusion
+    when multiple sessions share a workspace).
+
+    Retries up to 20s to handle slow CLI startup. If the hook-based capture
+    (in hooks.py) already resolved the native ID, this function will detect
+    that and skip file scanning — but still proceed to extract the slug for
+    session renaming.
+    """
+    target_file = None
+    existing_sid = None
+    existing_name = None
+
+    # Retry: check every 2s for up to 20s
+    for attempt in range(10):
+        await _asyncio.sleep(2)
+
+        project_dir = _get_project_dir(workspace_path)
+        if not project_dir.exists():
+            continue
+
+        # Check current DB state (hooks may have resolved the native ID already)
+        db_check = await get_db()
+        try:
+            cur = await db_check.execute(
+                "SELECT native_session_id, name FROM sessions WHERE id = ?", (session_id,))
+            row = await cur.fetchone()
+            existing_sid = row["native_session_id"] if row else None
+            existing_name = row["name"] if row else None
+        finally:
+            await db_check.close()
+
+        # 1. If we already have a session ID (from hooks or prior run), use that file
+        if existing_sid:
+            candidate = project_dir / f"{existing_sid}.jsonl"
+            if candidate.exists():
+                target_file = candidate
+                break  # Got it — proceed to slug extraction
+
+        # 2. Diff against snapshot to find the NEW file
+        if not target_file and pre_existing_files is not None:
+            current_files = {f.name for f in project_dir.glob("*.jsonl")}
+            new_files = current_files - pre_existing_files
+            if len(new_files) == 1:
+                target_file = project_dir / new_files.pop()
+                break
+            elif len(new_files) > 1:
+                candidates = [project_dir / f for f in new_files]
+                target_file = max(candidates, key=lambda f: f.stat().st_mtime)
+                break
+
+        # 3. Last resort: newest file (only if no snapshot available)
+        if not target_file and pre_existing_files is None:
+            jsonl_files = sorted(project_dir.glob("*.jsonl"),
+                                 key=lambda f: f.stat().st_mtime, reverse=True)
+            if jsonl_files:
+                target_file = jsonl_files[0]
+                break
+
+    if not target_file:
+        logger.info(f"Claude session {session_id[:8]}: file detection failed after retries")
+        return
+
+    native_sid = target_file.stem
+
+    # Read the slug from the session file
+    slug = None
+    try:
+        with open(target_file, "r") as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            try:
+                entry = json.loads(line)
+                if entry.get("slug"):
+                    slug = entry["slug"]
+                    break
+            except json.JSONDecodeError:
+                continue
+    except Exception:
+        pass
+
+    if not slug and not native_sid:
+        return
+
+    # Store in DB
+    db = await get_db()
+    try:
+        updates = ["native_session_id = ?"]
+        values = [native_sid]
+        new_name = None
+        if slug:
+            updates.append("native_slug = ?")
+            values.append(slug)
+            # Update session name if: force_rename, or still has default name
+            if force_rename or not existing_name or existing_name.startswith("Session "):
+                updates.append("name = ?")
+                values.append(slug)
+                new_name = slug
+        values.append(session_id)
+        await db.execute(
+            f"UPDATE sessions SET {', '.join(updates)} WHERE id = ?",
+            values,
+        )
+        await db.commit()
+        if new_name:
+            await broadcast({
+                "type": "session_renamed",
+                "session_id": session_id,
+                "name": new_name,
+                "native_session_id": native_sid,
+                "native_slug": slug,
+            })
+    finally:
+        await db.close()
+
+    logger.info(f"Detected Claude session: {session_id} → {native_sid} ({slug})")
+
+
+def _snapshot_files_for_detection(cli_type: str, workspace_path: str) -> set[str] | None:
+    """Snapshot session files before PTY start (for new-file detection)."""
+    if cli_type == "claude":
+        return _snapshot_jsonl_files(workspace_path)
+    elif cli_type == "gemini":
+        return _snapshot_gemini_sessions(workspace_path)
+    return None
+
+
+def _schedule_session_detection(cli_type: str, session_id: str, workspace_path: str,
+                                pre_files: set[str] | None):
+    """Schedule async session detection after PTY starts."""
+    if cli_type == "claude":
+        _asyncio.ensure_future(detect_claude_session(
+            session_id, workspace_path, pre_existing_files=pre_files))
+    elif cli_type == "gemini":
+        _asyncio.ensure_future(detect_gemini_session(
+            session_id, workspace_path, pre_existing_files=pre_files))
+
+
+async def get_session_config(session_id: str) -> dict | None:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT s.*, w.path AS workspace_path
+               FROM sessions s
+               JOIN workspaces w ON s.workspace_id = w.id
+               WHERE s.id = ?""",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def broadcast(event: dict):
+    data = json.dumps(event)
+    dead = []
+    for ws in ws_clients:
+        try:
+            await ws.send_str(data)
+        except (ConnectionResetError, ConnectionError, RuntimeError):
+            dead.append(ws)
+    for ws in dead:
+        ws_clients.discard(ws)
+
+
+# ─── PTY output batching ──────────────────────────────────────────────────
+# Batch PTY output per session into ~16ms windows (one frame) before sending
+# over WebSocket. This prevents Ink's full-screen TUI renders from being
+# split across multiple messages, which causes garbled terminal output.
+
+import asyncio as _asyncio
+import time as _time
+
+_output_buffers: dict[str, list[bytes]] = {}
+_output_timers: dict[str, _asyncio.TimerHandle] = {}
+
+def _schedule_flush(session_id: str):
+    if session_id in _output_timers:
+        return  # Already scheduled
+    loop = _asyncio.get_event_loop()
+    _output_timers[session_id] = loop.call_later(0.016, lambda: _asyncio.ensure_future(_flush_output(session_id)))
+
+# ─── PTY output flush ─────────────────────────────────────────────────
+# Session state detection (idle/prompting/working) is now handled by CLI
+# lifecycle hooks (see hooks.py). This function only batches and broadcasts
+# raw PTY output for xterm display.
+
+
+async def _flush_output(session_id: str):
+    _output_timers.pop(session_id, None)
+    chunks = _output_buffers.pop(session_id, [])
+    if not chunks:
+        return
+    raw = b"".join(chunks)
+    text = raw.decode("utf-8", errors="replace")
+    msg = json.dumps({"session_id": session_id, "type": "output", "data": text})
+    dead = []
+    for ws in ws_clients:
+        try:
+            await ws.send_str(msg)
+        except (ConnectionResetError, ConnectionError, RuntimeError):
+            dead.append(ws)
+    for ws in dead:
+        ws_clients.discard(ws)
+
+# ─── Trust prompt auto-acceptance ─────────────────────────────────────
+# Both CLIs show interactive trust prompts for untrusted workspace folders.
+# These fire BEFORE hooks are initialized, so hooks can't detect them.
+# We detect the patterns in raw PTY output and auto-accept.
+_TRUST_PATTERNS = [
+    b"trust this folder",           # Claude: "Yes, I trust this folder"
+    b"I trust this folder",         # Claude alternative
+    b"safety check",                # Claude: "Quick safety check" header
+    b"Itrustthisfolder",            # Claude TUI (spaces stripped in raw bytes)
+    b"safetycheck",                 # Claude TUI (spaces stripped)
+    b"Yes, I trust",                # Claude with spaces
+    b"Trust folder",                # Gemini: "1. Trust folder"
+    b"Trust parent folder",         # Gemini: "2. Trust parent folder"
+    b"Enter to select",             # Gemini: generic selection prompt
+]
+_trust_handled: dict[str, float] = {}  # Track last auto-accept time per session (allow multiple)
+_gemini_ready: set[str] = set()  # Sessions where Gemini TUI is ready for input
+
+
+def _check_auto_trust(session_id: str, data: bytes):
+    """Auto-accept trust prompts by sending Enter/1 to the PTY.
+
+    Handles MULTIPLE prompts per session (Gemini has folder trust + MCP trust).
+    Rate-limited to max once per 2 seconds per session to avoid loops.
+    """
+    import time as _time
+    last = _trust_handled.get(session_id, 0)
+    if _time.monotonic() - last < 2.0:
+        return  # rate limit — don't spam Enter
+    # Strip ANSI sequences for pattern matching (raw PTY output is full of them)
+    import re as _re
+    _ansi_bytes_re = _re.compile(rb'\x1b\[[0-9;]*[a-zA-Z~]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]')
+    stripped = _ansi_bytes_re.sub(b'', data)
+    text_lower = stripped.lower()
+    raw_lower = data.lower()
+    for pattern in _TRUST_PATTERNS:
+        pat_lower = pattern.lower()
+        if pat_lower in text_lower or pat_lower in raw_lower:
+            _trust_handled[session_id] = _time.monotonic()
+            # Schedule the auto-accept slightly delayed so the UI renders first
+            async def _auto_accept():
+                await _asyncio.sleep(0.5)
+                if pty_mgr.is_alive(session_id):
+                    # Gemini uses numbered menu (send "1\r"), Claude uses Enter ("\r")
+                    if b"Trust folder" in data or b"Trust parent" in data:
+                        pty_mgr.write(session_id, b"1\r")  # Gemini: select option 1
+                    else:
+                        pty_mgr.write(session_id, b"\r")    # Claude: confirm default
+                    logger.info(f"Auto-accepted trust prompt for session {session_id[:8]}")
+            _asyncio.ensure_future(_auto_accept())
+            return
+
+
+async def handle_pty_output(session_id: str, data: bytes):
+    _check_auto_trust(session_id, data)
+    # Track Gemini readiness for deferred prompt injection
+    if session_id not in _gemini_ready:
+        if b"Type your message" in data or b"YOLO" in data:
+            _gemini_ready.add(session_id)
+    if session_id not in _output_buffers:
+        _output_buffers[session_id] = []
+    _output_buffers[session_id].append(data)
+    _schedule_flush(session_id)
+
+
+async def handle_pty_exit(session_id: str, code: int):
+    from hooks import cleanup_session
+    cleanup_session(session_id)
+    await broadcast({"session_id": session_id, "type": "exit", "code": code})
+    # Session Advisor: analyze session quality in background
+    try:
+        from session_advisor import analyze_session, clear_intent
+        _fire_and_forget(analyze_session(session_id))
+        clear_intent(session_id)
+    except Exception:
+        pass  # advisor not critical
+
+
+# ─── Background task registry (prevents GC of fire-and-forget tasks) ──────
+_bg_tasks: set[_asyncio.Task] = set()
+
+def _fire_and_forget(coro):
+    """Schedule a coroutine as a background task without risk of GC."""
+    task = _asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+# ─── Branch session creation ─────────────────────────────────────────────
+
+async def _open_original_as_tab(branch_session_id: str, original_native_id: str):
+    """After /branch, open the ORIGINAL conversation as a new Commander tab.
+
+    The current PTY (branch_session_id) is now running the branch.  We create
+    a sibling session for the original conversation so the user can see both
+    side-by-side.  The new session gets --resume <original_native_id> when its
+    PTY starts.
+    """
+    db = await get_db()
+    try:
+        # Look up the branch session (was the parent before /branch)
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (branch_session_id,))
+        parent = await cur.fetchone()
+        if not parent:
+            return
+        parent = dict(parent)
+
+        # Guard: don't create a duplicate if we already have a session for this native ID
+        cur = await db.execute(
+            "SELECT id FROM sessions WHERE native_session_id = ? AND id != ?",
+            (original_native_id, branch_session_id),
+        )
+        if await cur.fetchone():
+            return
+
+        # Create session for the original conversation
+        import uuid as _uuid
+        new_id = str(_uuid.uuid4())
+        original_name = parent["name"] or "Session"
+        # Rename the branch session to indicate it's a branch
+        branch_name = f"{original_name} (branch)"
+        await db.execute(
+            "UPDATE sessions SET name = ? WHERE id = ?",
+            (branch_name, branch_session_id),
+        )
+
+        # ── Resolve branch group (peer linkage) ─────────────────────────
+        from hooks import _generate_branch_label
+        if parent.get("branch_group"):
+            branch_group = parent["branch_group"]
+            branch_label = parent.get("branch_label", "")
+        else:
+            branch_group = str(_uuid.uuid4())
+            cur = await db.execute(
+                "SELECT DISTINCT branch_label FROM sessions WHERE workspace_id = ? AND branch_label IS NOT NULL",
+                (parent["workspace_id"],),
+            )
+            existing = {row["branch_label"] for row in await cur.fetchall()}
+            branch_label = _generate_branch_label(branch_group, existing)
+            # Tag the branch session (which was the original before /branch)
+            await db.execute(
+                "UPDATE sessions SET branch_group = ?, branch_label = ? WHERE id = ?",
+                (branch_group, branch_label, branch_session_id),
+            )
+
+        await db.execute(
+            """INSERT INTO sessions
+               (id, workspace_id, name, model, permission_mode, effort,
+                budget_usd, system_prompt, allowed_tools, disallowed_tools,
+                add_dirs, cli_type, parent_session_id, native_session_id,
+                branch_group, branch_label)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (new_id, parent["workspace_id"], original_name, parent["model"],
+             parent["permission_mode"], parent["effort"],
+             parent.get("budget_usd"), parent.get("system_prompt"),
+             parent.get("allowed_tools"), parent.get("disallowed_tools"),
+             parent.get("add_dirs"), parent.get("cli_type", "claude"),
+             branch_session_id, original_native_id,
+             branch_group, branch_label),
+        )
+
+        # Copy guidelines from the branch session (skip deleted guidelines)
+        cur = await db.execute(
+            """SELECT sg.guideline_id FROM session_guidelines sg
+               JOIN guidelines g ON g.id = sg.guideline_id
+               WHERE sg.session_id = ?""",
+            (branch_session_id,),
+        )
+        for row in await cur.fetchall():
+            await db.execute(
+                "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                (new_id, row["guideline_id"]),
+            )
+
+        # Copy MCP servers from the branch session (skip deleted servers)
+        cur = await db.execute(
+            """SELECT sm.mcp_server_id, sm.auto_approve_override FROM session_mcp_servers sm
+               JOIN mcp_servers m ON m.id = sm.mcp_server_id
+               WHERE sm.session_id = ?""",
+            (branch_session_id,),
+        )
+        for row in await cur.fetchall():
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, ?)",
+                (new_id, row["mcp_server_id"], row["auto_approve_override"]),
+            )
+
+        await db.commit()
+
+        # Clear stale native_session_id on the branch session — it still holds
+        # the ORIGINAL's UUID but the PTY is now running a different conversation.
+        # The next hook event from the branch will re-capture the correct ID.
+        await db.execute(
+            "UPDATE sessions SET native_session_id = NULL WHERE id = ?",
+            (branch_session_id,),
+        )
+        await db.commit()
+        from hooks import clear_native_id_cache
+        clear_native_id_cache(branch_session_id)
+
+        # Fetch the new session and broadcast
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (new_id,))
+        new_session = dict(await cur.fetchone())
+
+        # Re-fetch branch session so frontend gets updated branch_group/label + name
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (branch_session_id,))
+        updated_branch = dict(await cur.fetchone())
+
+        await broadcast({
+            "type": "session_created",
+            "session": new_session,
+            "auto_open": True,
+            "parent_session_id": branch_session_id,
+            "updated_parent": updated_branch,
+        })
+        # Also broadcast the rename of the branch session
+        await broadcast({
+            "type": "session_renamed",
+            "session_id": branch_session_id,
+            "name": branch_name,
+        })
+
+        logger.info(
+            "Branch detected: opened original %s as tab (branch=%s)",
+            new_id[:8], branch_session_id[:8],
+        )
+    except Exception as e:
+        logger.exception("Failed to open original as tab after /branch: %s", e)
+    finally:
+        await db.close()
+
+
+# ─── Conversation turn tracking ───────────────────────────────────────────
+
+_input_bufs: dict[str, str] = {}
+_session_turns: dict[str, list[str]] = {}
+_input_esc: dict[str, int] = {}  # 0=normal, 1=got ESC, 2=CSI body
+_session_workspace: dict[str, str] = {}  # session_id → workspace_id (for advisor)
+
+def _track_input(session_id: str, raw: str):
+    """Track user keystrokes, split into turns on Enter.
+
+    Includes a small state machine to skip ANSI escape sequences
+    (focus events, device-attribute responses, arrow keys, etc.) so
+    they don't pollute the buffer with ``[I``, ``[?1;2c``, etc.
+    """
+    if session_id not in _input_bufs:
+        _input_bufs[session_id] = ""
+    state = _input_esc.get(session_id, 0)
+
+    for ch in raw:
+        code = ord(ch)
+
+        # ── Inside escape sequence → skip until done ──────────
+        if state == 1:                         # got ESC, next byte decides type
+            if ch == '[':
+                state = 2                      # CSI sequence (\x1b[...)
+            elif ch == 'O':
+                state = 3                      # SS3 (\x1bO + one byte)
+            else:
+                state = 0                      # unknown / bare ESC, done
+            continue
+        if state == 2:                         # CSI body — skip until final byte
+            if 0x40 <= code <= 0x7E:           # final byte → sequence done
+                state = 0
+            continue
+        if state == 3:                         # SS3 — skip one byte then done
+            state = 0
+            continue
+
+        # ── Normal state ──────────────────────────────────────
+        if ch == '\x1b':
+            state = 1
+        elif ch in ('\r', '\n'):
+            line = _input_bufs[session_id].strip()
+            if line:
+                if session_id not in _session_turns:
+                    _session_turns[session_id] = []
+                _session_turns[session_id].append(line)
+                # Session Advisor: feed intent accumulator
+                try:
+                    from session_advisor import update_intent
+                    # Look up workspace_id for this session
+                    ws_id = _session_workspace.get(session_id)
+                    _fire_and_forget(update_intent(
+                        session_id, line, source="user",
+                        workspace_id=ws_id, broadcast_fn=broadcast,
+                    ))
+                except Exception:
+                    pass
+            _input_bufs[session_id] = ""
+        elif ch == '\x7f' or ch == '\x08':
+            _input_bufs[session_id] = _input_bufs[session_id][:-1]
+        elif code >= 32:
+            _input_bufs[session_id] += ch
+
+    _input_esc[session_id] = state
+
+
+def get_session_turns(session_id: str) -> list[str]:
+    return _session_turns.get(session_id, [])
+
+
+# ─── @prompt:<name> token expansion on Enter ─────────────────────────────
+#
+# When the user presses Enter in the terminal and their accumulated input
+# contains @prompt:<name> tokens, we expand them server-side before the
+# message reaches Claude. The expansion is done by backspacing over the
+# raw input in the PTY and retyping the expanded version — all in a single
+# write so it's atomic from the terminal's perspective.
+#
+# This lives server-side (not client-side) because:
+#   1. _input_bufs already tracks what the user typed (no duplication)
+#   2. The DB with prompts is right here
+#   3. It works for ALL input paths (terminal, paste, replay, etc.)
+
+import re as _re
+
+_PROMPT_TOKEN_RE = _re.compile(r'@prompt:(?:"([^"]+)"|(\S+))', _re.IGNORECASE)
+
+
+def _find_prompt_by_name(prompts: list[dict], name: str):
+    """Case-insensitive name lookup: exact → normalized → prefix."""
+    lc = name.lower()
+    for p in prompts:
+        if p["name"].lower() == lc:
+            return p
+    norm = lc.replace(" ", "").replace("-", "").replace("_", "")
+    for p in prompts:
+        if p["name"].lower().replace(" ", "").replace("-", "").replace("_", "") == norm:
+            return p
+    for p in prompts:
+        if p["name"].lower().startswith(lc):
+            return p
+    return None
+
+
+def _expand_prompt_tokens(text: str, prompts: list[dict]) -> str:
+    """Replace @prompt:<name> tokens with their content."""
+    def _replacer(m):
+        name = m.group(1) or m.group(2)
+        hit = _find_prompt_by_name(prompts, name)
+        return hit["content"] if hit else m.group(0)
+    return _PROMPT_TOKEN_RE.sub(_replacer, text)
+
+
+
+
+async def _maybe_expand_input(session_id: str, raw_input: str):
+    """If raw_input contains Enter and the accumulated buffer has @prompt:
+    tokens, return bytes to write to PTY instead (backspaces + expanded +
+    Enter). Returns None when no expansion is needed.
+
+    On expansion, also updates _input_bufs / _session_turns so the
+    tracking state stays consistent, and emits a token_expanded event.
+    """
+    # Only trigger when the chunk contains Enter
+    if "\r" not in raw_input and "\n" not in raw_input:
+        return None
+
+    # _input_bufs already has the accumulated (escape-cleaned) text from
+    # prior _track_input calls. For the common case (Enter arrives as its
+    # own chunk), this is the complete user input.
+    buf = _input_bufs.get(session_id, "").strip()
+    if not buf:
+        return None
+
+    # Quick regex check — skip the DB hit if there are no @prompt: tokens
+    if not _PROMPT_TOKEN_RE.search(buf):
+        return None
+
+    logger.info("Token expansion: matched @prompt: in buffer (%d chars): %s", len(buf), buf[:80])
+
+    # Fetch prompts from DB
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id, name, content FROM prompts"
+        )
+        prompts = [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+    expanded = _expand_prompt_tokens(buf, prompts)
+    if expanded == buf:
+        return None  # Token was present but name didn't match anything
+
+    # Collapse newlines → spaces. Ink's TextInput is single-line; any
+    # \n in the prompt content would be interpreted as Enter (submitting
+    # a partial message). For full multiline prompts use Composer (⌘E).
+    expanded = expanded.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+
+    logger.info("Token expansion: expanded to %d chars", len(expanded))
+
+    # Two-phase write mirroring the frontend's sendTerminalCommand.
+    # Phase 1 (immediate): clear existing input
+    # Phase 2 (after delay): expanded text + Enter
+    # Use CLI-appropriate clear: Escape+DEL for Claude Ink, Ctrl-U for Gemini.
+    cli_type = "claude"
+    try:
+        _cfg = await get_session_config(session_id)
+        if _cfg:
+            cli_type = _cfg.get("cli_type", "claude")
+    except Exception:
+        pass
+    if cli_type == "gemini":
+        pty_mgr.write(session_id, b"\x15")  # Ctrl-U
+    else:
+        pty_mgr.write(session_id, b"\x1b" + b"\x7f" * 50)
+
+    async def _send_expanded():
+        await _asyncio.sleep(0.3)
+        pty_mgr.write(session_id, (expanded + "\r").encode("utf-8"))
+
+    _asyncio.ensure_future(_send_expanded())
+
+    # Update tracking state (what _track_input would have done)
+    if session_id not in _session_turns:
+        _session_turns[session_id] = []
+    _session_turns[session_id].append(expanded.strip())
+    _input_bufs[session_id] = ""
+
+    # Emit event + broadcast (fire-and-forget)
+    session = await get_session_config(session_id)
+    _asyncio.ensure_future(bus.emit(
+        "token_expanded",
+        {
+            "session_id": session_id,
+            "workspace_id": session["workspace_id"] if session else None,
+            "original": buf,
+            "expanded_preview": expanded[:200],
+            "tokens": [m.group(0) for m in _PROMPT_TOKEN_RE.finditer(buf)],
+        },
+        source="terminal",
+    ))
+    await broadcast({
+        "session_id": session_id,
+        "type": "token_expanded",
+        "tokens": [m.group(0) for m in _PROMPT_TOKEN_RE.finditer(buf)],
+    })
+
+    # Return empty bytes — signals caller to NOT forward the original
+    # Enter keystroke (we already scheduled the expanded text + Enter).
+    return b""
+
+
+async def _replay_turns(session_id: str, turns: list[str]):
+    """Replay saved conversation turns into a session, waiting for each response."""
+    import re
+
+    # Broadcast replaying status
+    await broadcast({"session_id": session_id, "type": "status", "status": "replaying"})
+
+    for i, turn in enumerate(turns):
+        # Wait for Claude Code to show input prompt (❯ or >)
+        for _ in range(60):  # Max 30 seconds per turn
+            buf = capture_proc.get_buffer(session_id, 5)
+            if '❯' in buf or '> ' in buf or (i == 0 and 'shortcuts' in buf.lower()):
+                break
+            await asyncio.sleep(0.5)
+
+        await asyncio.sleep(0.3)  # Small extra pause for Ink to settle
+
+        # Type the message + Enter
+        pty_mgr.write(session_id, (turn + '\r').encode('utf-8'))
+
+        # Wait for response to complete (prompt reappears)
+        await asyncio.sleep(2)  # Minimum wait for response to start
+        for _ in range(120):  # Max 60 seconds for response
+            buf = capture_proc.get_buffer(session_id, 3)
+            # Check if prompt appeared again (Claude is done)
+            last_lines = buf.strip().split('\n')
+            if any('❯' in l for l in last_lines[-3:]):
+                break
+            await asyncio.sleep(0.5)
+
+    # Done replaying
+    await broadcast({"session_id": session_id, "type": "status", "status": "idle"})
+    await broadcast({"session_id": session_id, "type": "replay_done"})
+
+
+async def _adopt_sessions(commander_id: str, target_ids: list[str]):
+    """Set parent_session_id on targets if the source is a commander session."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT session_type FROM sessions WHERE id = ?", (commander_id,)
+        )
+        row = await cur.fetchone()
+        if not row or row["session_type"] != "commander":
+            return
+        for sid in target_ids:
+            await db.execute(
+                "UPDATE sessions SET parent_session_id = ? WHERE id = ? AND (parent_session_id IS NULL OR parent_session_id != ?)",
+                (commander_id, sid, commander_id),
+            )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# ─── WebSocket ────────────────────────────────────────────────────────────
+
+async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    ws_clients.add(ws)
+    logger.info(f"WebSocket connected ({len(ws_clients)} total)")
+
+    try:
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                except json.JSONDecodeError:
+                    continue
+
+                action = data.get("action")
+
+                if action == "start_pty":
+                    session_id = data.get("session_id")
+                    cols = data.get("cols", 120)
+                    rows = data.get("rows", 40)
+
+                    if not session_id:
+                        continue
+
+                    if pty_mgr.is_alive(session_id):
+                        # Already running — just reconnect
+                        continue
+
+                    config = await get_session_config(session_id)
+                    if not config:
+                        await ws.send_json({
+                            "session_id": session_id,
+                            "type": "error",
+                            "message": "Session not found",
+                        })
+                        continue
+
+                    # Fetch attached guidelines and build combined system prompt.
+                    # Three sources stack into the final --append-system-prompt:
+                    #   1. session.system_prompt (legacy free-text field)
+                    #   2. Legacy guidelines (session_guidelines)
+                    #   3. Plugin guideline components (session_plugin_components
+                    #      where type='guideline') — from the plugin marketplace,
+                    #      CLI-agnostic (works for both Claude and Gemini).
+                    system_prompt_parts = []
+                    if config.get("system_prompt"):
+                        system_prompt_parts.append(config["system_prompt"])
+
+                    # Track which guideline IDs are ACTUALLY loaded into the
+                    # system prompt. Written back to sessions.active_guideline_ids
+                    # so the GuidelinePanel can show accurate "active" vs "pending"
+                    # labels and detect unchecked-but-still-cached guidelines.
+                    loaded_guideline_ids = []
+
+                    db_gl = await get_db()
+                    try:
+                        cur_gl = await db_gl.execute(
+                            """SELECT g.id, g.content FROM guidelines g
+                               JOIN session_guidelines sg ON g.id = sg.guideline_id
+                               WHERE sg.session_id = ?""",
+                            (session_id,),
+                        )
+                        for row_gl in await cur_gl.fetchall():
+                            system_prompt_parts.append(row_gl["content"])
+                            loaded_guideline_ids.append(row_gl["id"])
+
+                        # Plugin guideline components:
+                        #   • activation='always' → injected into system prompt
+                        #   • activation='on_demand' → on disk as SKILL.md,
+                        #     discovered natively by the CLI (not injected here)
+                        cur_plugin = await db_gl.execute(
+                            """SELECT pc.content
+                               FROM plugin_components pc
+                               JOIN session_plugin_components spc
+                                    ON pc.id = spc.component_id
+                               WHERE spc.session_id = ?
+                                 AND pc.type = 'guideline'
+                                 AND COALESCE(pc.activation, 'always') = 'always'
+                               ORDER BY pc.order_index, pc.name""",
+                            (session_id,),
+                        )
+                        for row_p in await cur_plugin.fetchall():
+                            if row_p["content"]:
+                                system_prompt_parts.append(row_p["content"])
+
+                        # Experimental: checkpoint protocol injection.
+                        cur_exp = await db_gl.execute(
+                            "SELECT value FROM app_settings WHERE key = ?",
+                            ("experimental_checkpoint_protocol",),
+                        )
+                        exp_row = await cur_exp.fetchone()
+                        if exp_row and exp_row["value"] == "on":
+                            system_prompt_parts.append(
+                                experimental.CHECKPOINT_PROTOCOL_PROMPT
+                            )
+
+                        # Experimental: model switching prompt injection.
+                        cur_ms = await db_gl.execute(
+                            "SELECT value FROM app_settings WHERE key = ?",
+                            ("experimental_model_switching",),
+                        )
+                        ms_row = await cur_ms.fetchone()
+                        if ms_row and ms_row["value"] == "on":
+                            pm = config.get("plan_model") or config.get("model", "opus")
+                            em = config.get("execute_model") or config.get("model", "sonnet")
+                            system_prompt_parts.append(
+                                experimental.MODEL_SWITCHING_PROMPT.format(
+                                    plan_model=pm, execute_model=em,
+                                )
+                            )
+
+                        # Commander memory injection: append remembered context
+                        # from Commander's memory_entries DB.  This is the key
+                        # abstraction — every CLI (Claude, Gemini, future CLIs)
+                        # gets the same memory entries regardless of whether
+                        # the CLI has native auto-memory support.
+                        try:
+                            from memory_manager import memory_manager
+                            mem_prompt = await memory_manager.export_for_prompt(
+                                workspace_id=workspace_id,
+                                max_chars=4000,
+                            )
+                            if mem_prompt:
+                                system_prompt_parts.append(mem_prompt)
+                        except Exception as mem_exc:
+                            logger.debug("Memory injection skipped: %s", mem_exc)
+
+                        # ── W2W: Inject workspace knowledge into system prompt ─
+                        try:
+                            _ws_id = config.get("workspace_id", "")
+                            ws_db = await get_db()
+                            try:
+                                ws_cur = await ws_db.execute(
+                                    "SELECT context_sharing_enabled, comms_enabled FROM workspaces WHERE id = ?",
+                                    (_ws_id,),
+                                )
+                                ws_flags = await ws_cur.fetchone()
+                            finally:
+                                await ws_db.close()
+
+                            if ws_flags and ws_flags["context_sharing_enabled"]:
+                                # Inject accumulated knowledge (cap from workspace setting)
+                                know_limit = 3000
+                                try:
+                                    _kl_db = await get_db()
+                                    _kl_cur = await _kl_db.execute(
+                                        "SELECT knowledge_context_limit FROM workspaces WHERE id = ?",
+                                        (_ws_id,))
+                                    _kl_row = await _kl_cur.fetchone()
+                                    if _kl_row and _kl_row["knowledge_context_limit"]:
+                                        know_limit = _kl_row["knowledge_context_limit"]
+                                    await _kl_db.close()
+                                except Exception:
+                                    pass
+                                know_db = await get_db()
+                                try:
+                                    know_cur = await know_db.execute(
+                                        "SELECT * FROM workspace_knowledge WHERE workspace_id = ? ORDER BY confirmed_count DESC, updated_at DESC",
+                                        (_ws_id,),
+                                    )
+                                    know_rows = [dict(r) for r in await know_cur.fetchall()]
+                                finally:
+                                    await know_db.close()
+
+                                # Relevance-based ranking: if session has a task,
+                                # rank knowledge by semantic similarity to the task
+                                if know_rows and config.get("task_id"):
+                                    try:
+                                        import embedder
+                                        _task_db = await get_db()
+                                        _tc = await _task_db.execute(
+                                            "SELECT title, description FROM tasks WHERE id = ?",
+                                            (config["task_id"],))
+                                        _tr = await _tc.fetchone()
+                                        await _task_db.close()
+                                        if _tr:
+                                            task_context = f"{_tr['title']} {_tr['description'] or ''}"
+                                            similar = await embedder.search_similar(
+                                                task_context, "knowledge",
+                                                workspace_id=_ws_id,
+                                                limit=50, min_score=0.2)
+                                            if similar:
+                                                # Reorder know_rows by relevance score
+                                                score_map = {s["entity_id"]: s["score"] for s in similar}
+                                                know_rows.sort(
+                                                    key=lambda kr: score_map.get(kr["id"], 0),
+                                                    reverse=True)
+                                    except Exception:
+                                        pass  # fall back to popularity sort
+
+                                if know_rows:
+                                    sections: dict[str, list[str]] = {}
+                                    total_len = 0
+                                    for kr in know_rows:
+                                        cat = kr["category"] or "general"
+                                        entry = f"- {kr['content']}"
+                                        if kr.get("scope"):
+                                            entry += f" [{kr['scope']}]"
+                                        if total_len + len(entry) > know_limit:
+                                            break
+                                        sections.setdefault(cat, []).append(entry)
+                                        total_len += len(entry)
+
+                                    lines = ["## Workspace Knowledge Base\n"]
+                                    for cat, entries in sections.items():
+                                        lines.append(f"### {cat.title()}")
+                                        lines.extend(entries)
+                                        lines.append("")
+                                    system_prompt_parts.append("\n".join(lines))
+
+                                # Inject recent file activity from peer sessions
+                                try:
+                                    fa_db = await get_db()
+                                    try:
+                                        fa_cur = await fa_db.execute(
+                                            """SELECT file_path, session_name, task_summary, task_title,
+                                                      MAX(created_at) AS last_edited
+                                               FROM file_activity
+                                               WHERE workspace_id = ? AND session_id != ?
+                                                 AND created_at > datetime('now', '-2 hours')
+                                               GROUP BY file_path, session_id
+                                               ORDER BY last_edited DESC LIMIT 20""",
+                                            (_ws_id, session_id),
+                                        )
+                                        fa_rows = await fa_cur.fetchall()
+                                    finally:
+                                        await fa_db.close()
+
+                                    if fa_rows:
+                                        fa_lines = ["## Recent File Activity (Peers)\n",
+                                                     "Files recently edited by peer sessions:"]
+                                        for fa in fa_rows:
+                                            goal = fa["task_title"] or fa["task_summary"] or "unknown task"
+                                            fa_lines.append(
+                                                f"- `{fa['file_path']}` — {fa['session_name']} ({goal})"
+                                            )
+                                        fa_lines.append("")
+                                        system_prompt_parts.append("\n".join(fa_lines))
+                                except Exception:
+                                    pass
+
+                                # Auto-overlap detection: check if other sessions
+                                # are doing similar work and inject warnings upfront
+                                try:
+                                    _overlap_intent = ""
+                                    # Build intent from task or session name
+                                    if config.get("task_id"):
+                                        _ov_db = await get_db()
+                                        try:
+                                            _ov_c = await _ov_db.execute(
+                                                "SELECT title, description FROM tasks WHERE id = ?",
+                                                (config["task_id"],))
+                                            _ov_r = await _ov_c.fetchone()
+                                            if _ov_r:
+                                                _overlap_intent = f"{_ov_r['title']} {_ov_r['description'] or ''}"
+                                        finally:
+                                            await _ov_db.close()
+                                    elif config.get("session_name"):
+                                        _overlap_intent = config["session_name"]
+
+                                    if _overlap_intent and len(_overlap_intent.strip()) > 5:
+                                        import embedder as _emb
+                                        _overlaps = await _emb.check_overlap(
+                                            _overlap_intent.strip(), _ws_id, exclude_session_id=session_id)
+                                        if _overlaps:
+                                            ov_lines = ["## Active Session Overlap\n",
+                                                        "Other sessions in this workspace are doing related work:"]
+                                            for _ov in _overlaps[:5]:
+                                                _lvl = _ov.get("level", "?")
+                                                _icon = "\u26d4" if _lvl == "conflict" else "\u26a0\ufe0f" if _lvl == "share" else "\u2139\ufe0f"
+                                                _desc = _ov.get("dense_text", "")[:120]
+                                                ov_lines.append(f"- {_icon} [{_lvl.upper()}] {_desc}")
+                                            if any(_ov.get("level") == "conflict" for _ov in _overlaps):
+                                                ov_lines.append(
+                                                    "\n**CONFLICT detected** — another session is doing very similar work. "
+                                                    "Call list_peers() and check_messages() immediately. "
+                                                    "Coordinate before making changes to avoid duplicate/conflicting work.")
+                                            elif any(_ov.get("level") == "share" for _ov in _overlaps):
+                                                ov_lines.append(
+                                                    "\nRelated work detected — call search_memory() to learn from "
+                                                    "peer sessions and avoid duplicating effort.")
+                                            ov_lines.append("")
+                                            system_prompt_parts.append("\n".join(ov_lines))
+                                except Exception as _ov_exc:
+                                    logger.debug("Overlap detection skipped: %s", _ov_exc)
+
+                                # Context sharing prompt fragment
+                                system_prompt_parts.append(
+                                    "## Shared Context (W2W)\n\n"
+                                    "### MANDATORY: Before starting work\n"
+                                    "1. **search_memory(query)** — ALWAYS do this first. Searches ALL workspace "
+                                    "memory: past tasks with lessons, session digests, knowledge base, peer "
+                                    "messages, and file activity. Skipping this risks duplicating solved problems.\n"
+                                    "2. **check_messages()** — Read the peer bulletin board for warnings and updates.\n"
+                                    "3. **find_similar_tasks(query)** — Check if someone already solved this or a related problem.\n\n"
+                                    "### MANDATORY: Before editing any file\n"
+                                    "- **get_file_context(file_path)** — Check who else recently edited this file "
+                                    "and what they were working on. If another session touched it in the last "
+                                    "10 minutes, coordinate via post_message() before making changes.\n\n"
+                                    "### While working\n"
+                                    "- **update_digest(summary?, discoveries?, decisions?)** — Keep your digest current "
+                                    "so peers can see what you're doing. Update after each major step.\n"
+                                    "- **contribute_knowledge(category, content, scope?)** — Share codebase insights "
+                                    "(gotchas, conventions, patterns) that would help other sessions.\n"
+                                    "- **post_message(topic, content, priority, files?)** — Warn peers when your "
+                                    "changes affect shared interfaces, schemas, configs, or APIs.\n\n"
+                                    "### When completing a task\n"
+                                    "Always provide lessons_learned and important_notes in update_my_task(). "
+                                    "These are the most valuable knowledge artifacts — they help future sessions "
+                                    "avoid your mistakes and build on your discoveries.\n\n"
+                                    "Categories: architecture, convention, gotcha, pattern, api, setup"
+                                )
+
+                            if ws_flags and ws_flags["comms_enabled"]:
+                                system_prompt_parts.append(
+                                    "## Peer Communication (W2W)\n\n"
+                                    "You share this workspace with other active agent sessions. "
+                                    "You MUST coordinate to avoid conflicts:\n\n"
+                                    "- **post_message(topic, content, priority, files?)** — Alert peers about your changes.\n"
+                                    "  Use priority='blocking' + files=[...] when editing shared files.\n"
+                                    "- **check_messages()** — Check the bulletin board BEFORE starting each work phase.\n"
+                                    "- **list_peers()** — See who else is active and what they're working on.\n\n"
+                                    "**Rules:**\n"
+                                    "1. Before editing a shared file (config, schema, API, types), post a blocking "
+                                    "message with the file path so peers know to wait.\n"
+                                    "2. After finishing a batch of related edits, post an info message summarizing "
+                                    "what changed so peers can adapt.\n"
+                                    "3. If you receive a blocking warning about a file you need to edit, "
+                                    "coordinate with the peer before proceeding.\n\n"
+                                    "Priority levels: info (FYI), heads_up (peer notified at idle), "
+                                    "blocking (immediate — file is locked by peer)."
+                                )
+                        except Exception as w2w_exc:
+                            logger.warning("W2W injection skipped: %s", w2w_exc)
+
+                        # Write back the snapshot of which guidelines are NOW
+                        # in the system prompt. This column is the single source
+                        # of truth for "active in system prompt" vs "pending".
+                        await db_gl.execute(
+                            "UPDATE sessions SET active_guideline_ids = ? WHERE id = ?",
+                            (json.dumps(loaded_guideline_ids), session_id),
+                        )
+                        await db_gl.commit()
+                    finally:
+                        await db_gl.close()
+
+                    # Fetch attached MCP servers for dynamic config generation
+                    loaded_mcp_server_ids = []
+                    mcp_servers_for_session = []
+                    db_mcp = await get_db()
+                    try:
+                        cur_mcp = await db_mcp.execute(
+                            """SELECT ms.*, sms.auto_approve_override
+                               FROM mcp_servers ms
+                               JOIN session_mcp_servers sms ON ms.id = sms.mcp_server_id
+                               WHERE sms.session_id = ?""",
+                            (session_id,),
+                        )
+                        for row_mcp in await cur_mcp.fetchall():
+                            d = dict(row_mcp)
+                            d["args"] = json.loads(d["args"] or "[]")
+                            d["env"] = json.loads(d["env"] or "{}")
+                            mcp_servers_for_session.append(d)
+                            loaded_mcp_server_ids.append(d["id"])
+
+                        await db_mcp.execute(
+                            "UPDATE sessions SET active_mcp_server_ids = ? WHERE id = ?",
+                            (json.dumps(loaded_mcp_server_ids), session_id),
+                        )
+                        await db_mcp.commit()
+                    finally:
+                        await db_mcp.close()
+
+                    # Read AGENTS.md files from workspace directory hierarchy
+                    # Walks from workspace root upward, scoped down per subfolder
+                    ws_path = config.get("workspace_path", "")
+                    if ws_path:
+                        import os as _os
+                        agents_contents = []
+                        scan_dir = ws_path
+                        # Walk up from workspace dir to find AGENTS.md files
+                        for _ in range(10):  # Max 10 levels up
+                            agents_file = _os.path.join(scan_dir, "AGENTS.md")
+                            if _os.path.isfile(agents_file):
+                                try:
+                                    with open(agents_file, "r") as af:
+                                        content = af.read().strip()
+                                        if content:
+                                            agents_contents.append(f"# From {agents_file}\n{content}")
+                                except (OSError, IOError):
+                                    pass
+                            parent = _os.path.dirname(scan_dir)
+                            if parent == scan_dir:
+                                break
+                            scan_dir = parent
+                        if agents_contents:
+                            # Reverse so root-level comes first, workspace-specific last (overrides)
+                            agents_contents.reverse()
+                            system_prompt_parts.append("# AGENTS.md\n" + "\n\n".join(agents_contents))
+
+                    # ── Resolve output style (session → workspace → global) ──
+                    from output_styles import resolve_output_style, get_style_prompt
+                    _ws_style = config.get("ws_output_style")  # from workspace join
+                    if not _ws_style:
+                        # Fetch workspace output_style if not in config
+                        try:
+                            _ws_db = await get_db()
+                            _ws_cur = await _ws_db.execute(
+                                "SELECT output_style FROM workspaces WHERE id = ?",
+                                (config.get("workspace_id", ""),))
+                            _ws_row = await _ws_cur.fetchone()
+                            _ws_style = _ws_row["output_style"] if _ws_row else None
+                            await _ws_db.close()
+                        except Exception:
+                            _ws_style = None
+                    _global_style = None
+                    try:
+                        _gs_db = await get_db()
+                        _gs_cur = await _gs_db.execute(
+                            "SELECT value FROM app_settings WHERE key = 'output_style'")
+                        _gs_row = await _gs_cur.fetchone()
+                        _global_style = _gs_row["value"] if _gs_row else None
+                        await _gs_db.close()
+                    except Exception:
+                        pass
+                    effective_style = resolve_output_style(
+                        config.get("output_style"), _ws_style, _global_style)
+                    style_prompt = get_style_prompt(effective_style)
+                    if style_prompt:
+                        system_prompt_parts.append(style_prompt)
+
+                    # ── Build CLI command via UnifiedSession ─────────────────
+                    cli_type = config.get("cli_type", "claude")
+                    session_obj = UnifiedSession(cli_type, config)
+
+                    # Inject system prompt (guidelines, plugins, AGENTS.md, output style)
+                    # Gemini: DON'T use -i flag. After -i processes its turn, ANY subsequent
+                    # PTY write causes Gemini to exit (code 0) — confirmed by testing raw
+                    # bytes, Ctrl-U, bracketed paste, and plain text. The -i flag puts Gemini
+                    # in a state where the next input triggers a clean exit, regardless of
+                    # what bytes are sent. Instead, queue for injection as first user turn.
+                    _gemini_deferred_prompt = None
+                    if system_prompt_parts:
+                        combined_prompt = "\n\n".join(system_prompt_parts)
+                        if cli_type == "gemini":
+                            _gemini_deferred_prompt = combined_prompt
+                        else:
+                            session_obj.append_system_prompt(combined_prompt)
+
+                    # ── MCP servers: strategy-driven dispatch ──
+                    if mcp_servers_for_session:
+                        auto_approved_names = []
+                        for srv in mcp_servers_for_session:
+                            resolved_env = {}
+                            for ek, ev in srv["env"].items():
+                                resolved_env[ek] = (
+                                    str(ev)
+                                    .replace("{host}", HOST)
+                                    .replace("{port}", str(PORT))
+                                    .replace("{workspace_id}", config.get("workspace_id", ""))
+                                    .replace("{workspace_path}", config.get("workspace_path", ""))
+                                    .replace("{session_id}", session_id)
+                                )
+                            effective_approve = (
+                                srv["auto_approve_override"]
+                                if srv["auto_approve_override"] is not None
+                                else srv["auto_approve"]
+                            )
+                            if session_obj.profile.mcp_strategy == "mcp_add":
+                                # mcp_add strategy: register via subprocess
+                                ws_path = config.get("workspace_path", "")
+                                if ws_path:
+                                    try:
+                                        await _asyncio.create_subprocess_exec(
+                                            session_obj.profile.binary, "mcp", "remove", srv["server_name"],
+                                            "--scope", "project", cwd=ws_path,
+                                            stdout=_asyncio.subprocess.DEVNULL,
+                                            stderr=_asyncio.subprocess.DEVNULL,
+                                        )
+                                    except Exception:
+                                        pass
+                                    add_cmd = [
+                                        session_obj.profile.binary, "mcp", "add", srv["server_name"],
+                                        srv["command"], *srv["args"],
+                                        "--scope", "project",
+                                        "--transport", srv.get("server_type", "stdio"),
+                                    ]
+                                    if effective_approve:
+                                        add_cmd.append("--trust")
+                                    for ek, ev in resolved_env.items():
+                                        add_cmd.extend(["-e", f"{ek}={ev}"])
+                                    try:
+                                        proc = await _asyncio.create_subprocess_exec(
+                                            *add_cmd, cwd=ws_path,
+                                            stdout=_asyncio.subprocess.PIPE,
+                                            stderr=_asyncio.subprocess.PIPE,
+                                        )
+                                        await proc.communicate()
+                                    except Exception as e:
+                                        logger.warning(f"Failed to register MCP {srv['server_name']}: {e}")
+                            else:
+                                # config_file strategy: collect into JSON config
+                                if "_mcp_json" not in dir():
+                                    _mcp_json = {"mcpServers": {}}
+                                entry = {"command": srv["command"], "args": srv["args"]}
+                                if resolved_env:
+                                    entry["env"] = resolved_env
+                                _mcp_json["mcpServers"][srv["server_name"]] = entry
+                            if effective_approve:
+                                auto_approved_names.append(srv["server_name"])
+
+                        if session_obj.profile.mcp_strategy == "mcp_add":
+                            if auto_approved_names:
+                                session_obj.set(Feature.ALLOWED_MCP_SERVERS, auto_approved_names)
+                        else:
+                            # Write config file and set allowed tools
+                            MCP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                            mcp_cfg_path = MCP_CONFIG_DIR / f"session-{session_id}.json"
+                            mcp_cfg_path.write_text(json.dumps(_mcp_json, indent=2))
+                            session_obj.set(Feature.MCP_CONFIG_PATH, str(mcp_cfg_path))
+                            _raw_tools = session_obj.get(Feature.ALLOWED_TOOLS) or []
+                            existing_tools = json.loads(_raw_tools) if isinstance(_raw_tools, str) else list(_raw_tools)
+                            for sname in auto_approved_names:
+                                existing_tools.append(f"mcp__{sname}__*")
+                            if existing_tools:
+                                session_obj.set(Feature.ALLOWED_TOOLS, existing_tools)
+                    elif config.get("session_type") == "commander" and session_obj.profile.mcp_strategy == "mcp_add":
+                        session_obj.set(Feature.ALLOWED_MCP_SERVERS, ["commander"])
+                    elif config.get("mcp_config"):
+                        # Legacy fallback: session has old mcp_config file path
+                        session_obj.set(Feature.MCP_CONFIG_PATH, config["mcp_config"])
+                        is_commander = config.get("session_type") == "commander"
+                        if (is_commander or config.get("auto_approve_mcp")) and config.get("mcp_config"):
+                            try:
+                                mcp_path = _Path(config["mcp_config"])
+                                if mcp_path.exists():
+                                    mcp_data = json.loads(mcp_path.read_text())
+                                    _raw_tools = session_obj.get(Feature.ALLOWED_TOOLS) or []
+                                    existing_tools = json.loads(_raw_tools) if isinstance(_raw_tools, str) else list(_raw_tools)
+                                    for server_name in mcp_data.get("mcpServers", {}):
+                                        from mcp_server import TOOLS as _MCP_TOOLS
+                                        for tool_name in _MCP_TOOLS:
+                                            existing_tools.append(f"mcp__{server_name}__{tool_name}")
+                                    if existing_tools:
+                                        session_obj.set(Feature.ALLOWED_TOOLS, existing_tools)
+                            except Exception as e:
+                                logger.warning(f"Failed to resolve legacy MCP tools: {e}")
+
+                    # ── Resume: resolve native session ID ──
+                    native_sid = config.get("native_session_id")
+                    if native_sid:
+                        if session_obj.profile.mcp_strategy == "mcp_add":
+                            # Gemini: resolve filename stem to session index
+                            resume_arg = _resolve_gemini_resume_index(config["workspace_path"], native_sid)
+                            if resume_arg:
+                                session_obj.set(Feature.RESUME_ID, resume_arg)
+                            else:
+                                logger.info(f"Session {session_id[:8]}: resume target not found, starting fresh")
+                        else:
+                            session_obj.set(Feature.RESUME_ID, native_sid)
+
+                    # Build final command
+                    cmd = session_obj.build_command()
+                    cmd_binary = cmd[0]
+                    cmd_args = cmd[1:]
+
+                    # Inject account auth — API key or OAuth HOME sandbox
+                    extra_env = {}
+                    if config.get("account_id"):
+                        from account_sandbox import get_sandbox_home
+                        db_acc = await get_db()
+                        try:
+                            cur_acc = await db_acc.execute(
+                                "SELECT * FROM accounts WHERE id = ?",
+                                (config["account_id"],),
+                            )
+                            acc_row = await cur_acc.fetchone()
+                            if acc_row:
+                                acc = dict(acc_row)
+                                if acc.get("api_key"):
+                                    # API key mode
+                                    extra_env["ANTHROPIC_API_KEY"] = acc["api_key"]
+                                elif acc.get("type") == "oauth":
+                                    # OAuth sandbox mode — override HOME
+                                    sandbox_home = get_sandbox_home(acc["id"])
+                                    if sandbox_home:
+                                        extra_env["HOME"] = sandbox_home
+                                        logger.info(f"Session {session_id} using sandboxed HOME: {sandbox_home}")
+                        finally:
+                            await db_acc.close()
+
+                    # Inject hook relay env vars so the CLI hook script
+                    # can POST lifecycle events back to Commander.
+                    extra_env["COMMANDER_SESSION_ID"] = session_id
+                    extra_env["COMMANDER_API_URL"] = f"http://{HOST}:{PORT}"
+                    extra_env["COMMANDER_WORKSPACE_ID"] = config.get("workspace_id", "")
+
+                    # Myelin coordination: when the experimental flag is on,
+                    # inject agent identity + DB path so the coordination
+                    # hooks can track this session in the shared workspace.
+                    # The namespace defaults to per-workspace but can be
+                    # overridden via workspaces.coordination_namespace so
+                    # multiple workspaces (e.g. monorepo, shared libs) can
+                    # share a coordination scope.
+                    try:
+                        db_exp2 = await get_db()
+                        try:
+                            cur_exp2 = await db_exp2.execute(
+                                "SELECT value FROM app_settings WHERE key = ?",
+                                ("experimental_myelin_coordination",),
+                            )
+                            exp2_row = await cur_exp2.fetchone()
+                            if exp2_row and exp2_row["value"] == "on":
+                                extra_env["MYELIN_AGENT_ID"] = f"commander_{session_id[:12]}"
+                                extra_env["MYELIN_DB_PATH"] = os.path.expanduser("~/.myelin/coord.db")
+                                # Check for workspace-level namespace override
+                                ws_id_for_ns = config.get("workspace_id", "default")
+                                cur_ns = await db_exp2.execute(
+                                    "SELECT coordination_namespace FROM workspaces WHERE id = ?",
+                                    (ws_id_for_ns,),
+                                )
+                                ns_row = await cur_ns.fetchone()
+                                custom_ns = (ns_row["coordination_namespace"] if ns_row and ns_row["coordination_namespace"] else None)
+                                extra_env["MYELIN_NAMESPACE"] = custom_ns or f"commander:{ws_id_for_ns}"
+                        finally:
+                            await db_exp2.close()
+                    except Exception:
+                        pass  # non-fatal
+
+                    try:
+                        # Snapshot existing session files BEFORE starting PTY (for resume detection)
+                        pre_files = None
+                        if not config.get("native_session_id"):
+                            pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"])
+                        await pty_mgr.start_session(
+                            session_id, config["workspace_path"], cols, rows, cmd_args, extra_env, cmd_binary
+                        )
+                        await broadcast({"session_id": session_id, "type": "status", "status": "running"})
+
+                        # Gemini deferred system prompt: inject as first user turn after ready.
+                        # See comment above — -i flag causes exit on any subsequent PTY write.
+                        if _gemini_deferred_prompt:
+                            async def _inject_gemini_prompt(sid, prompt_text):
+                                try:
+                                    # Wait for Gemini TUI to be ready (detected in handle_pty_output)
+                                    for _ in range(60):
+                                        await _asyncio.sleep(1)
+                                        if not pty_mgr.is_alive(sid):
+                                            return
+                                        if sid in _gemini_ready:
+                                            break
+                                    await _asyncio.sleep(3)
+                                    if not pty_mgr.is_alive(sid):
+                                        return
+                                    # Write in chunks to avoid PTY buffer overflow (EAGAIN).
+                                    # macOS PTY buffer is ~4096 bytes; our prompt can be 3000+.
+                                    msg = prompt_text.encode("utf-8")
+                                    pty_mgr.write(sid, b"\x1b[200~")  # bracketed paste start
+                                    chunk_size = 2048
+                                    for i in range(0, len(msg), chunk_size):
+                                        pty_mgr.write(sid, msg[i:i+chunk_size])
+                                        await _asyncio.sleep(0.05)
+                                    pty_mgr.write(sid, b"\x1b[201~")  # bracketed paste end
+                                    await _asyncio.sleep(0.3)
+                                    pty_mgr.write(sid, b"\r")
+                                    logger.info("Gemini deferred prompt injected for session %s (%d chars)", sid[:8], len(prompt_text))
+                                except Exception as e:
+                                    logger.warning("Gemini deferred prompt failed: %s", e)
+                            _asyncio.ensure_future(_inject_gemini_prompt(session_id, _gemini_deferred_prompt))
+
+                        # Session Advisor: track workspace mapping + seed intent with purpose
+                        if config.get("workspace_id"):
+                            _session_workspace[session_id] = config["workspace_id"]
+                        try:
+                            from session_advisor import update_intent
+                            purpose = config.get("purpose")
+                            if purpose:
+                                _fire_and_forget(update_intent(
+                                    session_id, purpose, source="purpose",
+                                    workspace_id=config.get("workspace_id"),
+                                    broadcast_fn=broadcast,
+                                ))
+                        except Exception:
+                            pass
+                        # Detect this session's specific conversation file for resume
+                        if not config.get("native_session_id"):
+                            _schedule_session_detection(cli_type, session_id, config["workspace_path"], pre_files)
+                    except Exception as e:
+                        logger.exception(f"Failed to start PTY for {session_id}")
+                        await ws.send_json({
+                            "session_id": session_id,
+                            "type": "error",
+                            "message": str(e),
+                        })
+
+                elif action == "input":
+                    session_id = data.get("session_id")
+                    input_data = data.get("data", "")
+                    if session_id and input_data:
+                        # Check for @prompt: token expansion on Enter.
+                        # Wrapped in try/except so any bug degrades to the
+                        # normal passthrough — never blocks terminal input.
+                        expansion = None
+                        try:
+                            expansion = await _maybe_expand_input(session_id, input_data)
+                        except Exception as _exp_err:
+                            logger.warning("Token expansion failed: %s", _exp_err)
+                        if expansion is not None:
+                            pty_mgr.write(session_id, expansion)
+                        else:
+                            pty_mgr.write(session_id, input_data.encode("utf-8"))
+                            _track_input(session_id, input_data)
+                        # Detect /rename command → re-scan session for updated slug
+                        if "/rename" in input_data:
+                            cfg = await get_session_config(session_id)
+                            if cfg:
+                                _asyncio.ensure_future(detect_claude_session(session_id, cfg["workspace_path"], force_rename=True))
+
+                elif action == "replay_turns":
+                    session_id = data.get("session_id")
+                    turns = data.get("turns", [])
+                    if session_id and turns:
+                        asyncio.create_task(_replay_turns(session_id, turns))
+
+                elif action == "resize":
+                    session_id = data.get("session_id")
+                    cols = data.get("cols", 120)
+                    rows = data.get("rows", 40)
+                    if session_id:
+                        pty_mgr.resize(session_id, cols, rows)
+
+                elif action == "broadcast":
+                    session_ids = data.get("session_ids", [])
+                    input_data = data.get("data", "")
+                    source_session_id = data.get("source_session_id")
+                    if session_ids and input_data:
+                        encoded = input_data.encode("utf-8")
+                        for sid in session_ids:
+                            pty_mgr.write(sid, encoded)
+                        # If a commander session broadcasts to workers, adopt them
+                        if source_session_id:
+                            asyncio.create_task(
+                                _adopt_sessions(source_session_id, session_ids)
+                            )
+
+                elif action == "stop":
+                    session_id = data.get("session_id")
+                    if session_id:
+                        await pty_mgr.stop_session(session_id)
+
+                # ── Live Preview (Playwright browser) ──────────────
+                elif action == "preview_start":
+                    url = data.get("url", "").strip()
+                    if not url:
+                        continue
+                    if not url.startswith(("http://", "https://")):
+                        url = "https://" + url
+                    pw = data.get("width", 1280)
+                    ph = data.get("height", 720)
+                    try:
+                        import preview_browser
+
+                        async def _send_frame(b64, _ws=ws):
+                            try:
+                                await _ws.send_json({"type": "preview_frame", "data": b64})
+                            except Exception:
+                                pass
+
+                        async def _send_nav(new_url, _ws=ws):
+                            try:
+                                await _ws.send_json({"type": "preview_navigated", "url": new_url})
+                            except Exception:
+                                pass
+
+                        pid = await preview_browser.start_preview(
+                            url, pw, ph,
+                            on_frame=_send_frame,
+                            on_navigate=_send_nav,
+                        )
+                        await ws.send_json({"type": "preview_started", "preview_id": pid, "url": url})
+                    except Exception as e:
+                        logger.warning("Preview start failed: %s", e)
+                        await ws.send_json({"type": "preview_error", "error": str(e)})
+
+                elif action == "preview_input":
+                    pid = data.get("preview_id")
+                    evt = data.get("event")
+                    if pid and evt:
+                        import preview_browser
+                        await preview_browser.send_input(pid, evt)
+
+                elif action == "preview_navigate":
+                    pid = data.get("preview_id")
+                    url = data.get("url", "").strip()
+                    if pid and url:
+                        if not url.startswith(("http://", "https://")):
+                            url = "https://" + url
+                        import preview_browser
+                        await preview_browser.navigate(pid, url)
+
+                elif action == "preview_resize":
+                    pid = data.get("preview_id")
+                    pw = data.get("width", 1280)
+                    ph = data.get("height", 720)
+                    if pid:
+                        import preview_browser
+                        await preview_browser.resize(pid, pw, ph)
+
+                elif action == "preview_screenshot":
+                    pid = data.get("preview_id")
+                    if pid:
+                        import preview_browser
+                        png = await preview_browser.screenshot_png(pid)
+                        if png:
+                            import base64
+                            await ws.send_json({
+                                "type": "preview_screenshot",
+                                "preview_id": pid,
+                                "data": base64.b64encode(png).decode(),
+                            })
+
+                elif action == "preview_stop":
+                    pid = data.get("preview_id")
+                    if pid:
+                        import preview_browser
+                        await preview_browser.stop_preview(pid)
+
+            elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
+                break
+    finally:
+        ws_clients.discard(ws)
+        logger.info(f"WebSocket disconnected ({len(ws_clients)} total)")
+
+    return ws
+
+
+# ─── REST: Workspaces ────────────────────────────────────────────────────
+
+async def list_workspaces(request: web.Request) -> web.Response:
+    db = await get_db()
+    try:
+        # Sort by user-defined order first (order_index, ascending), then by last_used_at as a tiebreaker.
+        # Workspaces that have never been reordered have order_index = 0 and fall back to recency.
+        cur = await db.execute(
+            "SELECT * FROM workspaces ORDER BY order_index ASC, last_used_at DESC NULLS LAST"
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def reorder_workspaces(request: web.Request) -> web.Response:
+    body = await request.json()
+    ids = body.get("ids") or []
+    if not isinstance(ids, list):
+        return web.json_response({"error": "ids must be a list"}, status=400)
+    db = await get_db()
+    try:
+        # Order indices are 1-based and densely packed by the order in `ids`.
+        for idx, wid in enumerate(ids, start=1):
+            await db.execute("UPDATE workspaces SET order_index = ? WHERE id = ?", (idx, wid))
+        await db.commit()
+        return web.json_response({"ok": True, "count": len(ids)})
+    finally:
+        await db.close()
+
+
+async def browse_folder(request: web.Request) -> web.Response:
+    """POST /api/browse-folder — open native OS folder picker and return selected path."""
+    import asyncio
+    import sys
+
+    if sys.platform == "darwin":
+        cmd = [
+            "osascript", "-e",
+            'set f to POSIX path of (choose folder with prompt "Select project folder")',
+        ]
+    elif sys.platform == "linux":
+        cmd = ["zenity", "--file-selection", "--directory", "--title=Select project folder"]
+    else:
+        return web.json_response({"error": "unsupported platform"}, status=400)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return web.json_response({"error": "cancelled"}, status=400)
+        path = stdout.decode().strip().rstrip("/")
+        return web.json_response({"path": path})
+    except FileNotFoundError:
+        return web.json_response({"error": "folder picker not available"}, status=500)
+
+
+async def create_workspace(request: web.Request) -> web.Response:
+    body = await request.json()
+    path = body.get("path", "").strip()
+    name = body.get("name", "").strip() or path.rstrip("/").split("/")[-1]
+    if not path:
+        return web.json_response({"error": "path required"}, status=400)
+
+    import os
+    expanded = os.path.expanduser(path)
+    if not os.path.isdir(expanded):
+        return web.json_response({"error": f"directory not found: {path}"}, status=400)
+    path = os.path.abspath(expanded)
+    name = name or path.rstrip("/").split("/")[-1]
+
+    ws_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR IGNORE INTO workspaces (id, name, path) VALUES (?, ?, ?)",
+            (ws_id, name, path),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM workspaces WHERE path = ?", (path,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def update_workspace(request: web.Request) -> web.Response:
+    ws_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        allowed = ("name", "human_oversight", "tester_mode", "research_model", "research_llm_url", "color", "preview_url", "coordination_namespace", "default_worktree",
+                   "comms_enabled", "coordination_enabled", "context_sharing_enabled", "output_style",
+                   "knowledge_context_limit", "native_terminals_enabled", "auto_register_terminals",
+                   "auto_exec_enabled", "commander_max_workers", "tester_max_workers",
+                   "research_max_iterations", "pipeline_enabled",
+                   "task_dependencies_enabled")
+        fields, values = [], []
+        for key in allowed:
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        if not fields:
+            return web.json_response({"error": "no fields"}, status=400)
+        values.append(ws_id)
+        await db.execute(f"UPDATE workspaces SET {', '.join(fields)} WHERE id = ?", values)
+        await db.commit()
+
+        # Bust W2W flag cache when workspace toggles change
+        if any(k in body for k in ("comms_enabled", "coordination_enabled", "context_sharing_enabled")):
+            try:
+                from hooks import invalidate_w2w_cache
+                invalidate_w2w_cache()  # clear all — workspace change affects all sessions
+            except Exception:
+                pass
+
+        cur = await db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+async def delete_workspace(request: web.Request) -> web.Response:
+    ws_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM workspaces WHERE id = ?", (ws_id,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+# ─── REST: Sessions ──────────────────────────────────────────────────────
+
+async def list_sessions(request: web.Request) -> web.Response:
+    workspace_id = request.query.get("workspace")
+    db = await get_db()
+    try:
+        # Sort by user-defined order first; recency is the tiebreaker for sessions that have
+        # never been reordered (order_index = 0).
+        if workspace_id:
+            cur = await db.execute(
+                "SELECT * FROM sessions WHERE workspace_id = ? "
+                "ORDER BY order_index ASC, last_active_at DESC NULLS LAST",
+                (workspace_id,),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT * FROM sessions ORDER BY order_index ASC, last_active_at DESC NULLS LAST"
+            )
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+            # Parse tags from JSON string
+            try:
+                d["tags"] = json.loads(d.get("tags") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                d["tags"] = []
+            result.append(d)
+        return web.json_response(result)
+    finally:
+        await db.close()
+
+
+async def reorder_sessions(request: web.Request) -> web.Response:
+    """Reorder sessions within a workspace.
+
+    Body: { "workspace_id": "...", "ids": ["sess1", "sess2", ...] }
+    """
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    ids = body.get("ids") or []
+    if not workspace_id or not isinstance(ids, list):
+        return web.json_response({"error": "workspace_id and ids list required"}, status=400)
+    db = await get_db()
+    try:
+        for idx, sid in enumerate(ids, start=1):
+            await db.execute(
+                "UPDATE sessions SET order_index = ? WHERE id = ? AND workspace_id = ?",
+                (idx, sid, workspace_id),
+            )
+        await db.commit()
+        return web.json_response({"ok": True, "count": len(ids)})
+    finally:
+        await db.close()
+
+
+async def create_session(request: web.Request) -> web.Response:
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        return web.json_response({"error": "workspace_id required"}, status=400)
+
+    session_id = str(uuid.uuid4())
+    cli_type = body.get("cli_type", "claude")
+    name = body.get("name", "").strip() or f"Session {session_id[:8]}"
+    model = body.get("model", get_profile(cli_type).default_model)
+    permission_mode = body.get("permission_mode", "auto")
+    effort = body.get("effort", "high")
+    system_prompt = body.get("system_prompt", "")
+    plan_model = body.get("plan_model")
+    execute_model = body.get("execute_model")
+    auto_approve_plan = 1 if body.get("auto_approve_plan") else 0
+    purpose = body.get("purpose", "").strip() or None
+
+    # Inherit worktree default from workspace if not explicitly set
+    worktree = body.get("worktree")
+    if worktree is None:
+        # Look up workspace default
+        tmp_db = await get_db()
+        try:
+            cur = await tmp_db.execute("SELECT default_worktree FROM workspaces WHERE id = ?", (workspace_id,))
+            ws_row = await cur.fetchone()
+            worktree = 1 if (ws_row and ws_row["default_worktree"]) else 0
+        finally:
+            await tmp_db.close()
+    else:
+        worktree = 1 if worktree else 0
+
+    db = await get_db()
+    try:
+        session_type = body.get("session_type", "worker")
+        await db.execute(
+            """INSERT INTO sessions (id, workspace_id, name, model, permission_mode, effort, system_prompt, cli_type, plan_model, execute_model, auto_approve_plan, worktree, purpose, session_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, workspace_id, name, model, permission_mode, effort, system_prompt or None, cli_type, plan_model, execute_model, auto_approve_plan, worktree, purpose, session_type),
+        )
+        await db.commit()
+
+        # Auto-attach MCP servers based on session type
+        if session_type == "commander":
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (session_id, "builtin-commander"),
+            )
+            await db.commit()
+        elif session_type == "test_worker":
+            # Test workers get Playwright MCP for browser automation
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (session_id, "builtin-playwright"),
+            )
+            # Also attach testing-agent guideline
+            await db.execute(
+                "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                (session_id, "builtin-testing-agent"),
+            )
+            # Store session_type so it's visible in listings
+            await db.execute(
+                "UPDATE sessions SET session_type = 'test_worker' WHERE id = ?",
+                (session_id,),
+            )
+            await db.commit()
+
+        # Auto-attach worker-board MCP and assign task when task_id is provided
+        task_id = body.get("task_id")
+        if task_id and session_type != "commander":
+            # Attach the worker-board MCP server
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (session_id, "builtin-worker-board"),
+            )
+            # Assign the task to this session
+            await db.execute(
+                "UPDATE tasks SET assigned_session_id = ?, updated_at = datetime('now') WHERE id = ?",
+                (session_id, task_id),
+            )
+            # Set pipeline_stage to 'implementing' for pipeline tasks
+            await db.execute(
+                "UPDATE tasks SET pipeline_stage = 'implementing' WHERE id = ? AND pipeline = 1 AND (pipeline_stage IS NULL OR pipeline_stage = '')",
+                (task_id,),
+            )
+            await db.execute(
+                """INSERT INTO task_events (task_id, event_type, actor, old_value, new_value, message)
+                   VALUES (?, 'assigned_session_id_changed', 'commander', NULL, ?, ?)""",
+                (task_id, session_id, f"Task assigned to worker session {name}"),
+            )
+            await db.commit()
+
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        result = dict(row)
+
+        # Notify all clients about the new session
+        await broadcast({"type": "session_created", "session": result})
+
+        # Auto-start PTY if requested (e.g., from MCP create_session)
+        if body.get("auto_start", False):
+            config = await get_session_config(session_id)
+            if config:
+                auto_sess = UnifiedSession(cli_type, {
+                    "model": model,
+                    "permission_mode": permission_mode,
+                    "effort": effort,
+                })
+                if system_prompt:
+                    auto_sess.append_system_prompt(system_prompt)
+
+                # Resolve attached MCP servers (config_file strategy only for auto-start)
+                if auto_sess.profile.mcp_strategy == "config_file":
+                    db_mcp = await get_db()
+                    try:
+                        cur_mcp = await db_mcp.execute(
+                            """SELECT ms.*, sms.auto_approve_override
+                               FROM mcp_servers ms
+                               JOIN session_mcp_servers sms ON ms.id = sms.mcp_server_id
+                               WHERE sms.session_id = ?""",
+                            (session_id,),
+                        )
+                        mcp_rows = await cur_mcp.fetchall()
+                        if mcp_rows:
+                            mcp_json = {"mcpServers": {}}
+                            auto_approved_names = []
+                            for row_mcp in mcp_rows:
+                                srv = dict(row_mcp)
+                                srv_args = json.loads(srv["args"] or "[]")
+                                srv_env = json.loads(srv["env"] or "{}")
+                                resolved_env = {}
+                                for ek, ev in srv_env.items():
+                                    resolved_env[ek] = (
+                                        str(ev)
+                                        .replace("{host}", HOST)
+                                        .replace("{port}", str(PORT))
+                                        .replace("{workspace_id}", config.get("workspace_id", ""))
+                                        .replace("{session_id}", session_id)
+                                    )
+                                entry = {"command": srv["command"], "args": srv_args}
+                                if resolved_env:
+                                    entry["env"] = resolved_env
+                                mcp_json["mcpServers"][srv["server_name"]] = entry
+                                effective_approve = (
+                                    srv["auto_approve_override"]
+                                    if srv["auto_approve_override"] is not None
+                                    else srv["auto_approve"]
+                                )
+                                if effective_approve:
+                                    auto_approved_names.append(srv["server_name"])
+                            MCP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                            mcp_cfg_path = MCP_CONFIG_DIR / f"session-{session_id}.json"
+                            mcp_cfg_path.write_text(json.dumps(mcp_json, indent=2))
+                            auto_sess.set(Feature.MCP_CONFIG_PATH, str(mcp_cfg_path))
+                            existing_tools = []
+                            for sname in auto_approved_names:
+                                existing_tools.append(f"mcp__{sname}__*")
+                            if existing_tools:
+                                auto_sess.set(Feature.ALLOWED_TOOLS, existing_tools)
+                    finally:
+                        await db_mcp.close()
+
+                cmd = auto_sess.build_command()
+                try:
+                    pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"])
+                    await pty_mgr.start_session(session_id, config["workspace_path"], 120, 40, cmd[1:], cmd_binary=cmd[0])
+                    await broadcast({"session_id": session_id, "type": "status", "status": "running"})
+                    _schedule_session_detection(cli_type, session_id, config["workspace_path"], pre_files)
+                except Exception as e:
+                    logger.warning(f"Auto-start PTY failed for {session_id}: {e}")
+
+    finally:
+        await db.close()
+
+    await bus.emit(CommanderEvent.SESSION_SPAWNED, {
+        "session_id": session_id,
+        "workspace_id": result.get("workspace_id"),
+        "name": result.get("name"),
+        "cli_type": result.get("cli_type"),
+        "model": result.get("model"),
+        "session_type": result.get("session_type"),
+    }, source="api", actor="user")
+    return web.json_response(result, status=201)
+
+
+async def delete_session(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    await pty_mgr.stop_session(session_id)
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT workspace_id, name FROM sessions WHERE id = ?", (session_id,)
+        )
+        row = await cur.fetchone()
+        session_meta = dict(row) if row else {}
+        await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+    await bus.emit(CommanderEvent.SESSION_DELETED, {
+        "session_id": session_id,
+        "workspace_id": session_meta.get("workspace_id"),
+        "name": session_meta.get("name"),
+    }, source="api", actor="user")
+    return web.json_response({"ok": True})
+
+
+# ─── REST: Messages ──────────────────────────────────────────────────────
+
+async def list_messages(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+# ─── REST: Prompts ────────────────────────────────────────────────────────
+
+async def list_prompts(request: web.Request) -> web.Response:
+    category = request.query.get("category")
+    quickaction = request.query.get("quickaction")
+    db = await get_db()
+    try:
+        if quickaction == "1":
+            cur = await db.execute(
+                "SELECT * FROM prompts WHERE is_quickaction = 1 ORDER BY quickaction_order ASC, usage_count DESC"
+            )
+        elif category:
+            cur = await db.execute(
+                "SELECT * FROM prompts WHERE category = ? ORDER BY pinned DESC, usage_count DESC",
+                (category,),
+            )
+        else:
+            cur = await db.execute("SELECT * FROM prompts ORDER BY pinned DESC, usage_count DESC")
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_prompt(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = body.get("name", "").strip()
+    content = body.get("content", "").strip()
+    if not name or not content:
+        return web.json_response({"error": "name and content required"}, status=400)
+
+    prompt_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO prompts (id, name, category, content, variables, tags,
+               is_quickaction, quickaction_order, icon, color, source_type, source_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (prompt_id, name, body.get("category", "General"),
+             content, body.get("variables", ""), body.get("tags", ""),
+             body.get("is_quickaction", 0), body.get("quickaction_order", 0),
+             body.get("icon"), body.get("color"), body.get("source_type"), body.get("source_url")),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM prompts WHERE id = ?", (prompt_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def update_prompt(request: web.Request) -> web.Response:
+    prompt_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        fields, values = [], []
+        for key in ("name", "content", "category", "variables", "tags", "pinned",
+                    "is_quickaction", "quickaction_order", "icon", "color"):
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        if not fields:
+            return web.json_response({"error": "no fields to update"}, status=400)
+        fields.append("updated_at = datetime('now')")
+        values.append(prompt_id)
+        await db.execute(f"UPDATE prompts SET {', '.join(fields)} WHERE id = ?", values)
+        await db.commit()
+        cur = await db.execute("SELECT * FROM prompts WHERE id = ?", (prompt_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+async def delete_prompt(request: web.Request) -> web.Response:
+    prompt_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM prompts WHERE id = ?", (prompt_id,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def use_prompt(request: web.Request) -> web.Response:
+    """Increment usage count and return the prompt."""
+    prompt_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE prompts SET usage_count = usage_count + 1 WHERE id = ?",
+            (prompt_id,),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM prompts WHERE id = ?", (prompt_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+async def reorder_quickactions(request: web.Request) -> web.Response:
+    """Set quickaction_order for a list of prompt IDs."""
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not ids:
+        return web.json_response({"error": "ids required"}, status=400)
+    db = await get_db()
+    try:
+        for idx, pid in enumerate(ids):
+            await db.execute(
+                "UPDATE prompts SET quickaction_order = ? WHERE id = ?",
+                (idx, pid),
+            )
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+# ─── REST: Guidelines ─────────────────────────────────────────────────────
+
+async def list_guidelines(request: web.Request) -> web.Response:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM guidelines ORDER BY is_default DESC, name")
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_guideline(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = body.get("name", "").strip()
+    content = body.get("content", "").strip()
+    if not name or not content:
+        return web.json_response({"error": "name and content required"}, status=400)
+
+    gid = str(uuid.uuid4())
+    when_to_use = body.get("when_to_use", "").strip() or None
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO guidelines (id, name, content, is_default, when_to_use) VALUES (?, ?, ?, ?, ?)",
+            (gid, name, content, 1 if body.get("is_default") else 0, when_to_use),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM guidelines WHERE id = ?", (gid,))
+        row = await cur.fetchone()
+        result = dict(row)
+        # Session Advisor: embed guideline for recommendation
+        try:
+            from embedder import embed_guideline
+            _fire_and_forget(embed_guideline(result))
+        except Exception:
+            pass
+        return web.json_response(result, status=201)
+    finally:
+        await db.close()
+
+
+async def update_guideline(request: web.Request) -> web.Response:
+    gid = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        fields, values = [], []
+        for key in ("name", "content", "is_default", "when_to_use"):
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        if not fields:
+            return web.json_response({"error": "no fields to update"}, status=400)
+        fields.append("updated_at = datetime('now')")
+        values.append(gid)
+        await db.execute(f"UPDATE guidelines SET {', '.join(fields)} WHERE id = ?", values)
+        await db.commit()
+        cur = await db.execute("SELECT * FROM guidelines WHERE id = ?", (gid,))
+        row = await cur.fetchone()
+        result = dict(row)
+        # Session Advisor: re-embed guideline
+        try:
+            from embedder import embed_guideline
+            _fire_and_forget(embed_guideline(result))
+        except Exception:
+            pass
+        return web.json_response(result)
+    finally:
+        await db.close()
+
+
+async def delete_guideline(request: web.Request) -> web.Response:
+    gid = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT is_builtin FROM guidelines WHERE id = ?", (gid,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        if row["is_builtin"]:
+            return web.json_response(
+                {"error": "Cannot delete built-in guideline. You can edit it instead."},
+                status=403,
+            )
+        await db.execute("DELETE FROM guidelines WHERE id = ?", (gid,))
+        await db.commit()
+        # Session Advisor: remove embedding
+        try:
+            from embedder import remove_guideline_embedding
+            _fire_and_forget(remove_guideline_embedding(gid))
+        except Exception:
+            pass
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def get_session_guidelines(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT g.* FROM guidelines g
+               JOIN session_guidelines sg ON g.id = sg.guideline_id
+               WHERE sg.session_id = ?""",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        guidelines = [dict(r) for r in rows]
+
+        # Also return which guidelines are ACTUALLY in the running system
+        # prompt (set at PTY start). The GuidelinePanel uses this to show
+        # accurate "active" vs "pending" vs "still cached" labels.
+        cur2 = await db.execute(
+            "SELECT active_guideline_ids FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        session_row = await cur2.fetchone()
+        active_ids = []
+        if session_row and session_row["active_guideline_ids"]:
+            try:
+                active_ids = json.loads(session_row["active_guideline_ids"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return web.json_response({
+            "guidelines": guidelines,
+            "active_guideline_ids": active_ids,
+        })
+    finally:
+        await db.close()
+
+
+async def set_session_guidelines(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    body = await request.json()
+    guideline_ids = body.get("guideline_ids", [])
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM session_guidelines WHERE session_id = ?", (session_id,))
+        for gid in guideline_ids:
+            await db.execute(
+                "INSERT INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                (session_id, gid),
+            )
+        await db.commit()
+        return web.json_response({"ok": True, "count": len(guideline_ids)})
+    finally:
+        await db.close()
+
+
+# ─── REST: Session Advisor ─────────────────────────────────────────────────
+
+
+async def recommend_session_guidelines(request: web.Request) -> web.Response:
+    """GET /api/sessions/{id}/recommend-guidelines — advisor recommendations."""
+    session_id = request.match_info["id"]
+    limit = int(request.query.get("limit", "5"))
+    min_confidence = float(request.query.get("min_confidence", "0.3"))
+
+    # Get intent from accumulator, or build from session digest/purpose
+    from session_advisor import get_intent_text, recommend_guidelines as _recommend
+    intent = await get_intent_text(session_id)
+
+    if not intent:
+        # Fallback: try session purpose or digest
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                "SELECT purpose, workspace_id FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = await cur.fetchone()
+            if row:
+                intent = row["purpose"] or ""
+                workspace_id = row["workspace_id"]
+            else:
+                return web.json_response({"recommendations": [], "task_text": ""})
+
+            if not intent:
+                # Try digest
+                cur2 = await db.execute(
+                    "SELECT task_summary, current_focus FROM session_digests WHERE session_id = ?",
+                    (session_id,),
+                )
+                digest_row = await cur2.fetchone()
+                if digest_row:
+                    parts = []
+                    if digest_row["task_summary"]:
+                        parts.append(digest_row["task_summary"])
+                    if digest_row["current_focus"]:
+                        parts.append(digest_row["current_focus"])
+                    intent = " | ".join(parts)
+        finally:
+            await db.close()
+    else:
+        db = await get_db()
+        try:
+            cur = await db.execute("SELECT workspace_id FROM sessions WHERE id = ?", (session_id,))
+            row = await cur.fetchone()
+            workspace_id = row["workspace_id"] if row else None
+        finally:
+            await db.close()
+
+    if not intent:
+        return web.json_response({"recommendations": [], "task_text": ""})
+
+    # Get currently attached + dismissed guideline IDs to exclude
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT guideline_id FROM session_guidelines WHERE session_id = ?",
+            (session_id,),
+        )
+        attached = {row["guideline_id"] for row in await cur.fetchall()}
+    finally:
+        await db.close()
+
+    # Also exclude dismissed recommendations from intent buffer
+    from session_advisor import _intent_buffers, MIN_SCORE_EARLY, MIN_SCORE_NORMAL
+    dismissed = set()
+    buf = _intent_buffers.get(session_id)
+    if buf:
+        dismissed = buf._dismissed
+
+    # Dynamic min_score: strict early, relaxes with context
+    if buf and len(buf.user_messages) >= 3:
+        effective_min_score = max(min_confidence, MIN_SCORE_NORMAL)
+    else:
+        effective_min_score = max(min_confidence, MIN_SCORE_EARLY)
+
+    recs = await _recommend(
+        intent, workspace_id=workspace_id, session_id=session_id,
+        excluded=attached | dismissed, limit=limit, min_score=effective_min_score,
+    )
+
+    return web.json_response({"recommendations": recs, "task_text": intent[:200]})
+
+
+async def get_guideline_effectiveness(request: web.Request) -> web.Response:
+    """GET /api/guidelines/effectiveness — effectiveness leaderboard."""
+    workspace_id = request.query.get("workspace_id")
+
+    db = await get_db()
+    try:
+        if workspace_id:
+            cur = await db.execute(
+                """SELECT ge.*, g.name as guideline_name
+                   FROM guideline_effectiveness ge
+                   JOIN guidelines g ON ge.guideline_id = g.id
+                   WHERE ge.workspace_id = ?
+                   ORDER BY ge.avg_quality DESC""",
+                (workspace_id,),
+            )
+        else:
+            cur = await db.execute(
+                """SELECT ge.*, g.name as guideline_name
+                   FROM guideline_effectiveness ge
+                   JOIN guidelines g ON ge.guideline_id = g.id
+                   ORDER BY ge.avg_quality DESC""",
+            )
+        rows = await cur.fetchall()
+        return web.json_response({"effectiveness": [dict(r) for r in rows]})
+    finally:
+        await db.close()
+
+
+async def analyze_session_endpoint(request: web.Request) -> web.Response:
+    """POST /api/sessions/{id}/analyze — manually trigger post-session analysis."""
+    session_id = request.match_info["id"]
+
+    from session_advisor import analyze_session
+    _fire_and_forget(analyze_session(session_id))
+
+    return web.json_response({"ok": True, "session_id": session_id, "status": "analyzing"})
+
+
+async def dismiss_guideline_recommendation(request: web.Request) -> web.Response:
+    """POST /api/sessions/{id}/dismiss-recommendation — dismiss a guideline recommendation."""
+    session_id = request.match_info["id"]
+    body = await request.json()
+    guideline_id = body.get("guideline_id")
+    if not guideline_id:
+        return web.json_response({"error": "guideline_id required"}, status=400)
+
+    from session_advisor import dismiss_recommendation
+    await dismiss_recommendation(session_id, guideline_id)
+
+    return web.json_response({"ok": True})
+
+
+# ─── REST: MCP Servers ────────────────────────────────────────────────────
+
+
+async def list_mcp_servers(request: web.Request) -> web.Response:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM mcp_servers ORDER BY default_enabled DESC, name")
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["args"] = json.loads(d["args"] or "[]")
+            d["env"] = json.loads(d["env"] or "{}")
+            result.append(d)
+        return web.json_response(result)
+    finally:
+        await db.close()
+
+
+async def create_mcp_server(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = body.get("name", "").strip()
+    server_name = body.get("server_name", "").strip()
+    command = body.get("command", "").strip()
+    if not name or not server_name or not command:
+        return web.json_response({"error": "name, server_name, and command required"}, status=400)
+
+    sid = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO mcp_servers
+               (id, name, server_name, description, server_type, command, args, env,
+                auto_approve, default_enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sid, name, server_name, body.get("description", ""),
+             body.get("server_type", "stdio"), command,
+             json.dumps(body.get("args", [])),
+             json.dumps(body.get("env", {})),
+             1 if body.get("auto_approve") else 0,
+             1 if body.get("default_enabled") else 0),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM mcp_servers WHERE id = ?", (sid,))
+        row = await cur.fetchone()
+        d = dict(row)
+        d["args"] = json.loads(d["args"] or "[]")
+        d["env"] = json.loads(d["env"] or "{}")
+        return web.json_response(d, status=201)
+    except Exception as e:
+        if "UNIQUE" in str(e):
+            return web.json_response({"error": f"server_name '{server_name}' already exists"}, status=409)
+        raise
+    finally:
+        await db.close()
+
+
+async def update_mcp_server(request: web.Request) -> web.Response:
+    sid = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        fields, values = [], []
+        for key in ("name", "server_name", "description", "server_type", "command",
+                     "auto_approve", "default_enabled"):
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        # JSON fields need encoding
+        for key in ("args", "env"):
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(json.dumps(body[key]))
+        if not fields:
+            return web.json_response({"error": "no fields to update"}, status=400)
+        fields.append("updated_at = datetime('now')")
+        values.append(sid)
+        await db.execute(f"UPDATE mcp_servers SET {', '.join(fields)} WHERE id = ?", values)
+        await db.commit()
+        cur = await db.execute("SELECT * FROM mcp_servers WHERE id = ?", (sid,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        d = dict(row)
+        d["args"] = json.loads(d["args"] or "[]")
+        d["env"] = json.loads(d["env"] or "{}")
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+async def delete_mcp_server(request: web.Request) -> web.Response:
+    sid = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT is_builtin FROM mcp_servers WHERE id = ?", (sid,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        if row["is_builtin"]:
+            return web.json_response({"error": "cannot delete built-in MCP server"}, status=403)
+        await db.execute("DELETE FROM mcp_servers WHERE id = ?", (sid,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def parse_mcp_docs(request: web.Request) -> web.Response:
+    """Launch a background job to parse MCP server docs into a server config."""
+    body = await request.json()
+    docs = (body.get("docs") or "").strip()
+    if not docs:
+        return web.json_response({"error": "docs text required"}, status=400)
+
+    prompt = f"""Parse the following MCP server documentation and extract the configuration needed to run it.
+
+Return ONLY a valid JSON object with these fields:
+- "name": display name (e.g. "Playwright")
+- "server_name": kebab-case identifier (e.g. "playwright")
+- "description": one-line description of what the server does
+- "command": the executable command (e.g. "npx", "uvx", "python3", "node")
+- "args": array of command arguments (e.g. ["-y", "@playwright/mcp@latest"])
+- "env": object of required environment variables with placeholder values (e.g. {{"API_KEY": "your-api-key-here"}})
+- "server_type": "stdio" or "sse" (default "stdio")
+
+If the docs mention multiple transport options, prefer stdio.
+If environment variables are optional, still include them with descriptive placeholder values.
+
+Documentation:
+{docs}
+
+Return ONLY the JSON object, no markdown fences, no explanation."""
+
+    job_id = str(uuid.uuid4())
+    _background_jobs[job_id] = {
+        "type": "mcp_parse",
+        "status": "queued",
+    }
+
+    import asyncio as _asyncio
+    _asyncio.ensure_future(_run_background_llm_job(
+        job_id=job_id,
+        job_type="mcp_parse",
+        cli=body.get("cli", "claude"),
+        model=body.get("model") or "haiku",
+        prompt=prompt,
+        extra={},
+        timeout=60,
+    ))
+
+    return web.json_response({"job_id": job_id, "status": "started"})
+
+
+async def get_session_mcp_servers(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT ms.*, sms.auto_approve_override
+               FROM mcp_servers ms
+               JOIN session_mcp_servers sms ON ms.id = sms.mcp_server_id
+               WHERE sms.session_id = ?""",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        servers = []
+        for r in rows:
+            d = dict(r)
+            d["args"] = json.loads(d["args"] or "[]")
+            d["env"] = json.loads(d["env"] or "{}")
+            servers.append(d)
+
+        cur2 = await db.execute(
+            "SELECT active_mcp_server_ids FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        session_row = await cur2.fetchone()
+        active_ids = []
+        if session_row and session_row["active_mcp_server_ids"]:
+            try:
+                active_ids = json.loads(session_row["active_mcp_server_ids"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return web.json_response({
+            "mcp_servers": servers,
+            "active_mcp_server_ids": active_ids,
+        })
+    finally:
+        await db.close()
+
+
+async def set_session_mcp_servers(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    body = await request.json()
+    mcp_server_ids = body.get("mcp_server_ids", [])
+    overrides = body.get("overrides", {})
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM session_mcp_servers WHERE session_id = ?", (session_id,))
+        for mid in mcp_server_ids:
+            override = overrides.get(mid, {})
+            auto_override = override.get("auto_approve_override")
+            await db.execute(
+                "INSERT INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, ?)",
+                (session_id, mid, auto_override),
+            )
+        await db.commit()
+        return web.json_response({"ok": True, "count": len(mcp_server_ids)})
+    finally:
+        await db.close()
+
+
+# ─── REST: History & Export ────────────────────────────────────────────────
+
+async def list_history_projects(request: web.Request) -> web.Response:
+    projects = list_projects()
+    return web.json_response(projects)
+
+
+async def import_history(request: web.Request) -> web.Response:
+    body = await request.json()
+    file_path = body.get("file")
+    workspace_id = body.get("workspace_id")
+    session_name = body.get("name", "Imported Session")
+
+    if not file_path or not workspace_id:
+        return web.json_response({"error": "file and workspace_id required"}, status=400)
+
+    messages = read_session_messages(file_path)
+    if not messages:
+        return web.json_response({"error": "no messages found"}, status=400)
+
+    session_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO sessions (id, workspace_id, name, is_imported)
+               VALUES (?, ?, ?, 1)""",
+            (session_id, workspace_id, session_name),
+        )
+        inserted = 0
+        for msg in messages:
+            normalized = normalize_jsonl_entry(msg)
+            if normalized is None:
+                continue
+            role, content = normalized
+            if isinstance(content, list):
+                content = json.dumps(content)
+            elif not isinstance(content, str):
+                content = str(content)
+            await db.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, role, content),
+            )
+            inserted += 1
+        await db.commit()
+        if inserted == 0:
+            await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            await db.commit()
+            return web.json_response({"error": "no conversation messages found"}, status=400)
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def export_session(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        messages = [dict(r) for r in rows]
+
+        cur2 = await db.execute(
+            """SELECT s.scratchpad, s.native_session_id, w.path AS workspace_path
+               FROM sessions s
+               LEFT JOIN workspaces w ON s.workspace_id = w.id
+               WHERE s.id = ?""",
+            (session_id,),
+        )
+        sess_row = await cur2.fetchone()
+        scratchpad = (sess_row["scratchpad"] or "") if sess_row else ""
+        native_sid = sess_row["native_session_id"] if sess_row else None
+        workspace_path = sess_row["workspace_path"] if sess_row else None
+    finally:
+        await db.close()
+
+    # Live PTY sessions don't populate the `messages` DB table — their
+    # transcript lives in Claude Code's native JSONL file. Fall back to that.
+    if not messages and native_sid and workspace_path:
+        jsonl_file = _get_project_dir(workspace_path) / f"{native_sid}.jsonl"
+        if jsonl_file.exists():
+            messages = read_session_messages(str(jsonl_file))
+
+    fmt = request.query.get("format", "markdown")
+    if fmt == "json":
+        return web.json_response({"messages": messages, "scratchpad": scratchpad})
+
+    md = export_session_as_markdown(messages)
+    if scratchpad.strip():
+        md += "\n\n---\n\n## Scratchpad\n\n" + scratchpad + "\n"
+    return web.Response(
+        text=md,
+        content_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="session-{session_id[:8]}.md"'},
+    )
+
+
+# ─── REST: Distill Session ────────────────────────────────────────────────
+
+_DISTILL_PROMPTS = {
+    "guideline": """You are analyzing a coding session conversation to extract a reusable guideline.
+A guideline is a set of principles, patterns, or rules that should be followed in future coding sessions.
+
+<conversation>
+{conversation}
+</conversation>
+
+{instructions}
+
+Extract the key principles, patterns, and guidelines from this conversation. Focus on:
+- Coding patterns and conventions discussed or demonstrated
+- Architectural decisions and their rationale
+- Style preferences expressed
+- Testing approaches
+- Error handling patterns
+- Any explicit preferences or rules stated by the user
+
+Return a JSON object with exactly these fields:
+{{
+  "name": "Short descriptive name for this guideline (max 60 chars)",
+  "content": "The full guideline text in markdown format. Use bullet points, headers, and code examples where appropriate.",
+  "when_to_use": "Short description of when this guideline should be applied (e.g. 'frontend React work', 'API endpoint development', 'database migrations'). This helps the session advisor automatically recommend it for similar tasks."
+}}
+
+Return ONLY the JSON object. No markdown fences, no explanation.""",
+
+    "prompt": """You are analyzing a coding session conversation to create a reusable prompt template.
+A prompt is a reusable instruction that can be sent to an AI coding assistant in future sessions.
+
+<conversation>
+{conversation}
+</conversation>
+
+{instructions}
+
+Create a reusable prompt template that captures the core task or workflow demonstrated in this conversation. The prompt should:
+- Be generic enough to reuse in different contexts
+- Capture the key steps and approach
+- Include placeholders for variable parts using {{{{variable_name}}}} syntax
+- Be specific enough to produce useful results
+
+Return a JSON object with exactly these fields:
+{{
+  "name": "Short descriptive name (max 60 chars)",
+  "category": "Category (e.g. Coding, Testing, Refactoring, Analysis, DevOps, Debugging)",
+  "content": "The full prompt template text",
+  "variables": "comma-separated list of variable names used in the template, or empty string"
+}}
+
+Return ONLY the JSON object. No markdown fences, no explanation.""",
+
+    "cascade": """You are analyzing a coding session conversation to create a prompt cascade.
+A cascade is an ordered sequence of prompts that are sent to an AI coding assistant one after another,
+each building on the results of the previous step.
+
+<conversation>
+{conversation}
+</conversation>
+
+{instructions}
+
+Break down the workflow in this conversation into a sequence of discrete, self-contained prompt steps.
+Each step should:
+- Be a complete prompt that can stand on its own
+- Build logically on the results of previous steps
+- Be specific and actionable
+- Use 3-8 steps total
+
+Return a JSON object with exactly these fields:
+{{
+  "name": "Short descriptive name for this cascade (max 60 chars)",
+  "steps": ["Step 1 prompt text", "Step 2 prompt text", "Step 3 prompt text"]
+}}
+
+Return ONLY the JSON object. No markdown fences, no explanation.""",
+}
+
+
+def _format_conversation_for_distill(messages: list[dict], max_chars: int = 80_000) -> str:
+    """Format session messages into a compact transcript for the distill prompt."""
+    lines = []
+    for msg in messages:
+        # Handle both DB rows and JSONL entries
+        normalized = normalize_jsonl_entry(msg)
+        if normalized is None:
+            continue
+        role, content = normalized
+
+        # Parse list-shaped content from DB rows
+        if isinstance(content, str) and content.startswith("["):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, list):
+                    content = parsed
+            except json.JSONDecodeError:
+                pass
+
+        # Extract just the text parts (skip tool calls/results for brevity)
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            content = "\n".join(text_parts)
+
+        if not content or not content.strip():
+            continue
+
+        label = "User" if role in ("human", "user") else "Assistant"
+        lines.append(f"**{label}:**\n{content.strip()}\n")
+
+    transcript = "\n".join(lines)
+    # Truncate from the middle if too long, keeping first and last parts
+    if len(transcript) > max_chars:
+        half = max_chars // 2
+        transcript = (
+            transcript[:half]
+            + "\n\n[... conversation truncated for brevity ...]\n\n"
+            + transcript[-half:]
+        )
+    return transcript
+
+
+_background_jobs: dict[str, dict] = {}
+
+
+async def _run_background_llm_job(
+    job_id: str, job_type: str, cli: str, model: str | None,
+    prompt: str, extra: dict, timeout: int = 180,
+):
+    """Run an LLM call in the background and broadcast the result via WebSocket."""
+    from llm_router import llm_call_json
+
+    job = _background_jobs.get(job_id)
+    if not job:
+        return
+
+    job["status"] = "running"
+    try:
+        result = await llm_call_json(cli=cli, model=model, prompt=prompt, timeout=timeout)
+        job["status"] = "done"
+        job["result"] = result
+        await broadcast({
+            "type": f"{job_type}_done",
+            "job_id": job_id,
+            "result": result,
+            **extra,
+        })
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        await broadcast({
+            "type": f"{job_type}_error",
+            "job_id": job_id,
+            "error": str(e),
+            **extra,
+        })
+
+
+async def distill_session(request: web.Request) -> web.Response:
+    """Launch a background job to extract a reusable artifact from a session."""
+    session_id = request.match_info["id"]
+    body = await request.json()
+
+    artifact_type = (body.get("type") or "").strip().lower()
+    if artifact_type not in _DISTILL_PROMPTS:
+        return web.json_response(
+            {"error": f"type must be one of: {', '.join(_DISTILL_PROMPTS.keys())}"},
+            status=400,
+        )
+
+    cli = (body.get("cli") or "claude").strip().lower()
+    model = body.get("model") or None
+    instructions = (body.get("instructions") or "").strip()
+
+    # ── Fetch full conversation content ─────────────────────────────
+    # Priority: 1) JSONL file (full structured history)
+    #           2) DB messages (imported sessions)
+    #           3) Terminal buffer (fallback — partial, last ~64KB)
+    conversation = None
+    messages = []
+
+    db = await get_db()
+    try:
+        cur2 = await db.execute(
+            """SELECT s.native_session_id, s.cli_type, w.path AS workspace_path
+               FROM sessions s
+               LEFT JOIN workspaces w ON s.workspace_id = w.id
+               WHERE s.id = ?""",
+            (session_id,),
+        )
+        sess_row = await cur2.fetchone()
+
+        # 1) Try JSONL — full conversation history for live/exited sessions
+        if sess_row:
+            native_sid = sess_row["native_session_id"]
+            workspace_path = sess_row["workspace_path"]
+            if native_sid and workspace_path:
+                jsonl_file = _get_project_dir(workspace_path) / f"{native_sid}.jsonl"
+                if jsonl_file.exists():
+                    messages = read_session_messages(str(jsonl_file))
+
+            # If native_session_id wasn't detected yet, scan for most recent
+            if not messages and workspace_path:
+                project_dir = _get_project_dir(workspace_path)
+                if project_dir.exists():
+                    cli_type = sess_row.get("cli_type") or "claude"
+                    glob_pat = get_profile(cli_type).session_file_pattern
+                    candidates = sorted(
+                        project_dir.glob(glob_pat),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    for candidate in candidates[:3]:
+                        try:
+                            msgs = read_session_messages(str(candidate))
+                            if msgs:
+                                messages = msgs
+                                break
+                        except Exception:
+                            continue
+
+        # 2) Try DB messages (populated for imported sessions)
+        if not messages:
+            cur = await db.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            )
+            rows = await cur.fetchall()
+            messages = [dict(r) for r in rows]
+
+        if messages:
+            conversation = _format_conversation_for_distill(messages)
+
+        # 3) Terminal buffer fallback — partial but better than nothing
+        if not conversation:
+            terminal_text = capture_proc.get_buffer(session_id, 2000)
+            if terminal_text and len(terminal_text.strip()) > 50:
+                conversation = terminal_text.strip()
+
+        # Grab session name
+        cur3 = await db.execute("SELECT name FROM sessions WHERE id = ?", (session_id,))
+        name_row = await cur3.fetchone()
+        session_name = name_row["name"] if name_row else session_id[:8]
+    finally:
+        await db.close()
+
+    if not conversation:
+        return web.json_response(
+            {"error": "No conversation content found for this session."},
+            status=404,
+        )
+
+    # Resolve workspace output style for distill formatting
+    from output_styles import resolve_output_style, OUTPUT_STYLES
+    _ws_os, _gl_os = None, None
+    _sdb = await get_db()
+    try:
+        if ws_id:
+            _c = await _sdb.execute("SELECT output_style FROM workspaces WHERE id = ?", (ws_id,))
+            _r = await _c.fetchone()
+            _ws_os = _r["output_style"] if _r else None
+        _c = await _sdb.execute("SELECT value FROM app_settings WHERE key = 'output_style'")
+        _r = await _c.fetchone()
+        _gl_os = _r["value"] if _r else None
+    except Exception:
+        pass
+    finally:
+        await _sdb.close()
+    _eff_style = resolve_output_style(None, _ws_os, _gl_os)
+    _style_hint = ""
+    if _eff_style != "default":
+        _desc = OUTPUT_STYLES.get(_eff_style, {}).get("description", "")
+        _style_hint = (
+            f"\nOutput style: {_eff_style} ({_desc}). "
+            "Apply to generated content — signal over noise. JSON structure unchanged.\n"
+        )
+    _iparts = []
+    if instructions:
+        _iparts.append(f"Additional instructions from the user:\n{instructions}")
+    if _style_hint:
+        _iparts.append(_style_hint)
+    instructions_block = "\n".join(_iparts)
+
+    # Build the distill prompt
+    prompt_template = _DISTILL_PROMPTS[artifact_type]
+    prompt = prompt_template.format(
+        conversation=conversation,
+        instructions=instructions_block,
+    )
+
+    # Launch background job
+    job_id = str(uuid.uuid4())
+    _background_jobs[job_id] = {
+        "type": "distill",
+        "status": "queued",
+        "session_id": session_id,
+        "artifact_type": artifact_type,
+    }
+
+    import asyncio as _asyncio
+    _asyncio.ensure_future(_run_background_llm_job(
+        job_id=job_id,
+        job_type="distill",
+        cli=cli,
+        model=model,
+        prompt=prompt,
+        extra={
+            "session_id": session_id,
+            "session_name": session_name,
+            "artifact_type": artifact_type,
+        },
+    ))
+
+    return web.json_response({
+        "job_id": job_id,
+        "status": "started",
+        "artifact_type": artifact_type,
+    })
+
+
+# ─── REST: Search ─────────────────────────────────────────────────────────
+
+async def search_messages(request: web.Request) -> web.Response:
+    q = request.query.get("q", "").strip()
+    if not q:
+        return web.json_response([])
+
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT m.*, s.name AS session_name, s.workspace_id
+               FROM messages m
+               JOIN sessions s ON m.session_id = s.id
+               WHERE m.content LIKE ?
+               ORDER BY m.created_at DESC
+               LIMIT 100""",
+            (f"%{q}%",),
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+# ─── REST: Clone ──────────────────────────────────────────────────────────
+
+async def clone_session(request: web.Request) -> web.Response:
+    source_id = request.match_info["id"]
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (source_id,))
+        source = await cur.fetchone()
+        if not source:
+            return web.json_response({"error": "session not found"}, status=404)
+
+        source = dict(source)
+        new_id = str(uuid.uuid4())
+
+        # Support cross-CLI cloning: pass { cli_type: "gemini" } to clone
+        # a Claude session as a Gemini session (or vice versa).
+        target_cli = body.get("cli_type", source.get("cli_type", "claude"))
+        source_cli = source.get("cli_type", "claude")
+        is_cross_cli = target_cli != source_cli
+
+        # Translate model/mode defaults if switching CLI
+        if is_cross_cli:
+            target_profile = get_profile(target_cli)
+            new_model = body.get("model", target_profile.default_model)
+            new_mode = body.get("permission_mode", target_profile.default_permission_mode)
+        else:
+            new_model = body.get("model", source["model"])
+            new_mode = body.get("permission_mode", source["permission_mode"])
+
+        new_name = f"{source['name']} (clone)"
+        await db.execute(
+            """INSERT INTO sessions (id, workspace_id, name, model, permission_mode, effort,
+               budget_usd, system_prompt, allowed_tools, disallowed_tools, add_dirs,
+               agent, worktree, mcp_config, cli_type, scratchpad, session_type, output_style)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (new_id, source["workspace_id"], new_name, new_model,
+             new_mode, source["effort"], source["budget_usd"],
+             source["system_prompt"], source["allowed_tools"], source["disallowed_tools"],
+             source["add_dirs"], source["agent"], source["worktree"], source["mcp_config"],
+             target_cli, source.get("scratchpad"), source.get("session_type", "worker"),
+             source.get("output_style")),
+        )
+
+        # If cross-CLI clone, sync memory so the target CLI's file is up to date
+        if is_cross_cli and source.get("workspace_id"):
+            try:
+                from memory_sync import sync_manager
+                ws_path, _ = await _get_workspace_path_or_error(source["workspace_id"])
+                if ws_path:
+                    await sync_manager.sync(source["workspace_id"], ws_path)
+            except Exception as exc:
+                logger.warning("Memory sync during cross-CLI clone failed: %s", exc)
+
+        # Copy guidelines
+        cur = await db.execute(
+            "SELECT guideline_id FROM session_guidelines WHERE session_id = ?",
+            (source_id,),
+        )
+        for row in await cur.fetchall():
+            await db.execute(
+                "INSERT INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                (new_id, row["guideline_id"]),
+            )
+
+        # Copy MCP servers
+        cur = await db.execute(
+            "SELECT mcp_server_id, auto_approve_override FROM session_mcp_servers WHERE session_id = ?",
+            (source_id,),
+        )
+        for row in await cur.fetchall():
+            await db.execute(
+                "INSERT INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, ?)",
+                (new_id, row["mcp_server_id"], row["auto_approve_override"]),
+            )
+
+        await db.commit()
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (new_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+# ─── REST: Merge Sessions ───────────────────────────────────────────────
+
+async def merge_sessions(request: web.Request) -> web.Response:
+    """Merge multiple sessions into one.
+
+    Accepts { source_ids: [...], target_id: null | uuid, workspace_id: uuid }.
+    Fetches messages/transcripts from each source, builds a combined context
+    string, optionally creates a new session, and returns the target session
+    plus the context text (the frontend sends it as PTY input).
+    """
+    body = await request.json()
+    source_ids = body.get("source_ids", [])
+    target_id = body.get("target_id")
+    workspace_id = body.get("workspace_id")
+
+    if len(source_ids) < 2:
+        return web.json_response({"error": "need at least 2 source sessions"}, status=400)
+    if not workspace_id:
+        return web.json_response({"error": "workspace_id required"}, status=400)
+
+    db = await get_db()
+    try:
+        # Validate all source sessions exist and belong to the workspace
+        placeholders = ",".join("?" for _ in source_ids)
+        cur = await db.execute(
+            f"SELECT * FROM sessions WHERE id IN ({placeholders})", source_ids
+        )
+        sources = [dict(r) for r in await cur.fetchall()]
+        if len(sources) != len(source_ids):
+            return web.json_response({"error": "one or more sessions not found"}, status=404)
+        for s in sources:
+            if s["workspace_id"] != workspace_id:
+                return web.json_response(
+                    {"error": f"session {s['id'][:8]} belongs to a different workspace"},
+                    status=400,
+                )
+
+        # Build ordered list matching source_ids order
+        source_map = {s["id"]: s for s in sources}
+        ordered = [source_map[sid] for sid in source_ids]
+
+        # Gather messages / transcripts for each source
+        context_parts = []
+        for src in ordered:
+            # Try DB messages first
+            cur = await db.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
+                (src["id"],),
+            )
+            messages = [dict(r) for r in await cur.fetchall()]
+
+            # Fall back to JSONL transcript if no DB messages
+            if not messages and src.get("native_session_id"):
+                cur2 = await db.execute(
+                    "SELECT path FROM workspaces WHERE id = ?",
+                    (src["workspace_id"],),
+                )
+                ws_row = await cur2.fetchone()
+                if ws_row:
+                    jsonl_file = _get_project_dir(ws_row["path"]) / f"{src['native_session_id']}.jsonl"
+                    if jsonl_file.exists():
+                        messages = read_session_messages(str(jsonl_file))
+
+            md = export_session_as_markdown(messages) if messages else "(no messages)"
+            context_parts.append(
+                f"## Session: {src['name']}\n"
+                f"Model: {src.get('model', 'unknown')} | "
+                f"Turns: {src.get('turn_count', 0)} | "
+                f"Cost: ${src.get('total_cost_usd', 0):.4f}\n\n"
+                f"{md}"
+            )
+
+        # Include workspace memory + auto-memory for richer merge context
+        memory_section = ""
+        try:
+            from memory_sync import sync_manager
+            cur_ws = await db.execute(
+                "SELECT path FROM workspaces WHERE id = ?", (workspace_id,),
+            )
+            ws_row = await cur_ws.fetchone()
+            if ws_row:
+                ws_path = ws_row["path"]
+                central = await sync_manager.read_central(workspace_id)
+                auto = await sync_manager.read_all_auto_memory(ws_path)
+
+                mem_parts = []
+                if central:
+                    mem_parts.append(f"## Project Memory\n{central[:4000]}")
+                if auto:
+                    lines = []
+                    for cli, entries in auto.items():
+                        for e in entries[:10]:
+                            body_text = e.get("content", "")
+                            if body_text:
+                                lines.append(
+                                    f"- **[{e.get('type','')}] {e.get('name','')}**: "
+                                    f"{body_text[:200]}"
+                                )
+                    if lines:
+                        mem_parts.append(
+                            "## Remembered Context\n" + "\n".join(lines)
+                        )
+                if mem_parts:
+                    memory_section = "\n\n".join(mem_parts) + "\n\n---\n\n"
+        except Exception as exc:
+            logger.debug("Failed to load memory for merge: %s", exc)
+
+        session_names = ", ".join(f'"{s["name"]}"' for s in ordered)
+        context = (
+            f"Multiple sessions are being merged into this one ({session_names}). "
+            "Below is the project memory and conversation history from each session.\n\n"
+            "Please:\n"
+            "1. Read through all the merged session content carefully\n"
+            "2. Summarize the key findings, decisions, and progress from each session\n"
+            "3. Save any important context to your memory so it persists\n"
+            "4. Identify any open tasks, unresolved issues, or next steps\n"
+            "5. Let me know what you've absorbed and what you're ready to continue working on\n\n"
+            + memory_section
+            + "\n\n---\n\n".join(context_parts)
+        )
+
+        # Create or validate target session
+        if target_id:
+            cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (target_id,))
+            target = await cur.fetchone()
+            if not target:
+                return web.json_response({"error": "target session not found"}, status=404)
+            target = dict(target)
+        else:
+            # Create a new session with merged name
+            new_id = str(uuid.uuid4())
+            merged_names = " + ".join(s["name"] for s in ordered[:3])
+            if len(ordered) > 3:
+                merged_names += f" +{len(ordered) - 3} more"
+            new_name = f"Merged: {merged_names}"
+
+            # Use config from the first source session
+            first = ordered[0]
+            await db.execute(
+                """INSERT INTO sessions (id, workspace_id, name, model, permission_mode,
+                   effort, system_prompt, cli_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (new_id, workspace_id, new_name, first.get("model", "sonnet"),
+                 first.get("permission_mode", "auto"), first.get("effort", "high"),
+                 first.get("system_prompt"), first.get("cli_type", "claude")),
+            )
+
+            # Merge guidelines from all sources (union, skip deleted)
+            cur = await db.execute(
+                f"""SELECT DISTINCT sg.guideline_id FROM session_guidelines sg
+                    JOIN guidelines g ON g.id = sg.guideline_id
+                    WHERE sg.session_id IN ({placeholders})""",
+                source_ids,
+            )
+            for row in await cur.fetchall():
+                await db.execute(
+                    "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                    (new_id, row["guideline_id"]),
+                )
+
+            # Merge MCP servers from all sources (union, skip deleted)
+            cur = await db.execute(
+                f"""SELECT DISTINCT sm.mcp_server_id FROM session_mcp_servers sm
+                    JOIN mcp_servers m ON m.id = sm.mcp_server_id
+                    WHERE sm.session_id IN ({placeholders})""",
+                source_ids,
+            )
+            for row in await cur.fetchall():
+                await db.execute(
+                    "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id) VALUES (?, ?)",
+                    (new_id, row["mcp_server_id"]),
+                )
+
+            await db.commit()
+            cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (new_id,))
+            target = dict(await cur.fetchone())
+
+        return web.json_response({"session": target, "context": context}, status=201)
+    finally:
+        await db.close()
+
+
+# ─── REST: Session Management ────────────────────────────────────────────
+
+async def rename_session(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+
+    db = await get_db()
+    try:
+        await db.execute("UPDATE sessions SET name = ? WHERE id = ?", (name, session_id))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+async def update_session(request: web.Request) -> web.Response:
+    """Update session config fields (model, permission_mode, effort, etc.)."""
+    session_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        allowed = ("name", "model", "permission_mode", "effort", "budget_usd",
+                   "system_prompt", "allowed_tools", "disallowed_tools",
+                   "add_dirs", "agent", "worktree", "mcp_config", "scratchpad",
+                   "account_id", "native_session_id", "native_slug", "auto_approve_mcp", "cli_type",
+                   "plan_model", "execute_model", "auto_approve_plan", "output_style", "tags")
+        fields, values = [], []
+        for key in allowed:
+            if key in body:
+                val = body[key]
+                # Tags stored as JSON array
+                if key == "tags" and isinstance(val, list):
+                    val = json.dumps(val)
+                fields.append(f"{key} = ?")
+                values.append(val)
+        if not fields:
+            return web.json_response({"error": "no fields to update"}, status=400)
+        values.append(session_id)
+        await db.execute(
+            f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+# ─── REST: Session Scratchpad ─────────────────────────────────────────────
+
+async def get_session_scratchpad(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT scratchpad FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "session not found"}, status=404)
+        return web.json_response({"scratchpad": row["scratchpad"] or ""})
+    finally:
+        await db.close()
+
+
+async def update_session_scratchpad(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    body = await request.json()
+    content = body.get("scratchpad", "")
+    db = await get_db()
+    try:
+        await db.execute("UPDATE sessions SET scratchpad = ? WHERE id = ?", (content, session_id))
+        await db.commit()
+        return web.json_response({"scratchpad": content})
+    finally:
+        await db.close()
+
+
+# ─── REST: Worker Queue ──────────────────────────────────────────────────
+
+async def get_session_queue(request: web.Request) -> web.Response:
+    """Get tasks queued for a specific worker, ordered by queue_order."""
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM tasks WHERE queued_for_session_id = ? ORDER BY queue_order ASC",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def queue_task_for_session(request: web.Request) -> web.Response:
+    """Queue a task for a specific worker. Auto-calculates queue_order."""
+    session_id = request.match_info["id"]
+    body = await request.json()
+    task_id = body.get("task_id")
+    if not task_id:
+        return web.json_response({"error": "task_id required"}, status=400)
+
+    db = await get_db()
+    try:
+        # Verify session exists
+        cur = await db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
+        if not await cur.fetchone():
+            return web.json_response({"error": "session not found"}, status=404)
+
+        # Verify task exists and isn't already assigned/queued
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        task_row = await cur.fetchone()
+        if not task_row:
+            return web.json_response({"error": "task not found"}, status=404)
+
+        # Calculate next queue_order
+        cur = await db.execute(
+            "SELECT MAX(queue_order) as max_order FROM tasks WHERE queued_for_session_id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        next_order = (row["max_order"] or 0) + 1
+
+        # Queue the task
+        await db.execute(
+            """UPDATE tasks SET queued_for_session_id = ?, queue_order = ?, updated_at = datetime('now')
+               WHERE id = ?""",
+            (session_id, next_order, task_id),
+        )
+        # Log event
+        await db.execute(
+            """INSERT INTO task_events (task_id, event_type, actor, old_value, new_value, message)
+               VALUES (?, 'queued_for_session_id_changed', 'commander', NULL, ?, ?)""",
+            (task_id, session_id, f"Task queued for worker session {session_id}"),
+        )
+        await db.commit()
+
+        return web.json_response({
+            "ok": True, "task_id": task_id,
+            "queued_for_session_id": session_id,
+            "queue_order": next_order,
+        })
+    finally:
+        await db.close()
+
+
+async def assign_task_to_session(request: web.Request) -> web.Response:
+    """Assign a task to an idle worker session (worker reuse). Sends handoff prompt to PTY."""
+    session_id = request.match_info["id"]
+    body = await request.json()
+    task_id = body.get("task_id")
+    if not task_id:
+        return web.json_response({"error": "task_id required"}, status=400)
+
+    db = await get_db()
+    try:
+        # Verify session exists
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        sess_row = await cur.fetchone()
+        if not sess_row:
+            return web.json_response({"error": "session not found"}, status=404)
+
+        # Verify task exists
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        task_row = await cur.fetchone()
+        if not task_row:
+            return web.json_response({"error": "task not found"}, status=404)
+        task = dict(task_row)
+
+        # Update task assignment
+        old_assigned = task.get("assigned_session_id")
+        await db.execute(
+            """UPDATE tasks SET assigned_session_id = ?, queued_for_session_id = NULL,
+               updated_at = datetime('now') WHERE id = ?""",
+            (session_id, task_id),
+        )
+        # Update session's task_id
+        await db.execute(
+            "UPDATE sessions SET task_id = ? WHERE id = ?",
+            (task_id, session_id),
+        )
+        # Log event
+        await db.execute(
+            """INSERT INTO task_events (task_id, event_type, actor, old_value, new_value, message)
+               VALUES (?, 'assigned_session_id_changed', 'commander', ?, ?, ?)""",
+            (task_id, old_assigned, session_id,
+             f"Task reassigned to worker session {session_id} (worker reuse)"),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    # Send handoff prompt to worker PTY if alive
+    if pty_mgr.is_alive(session_id):
+        message = body.get("message") or _build_worker_handoff_prompt(task)
+        msg_bytes = message.encode("utf-8")
+        cli_type = dict(sess_row).get("cli_type", "claude")
+        if cli_type == "gemini":
+            clean = message.replace("\n", " ").replace("\r", " ")
+            pty_mgr.write(session_id, clean.encode("utf-8") + b"\r")
+        else:
+            pty_mgr.write(session_id, b"\x1b" + b"\x7f" * 20)
+            await _asyncio.sleep(0.15)
+            pty_mgr.write(session_id, msg_bytes)
+            await _asyncio.sleep(0.4)
+            pty_mgr.write(session_id, b"\r")
+
+    return web.json_response({
+        "ok": True, "task_id": task_id,
+        "assigned_session_id": session_id,
+    })
+
+
+def _build_worker_handoff_prompt(task: dict) -> str:
+    """Build the prompt sent to a worker when receiving a new task via reuse."""
+    parts = [
+        "--- NEW TASK ASSIGNMENT ---",
+        "Your previous task is complete. Here is your next assignment.",
+        "",
+        f"Task: {task.get('title', '')}",
+        f"Task ID: {task['id']}",
+    ]
+    if task.get("description"):
+        parts.append(f"Description: {task['description']}")
+    if task.get("acceptance_criteria"):
+        parts.append(f"Acceptance criteria: {task['acceptance_criteria']}")
+    if task.get("labels"):
+        parts.append(f"Labels: {task['labels']}")
+    parts.append("")
+    parts.append(
+        f"Call get_my_tasks to see full details. "
+        f'Update status via update_my_task(task_id="{task["id"]}") as you work.'
+    )
+    return "\n".join(parts)
+
+
+# ─── REST: Templates ──────────────────────────────────────────────────────
+
+async def list_templates(request: web.Request) -> web.Response:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM templates ORDER BY name")
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_template(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+
+    tid = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO templates (id, name, model, permission_mode, effort,
+               budget_usd, system_prompt, allowed_tools, guideline_ids, mcp_server_ids, conversation_turns,
+               plan_model, execute_model, auto_approve_plan)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (tid, name, body.get("model"), body.get("permission_mode"),
+             body.get("effort"), body.get("budget_usd"), body.get("system_prompt"),
+             body.get("allowed_tools"), json.dumps(body.get("guideline_ids", [])),
+             json.dumps(body.get("mcp_server_ids", [])),
+             json.dumps(body.get("conversation_turns", [])),
+             body.get("plan_model"), body.get("execute_model"),
+             1 if body.get("auto_approve_plan") else 0),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM templates WHERE id = ?", (tid,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def delete_template(request: web.Request) -> web.Response:
+    tid = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM templates WHERE id = ?", (tid,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def apply_template(request: web.Request) -> web.Response:
+    """Create a session from a template."""
+    tid = request.match_info["id"]
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        return web.json_response({"error": "workspace_id required"}, status=400)
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM templates WHERE id = ?", (tid,))
+        tmpl = await cur.fetchone()
+        if not tmpl:
+            return web.json_response({"error": "template not found"}, status=404)
+        tmpl = dict(tmpl)
+
+        session_id = str(uuid.uuid4())
+        name = body.get("name", "").strip() or f"{tmpl['name']} — {session_id[:8]}"
+        await db.execute(
+            """INSERT INTO sessions (id, workspace_id, name, model, permission_mode, effort,
+               budget_usd, system_prompt, allowed_tools, plan_model, execute_model, auto_approve_plan)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, workspace_id, name, tmpl["model"], tmpl["permission_mode"],
+             tmpl["effort"], tmpl["budget_usd"], tmpl["system_prompt"], tmpl["allowed_tools"],
+             tmpl.get("plan_model"), tmpl.get("execute_model"),
+             tmpl.get("auto_approve_plan", 0)),
+        )
+
+        # Apply template guidelines (skip any that were deleted)
+        gids = json.loads(tmpl.get("guideline_ids") or "[]")
+        if gids:
+            placeholders = ",".join("?" for _ in gids)
+            cur2 = await db.execute(f"SELECT id FROM guidelines WHERE id IN ({placeholders})", gids)
+            existing_gids = {row["id"] for row in await cur2.fetchall()}
+            for gid in gids:
+                if gid in existing_gids:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                        (session_id, gid),
+                    )
+
+        # Apply template MCP servers (skip any that were deleted)
+        mcp_ids = json.loads(tmpl.get("mcp_server_ids") or "[]")
+        if mcp_ids:
+            placeholders = ",".join("?" for _ in mcp_ids)
+            cur2 = await db.execute(f"SELECT id FROM mcp_servers WHERE id IN ({placeholders})", mcp_ids)
+            existing_mids = {row["id"] for row in await cur2.fetchall()}
+            for mid in mcp_ids:
+                if mid in existing_mids:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id) VALUES (?, ?)",
+                        (session_id, mid),
+                    )
+
+        await db.commit()
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+# ─── REST: Grid templates ───────────────────────────────────────────
+# A grid template defines a custom CSS-grid layout for the multi-terminal grid view.
+# Each template owns its own cell-to-session assignments (which session lives in
+# which cell), so swapping templates doesn't drop your in-progress placements.
+
+def _serialize_grid_template(row) -> dict:
+    d = dict(row)
+    try:
+        d["cells"] = json.loads(d.get("cells") or "[]")
+    except Exception:
+        d["cells"] = []
+    try:
+        d["cell_assignments"] = json.loads(d.get("cell_assignments") or "{}")
+    except Exception:
+        d["cell_assignments"] = {}
+    return d
+
+
+async def list_grid_templates(request: web.Request) -> web.Response:
+    workspace_id = request.query.get("workspace")
+    db = await get_db()
+    try:
+        if workspace_id:
+            cur = await db.execute(
+                "SELECT * FROM grid_templates WHERE workspace_id = ? OR workspace_id IS NULL ORDER BY created_at ASC",
+                (workspace_id,),
+            )
+        else:
+            cur = await db.execute("SELECT * FROM grid_templates ORDER BY created_at ASC")
+        rows = await cur.fetchall()
+        return web.json_response([_serialize_grid_template(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_grid_template(request: web.Request) -> web.Response:
+    body = await request.json()
+    tid = body.get("id") or str(uuid.uuid4())
+    workspace_id = body.get("workspace_id")
+    name = (body.get("name") or "").strip() or "New layout"
+    cols = max(1, min(6, int(body.get("cols") or 3)))
+    cells = json.dumps(body.get("cells") or [])
+    assignments = json.dumps(body.get("cell_assignments") or {})
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO grid_templates (id, workspace_id, name, cols, cells, cell_assignments) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (tid, workspace_id, name, cols, cells, assignments),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM grid_templates WHERE id = ?", (tid,))
+        row = await cur.fetchone()
+        return web.json_response(_serialize_grid_template(row), status=201)
+    finally:
+        await db.close()
+
+
+async def update_grid_template(request: web.Request) -> web.Response:
+    tid = request.match_info["id"]
+    body = await request.json()
+    fields, values = [], []
+    if "name" in body:
+        fields.append("name = ?")
+        values.append((body.get("name") or "").strip() or "New layout")
+    if "cols" in body:
+        fields.append("cols = ?")
+        values.append(max(1, min(6, int(body["cols"] or 3))))
+    if "cells" in body:
+        fields.append("cells = ?")
+        values.append(json.dumps(body["cells"] or []))
+    if "cell_assignments" in body:
+        fields.append("cell_assignments = ?")
+        values.append(json.dumps(body["cell_assignments"] or {}))
+    if not fields:
+        return web.json_response({"error": "no fields"}, status=400)
+    fields.append("updated_at = datetime('now')")
+    values.append(tid)
+    db = await get_db()
+    try:
+        await db.execute(
+            f"UPDATE grid_templates SET {', '.join(fields)} WHERE id = ?",
+            values,
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM grid_templates WHERE id = ?", (tid,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(_serialize_grid_template(row))
+    finally:
+        await db.close()
+
+
+async def delete_grid_template(request: web.Request) -> web.Response:
+    tid = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM grid_templates WHERE id = ?", (tid,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+# ─── REST: Tab Groups ────────────────────────────────────────────────
+
+def _serialize_tab_group(row):
+    d = dict(row)
+    d["session_ids"] = json.loads(d.get("session_ids") or "[]")
+    return d
+
+
+async def list_tab_groups(request: web.Request) -> web.Response:
+    workspace_id = request.query.get("workspace")
+    db = await get_db()
+    try:
+        if workspace_id:
+            cur = await db.execute(
+                "SELECT * FROM tab_groups WHERE workspace_id = ? ORDER BY created_at ASC",
+                (workspace_id,),
+            )
+        else:
+            cur = await db.execute("SELECT * FROM tab_groups ORDER BY created_at ASC")
+        rows = await cur.fetchall()
+        return web.json_response([_serialize_tab_group(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_tab_group(request: web.Request) -> web.Response:
+    body = await request.json()
+    tid = body.get("id") or str(uuid.uuid4())
+    workspace_id = body.get("workspace_id")
+    name = (body.get("name") or "").strip() or "New group"
+    session_ids = json.dumps(body.get("session_ids") or [])
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO tab_groups (id, workspace_id, name, session_ids) VALUES (?, ?, ?, ?)",
+            (tid, workspace_id, name, session_ids),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM tab_groups WHERE id = ?", (tid,))
+        row = await cur.fetchone()
+        return web.json_response(_serialize_tab_group(row), status=201)
+    finally:
+        await db.close()
+
+
+async def update_tab_group(request: web.Request) -> web.Response:
+    tid = request.match_info["id"]
+    body = await request.json()
+    fields, values = [], []
+    if "name" in body:
+        fields.append("name = ?")
+        values.append((body["name"] or "").strip() or "New group")
+    if "session_ids" in body:
+        fields.append("session_ids = ?")
+        values.append(json.dumps(body["session_ids"] or []))
+    if "is_active" in body:
+        fields.append("is_active = ?")
+        values.append(1 if body["is_active"] else 0)
+    if not fields:
+        return web.json_response({"error": "no fields"}, status=400)
+    fields.append("updated_at = datetime('now')")
+    values.append(tid)
+    db = await get_db()
+    try:
+        await db.execute(
+            f"UPDATE tab_groups SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM tab_groups WHERE id = ?", (tid,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(_serialize_tab_group(row))
+    finally:
+        await db.close()
+
+
+async def delete_tab_group(request: web.Request) -> web.Response:
+    tid = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM tab_groups WHERE id = ?", (tid,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+# ─── REST: Tasks ─────────────────────────────────────────────────────
+
+async def list_tasks(request: web.Request) -> web.Response:
+    workspace_id = request.query.get("workspace")
+    status = request.query.get("status")
+    db = await get_db()
+    try:
+        conditions, params = [], []
+        if workspace_id:
+            conditions.append("workspace_id = ?")
+            params.append(workspace_id)
+        assigned_session = request.query.get("assigned_session")
+        if assigned_session:
+            conditions.append("assigned_session_id = ?")
+            params.append(assigned_session)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        cur = await db.execute(
+            f"SELECT * FROM tasks{where} ORDER BY sort_order, created_at DESC", params
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_task(request: web.Request) -> web.Response:
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    title = body.get("title", "").strip()
+    if not workspace_id or not title:
+        return web.json_response({"error": "workspace_id and title required"}, status=400)
+
+    task_id = str(uuid.uuid4())
+    labels = body.get("labels")
+    if isinstance(labels, list):
+        labels = ",".join(str(l) for l in labels)
+
+    depends_on = body.get("depends_on", "[]")
+    if isinstance(depends_on, list):
+        depends_on = json.dumps(depends_on)
+
+    # Inherit pipeline from workspace when not explicitly set on task
+    pipeline_val = body.get("pipeline")
+
+    db = await get_db()
+    try:
+        if pipeline_val is None:
+            cur = await db.execute("SELECT pipeline_enabled FROM workspaces WHERE id = ?", (workspace_id,))
+            ws_row = await cur.fetchone()
+            pipeline_val = (ws_row["pipeline_enabled"] if ws_row else 0) or 0
+
+        await db.execute(
+            """INSERT INTO tasks (id, workspace_id, title, description, acceptance_criteria,
+               status, priority, sort_order, assigned_session_id, commander_session_id,
+               parent_task_id, labels, pipeline, pipeline_max_iterations, depends_on,
+               plan_first, ralph_loop, deep_research, test_with_agent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, workspace_id, title, body.get("description"),
+             body.get("acceptance_criteria"), body.get("status", "backlog"),
+             body.get("priority", 0), body.get("sort_order", 0),
+             body.get("assigned_session_id"), body.get("commander_session_id"),
+             body.get("parent_task_id"), labels,
+             pipeline_val, body.get("pipeline_max_iterations", 5), depends_on,
+             1 if body.get("plan_first") else 0,
+             1 if body.get("ralph_loop") else 0,
+             1 if body.get("deep_research") else 0,
+             1 if body.get("test_with_agent") else 0),
+        )
+        # Record creation event
+        await db.execute(
+            """INSERT INTO task_events (task_id, event_type, actor, new_value, message)
+               VALUES (?, 'created', 'user', ?, ?)""",
+            (task_id, body.get("status", "backlog"), f"Task created: {title}"),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = await cur.fetchone()
+        task = dict(row)
+    finally:
+        await db.close()
+
+    await broadcast({"type": "task_update", "action": "created", "task": task})
+    # Fire canonical event for feature-board hook subscribers (plugins,
+    # webhooks, live UI feed). Payload carries denormalized task metadata
+    # so subscribers don't need to re-fetch.
+    await bus.emit(CommanderEvent.TASK_CREATED, {
+        "task_id": task_id,
+        "workspace_id": task.get("workspace_id"),
+        "title": task.get("title"),
+        "status": task.get("status"),
+        "priority": task.get("priority"),
+        "labels": task.get("labels"),
+        "plan_first": bool(task.get("plan_first")),
+        "ralph_loop": bool(task.get("ralph_loop")),
+        "deep_research": bool(task.get("deep_research")),
+        "test_with_agent": bool(task.get("test_with_agent")),
+        "pipeline": bool(task.get("pipeline")),
+    }, source="api", actor="user")
+    return web.json_response(task, status=201)
+
+
+async def get_task(request: web.Request) -> web.Response:
+    task_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "task not found"}, status=404)
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+async def update_task(request: web.Request) -> web.Response:
+    task_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        # Fetch current state for event tracking
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        old_row = await cur.fetchone()
+        if not old_row:
+            return web.json_response({"error": "task not found"}, status=404)
+        old = dict(old_row)
+
+        allowed = ("title", "description", "acceptance_criteria", "status", "priority",
+                   "sort_order", "assigned_session_id", "commander_session_id",
+                   "parent_task_id", "labels", "result_summary", "scratchpad", "plan_first", "auto_approve_plan",
+                   "ralph_loop", "ralph_iteration", "ralph_phase", "deep_research",
+                   "test_with_agent", "lessons_learned", "important_notes",
+                   "iteration", "last_agent_session_id", "iteration_history",
+                   "queued_for_session_id", "queue_order",
+                   "pipeline", "pipeline_max_iterations", "pipeline_stage",
+                   "depends_on")
+        fields, values = [], []
+        for key in allowed:
+            if key in body:
+                val = body[key]
+                if key == "labels" and isinstance(val, list):
+                    val = ",".join(str(l) for l in val)
+                if key == "depends_on" and isinstance(val, list):
+                    val = json.dumps(val)
+                fields.append(f"{key} = ?")
+                values.append(val)
+        if not fields:
+            return web.json_response({"error": "no fields to update"}, status=400)
+
+        # Auto-set timestamps for status changes
+        new_status = body.get("status")
+        if new_status and new_status != old.get("status"):
+            if new_status == "in_progress" and not old.get("started_at"):
+                fields.append("started_at = datetime('now')")
+            if new_status in ("done", "verified"):
+                fields.append("completed_at = datetime('now')")
+
+        fields.append("updated_at = datetime('now')")
+        values.append(task_id)
+        await db.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", values)
+
+        # Record events for key changes
+        for key in ("status", "assigned_session_id", "priority", "queued_for_session_id"):
+            if key in body and body[key] != old.get(key):
+                await db.execute(
+                    """INSERT INTO task_events (task_id, event_type, actor, old_value, new_value, message)
+                       VALUES (?, ?, 'user', ?, ?, ?)""",
+                    (task_id, f"{key}_changed", str(old.get(key)), str(body[key]),
+                     f"{key} changed from {old.get(key)} to {body[key]}"),
+                )
+
+        # Auto-attach worker-board MCP when a task is assigned to a session
+        new_assigned = body.get("assigned_session_id")
+        if new_assigned and new_assigned != old.get("assigned_session_id"):
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (new_assigned, "builtin-worker-board"),
+            )
+
+        await db.commit()
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = await cur.fetchone()
+        task = dict(row)
+    finally:
+        await db.close()
+
+    await broadcast({"type": "task_update", "action": "updated", "task": task})
+
+    # Fire canonical events. We emit a general TASK_UPDATED plus specific
+    # events for the transitions plugin authors will care most about
+    # (status changes, assignment, plan lifecycle, completion).
+    base_payload = {
+        "task_id": task_id,
+        "workspace_id": task.get("workspace_id"),
+        "title": task.get("title"),
+        "status": task.get("status"),
+    }
+    await bus.emit(CommanderEvent.TASK_UPDATED, base_payload,
+                   source="api", actor="user")
+
+    new_status = body.get("status")
+    if new_status and new_status != old.get("status"):
+        await bus.emit(CommanderEvent.TASK_STATUS_CHANGED, {
+            **base_payload,
+            "old_status": old.get("status"),
+            "new_status": new_status,
+        }, source="api", actor="user")
+        # Transition-specific events for the common cases.
+        if new_status == "in_progress":
+            await bus.emit(CommanderEvent.TASK_STARTED, base_payload,
+                           source="api", actor="user")
+        elif new_status == "planning":
+            await bus.emit(CommanderEvent.TASK_PLAN_READY, base_payload,
+                           source="api", actor="user")
+        elif new_status in ("done", "verified"):
+            # W2W: Auto-flow digest discoveries → task lessons when completing
+            try:
+                assigned = task.get("assigned_session_id")
+                if assigned and not task.get("lessons_learned"):
+                    db2 = await get_db()
+                    try:
+                        dcur = await db2.execute(
+                            "SELECT discoveries, decisions FROM session_digests WHERE session_id = ?",
+                            (assigned,),
+                        )
+                        drow = await dcur.fetchone()
+                        if drow:
+                            disc = json.loads(drow["discoveries"] or "[]")
+                            decs = json.loads(drow["decisions"] or "[]")
+                            if disc or decs:
+                                lessons = ""
+                                if disc:
+                                    lessons += "Discoveries:\n" + "\n".join(f"- {d}" for d in disc)
+                                if decs:
+                                    lessons += ("\n\n" if lessons else "") + "Decisions:\n" + "\n".join(f"- {d}" for d in decs)
+                                await db2.execute(
+                                    "UPDATE tasks SET lessons_learned = ? WHERE id = ? AND (lessons_learned IS NULL OR lessons_learned = '')",
+                                    (lessons, task_id),
+                                )
+                                await db2.commit()
+                                task["lessons_learned"] = lessons
+                    finally:
+                        await db2.close()
+            except Exception:
+                pass  # never block task completion
+
+            # Auto-embed completed task for future similarity search
+            try:
+                from embedder import embed_task
+                await embed_task(task)
+            except Exception:
+                pass
+
+            await bus.emit(CommanderEvent.TASK_COMPLETED, {
+                **base_payload,
+                "result_summary": task.get("result_summary"),
+            }, source="api", actor="user")
+        elif new_status == "blocked":
+            await bus.emit(CommanderEvent.TASK_BLOCKED, base_payload,
+                           source="api", actor="user")
+
+    if "assigned_session_id" in body and body["assigned_session_id"] != old.get("assigned_session_id"):
+        new_sid = body["assigned_session_id"]
+        await bus.emit(CommanderEvent.TASK_ASSIGNED, {
+            **base_payload,
+            "session_id": new_sid,
+            "previous_session_id": old.get("assigned_session_id"),
+        }, source="api", actor="user")
+
+        # W2W: Auto-sync task → session digest on assignment
+        if new_sid:
+            try:
+                db3 = await get_db()
+                try:
+                    # Ensure digest exists, then set task_summary from task title
+                    cur3 = await db3.execute(
+                        "SELECT id FROM session_digests WHERE session_id = ?", (new_sid,),
+                    )
+                    if not await cur3.fetchone():
+                        await db3.execute(
+                            "INSERT INTO session_digests (id, session_id, workspace_id, task_summary) VALUES (?, ?, ?, ?)",
+                            (str(uuid.uuid4()), new_sid, task.get("workspace_id"), task.get("title", "")),
+                        )
+                    else:
+                        await db3.execute(
+                            "UPDATE session_digests SET task_summary = ?, updated_at = datetime('now') WHERE session_id = ?",
+                            (task.get("title", ""), new_sid),
+                        )
+                    await db3.commit()
+
+                    # Auto-embed the digest
+                    from embedder import embed_digest
+                    digest_data = {"session_id": new_sid, "workspace_id": task.get("workspace_id"),
+                                   "task_summary": task.get("title", ""), "current_focus": "",
+                                   "decisions": "[]", "discoveries": "[]", "files_touched": "[]"}
+                    await embed_digest(digest_data)
+                finally:
+                    await db3.close()
+            except Exception:
+                pass
+
+    # ── Live edit injection ──────────────────────────────────────────
+    # If task is in_progress and has a running assigned session, inject
+    # description/criteria changes directly into the agent's PTY.
+    if old.get("status") == "in_progress" and task.get("assigned_session_id"):
+        changed_fields = []
+        if "description" in body and body["description"] != old.get("description"):
+            changed_fields.append(("description", body["description"]))
+        if "acceptance_criteria" in body and body["acceptance_criteria"] != old.get("acceptance_criteria"):
+            changed_fields.append(("acceptance_criteria", body["acceptance_criteria"]))
+        if "important_notes" in body and body["important_notes"] != old.get("important_notes"):
+            changed_fields.append(("important_notes", body["important_notes"]))
+
+        sid = task["assigned_session_id"]
+        if changed_fields and pty_mgr.is_alive(sid):
+            injection_parts = ["[Task Update] The task you're working on has been updated:"]
+            for field_name, new_val in changed_fields:
+                injection_parts.append(f"  {field_name}: {new_val}")
+            injection_parts.append("Please take these changes into account in your current work.")
+            injection_msg = "\n".join(injection_parts)
+            try:
+                msg_bytes = injection_msg.encode("utf-8")
+                # CLI-aware clear: Gemini uses Ctrl-U, Claude uses Escape+DEL
+                _inj_cfg = await get_session_config(sid)
+                _inj_cli = _inj_cfg.get("cli_type", "claude") if _inj_cfg else "claude"
+                if _inj_cli == "gemini":
+                    # Gemini: raw passthrough, collapse newlines (no escape sequences)
+                    clean_msg = injection_msg.replace("\n", " ").replace("\r", " ")
+                    pty_mgr.write(sid, clean_msg.encode("utf-8") + b"\r")
+                else:
+                    pty_mgr.write(sid, b"\x1b" + b"\x7f" * 20)
+                    await _asyncio.sleep(0.15)
+                    pty_mgr.write(sid, msg_bytes)
+                    await _asyncio.sleep(0.4)
+                    pty_mgr.write(sid, b"\r")
+                await bus.emit(CommanderEvent.TASK_EDIT_INJECTED, {
+                    "task_id": task_id,
+                    "workspace_id": task.get("workspace_id"),
+                    "session_id": sid,
+                    "changed_fields": [f[0] for f in changed_fields],
+                }, source="api", actor="user")
+            except Exception:
+                logger.exception("Failed to inject task edit into session %s", sid)
+
+    return web.json_response(task)
+
+
+async def delete_task(request: web.Request) -> web.Response:
+    task_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "task not found"}, status=404)
+        task = dict(row)
+        await db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+    await broadcast({"type": "task_update", "action": "deleted", "task": task})
+    await bus.emit(CommanderEvent.TASK_DELETED, {
+        "task_id": task_id,
+        "workspace_id": task.get("workspace_id"),
+        "title": task.get("title"),
+        "status_at_deletion": task.get("status"),
+    }, source="api", actor="user")
+    return web.json_response({"ok": True})
+
+
+async def list_task_events(request: web.Request) -> web.Response:
+    task_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at DESC",
+            (task_id,),
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def iterate_task(request: web.Request) -> web.Response:
+    """Request a revision/iteration on a completed task.
+
+    Snapshots the current state into iteration_history, bumps the iteration
+    counter, stores last_agent_session_id, resets status to 'todo'.
+    Auto-exec will pick it up if enabled.
+    """
+    task_id = request.match_info["id"]
+    body = await request.json()
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "task not found"}, status=404)
+        task = dict(row)
+
+        if task["status"] not in ("done", "review", "verified"):
+            return web.json_response(
+                {"error": "can only iterate on done/review/verified tasks"}, status=400
+            )
+
+        current_iteration = task.get("iteration") or 1
+
+        # Snapshot current state into history — include session digest for full context
+        history_entry = {
+            "iteration": current_iteration,
+            "description": task.get("description"),
+            "result_summary": task.get("result_summary"),
+            "acceptance_criteria": task.get("acceptance_criteria"),
+            "completed_at": task.get("completed_at"),
+            "agent_session_id": task.get("assigned_session_id"),
+            "lessons_learned": task.get("lessons_learned"),
+            "important_notes": task.get("important_notes"),
+        }
+
+        # Pull session digest (discoveries, decisions, files_touched) if available
+        assigned = task.get("assigned_session_id")
+        if assigned:
+            try:
+                dcur = await db.execute(
+                    "SELECT discoveries, decisions, files_touched, current_focus FROM session_digests WHERE session_id = ?",
+                    (assigned,),
+                )
+                drow = await dcur.fetchone()
+                if drow:
+                    history_entry["discoveries"] = json.loads(drow["discoveries"] or "[]")
+                    history_entry["decisions"] = json.loads(drow["decisions"] or "[]")
+                    history_entry["files_touched"] = json.loads(drow["files_touched"] or "[]")
+                    history_entry["current_focus"] = drow["current_focus"] or ""
+            except Exception:
+                pass
+
+            # Also grab session name for display
+            try:
+                scur = await db.execute("SELECT name FROM sessions WHERE id = ?", (assigned,))
+                srow = await scur.fetchone()
+                if srow:
+                    history_entry["agent_session_name"] = srow["name"]
+            except Exception:
+                pass
+
+        existing_history = []
+        if task.get("iteration_history"):
+            try:
+                existing_history = json.loads(task["iteration_history"])
+            except (json.JSONDecodeError, TypeError):
+                existing_history = []
+        existing_history.append(history_entry)
+
+        new_description = body.get("description", task.get("description"))
+        new_acceptance = body.get("acceptance_criteria", task.get("acceptance_criteria"))
+        revision_notes = body.get("revision_notes", "")
+
+        await db.execute(
+            """UPDATE tasks SET
+               iteration = ?,
+               iteration_history = ?,
+               last_agent_session_id = ?,
+               status = 'todo',
+               result_summary = NULL,
+               completed_at = NULL,
+               assigned_session_id = NULL,
+               description = ?,
+               acceptance_criteria = ?,
+               updated_at = datetime('now')
+               WHERE id = ?""",
+            (
+                current_iteration + 1,
+                json.dumps(existing_history),
+                task.get("assigned_session_id"),
+                new_description,
+                new_acceptance,
+                task_id,
+            ),
+        )
+
+        # Record event
+        msg = f"Iteration {current_iteration + 1} requested"
+        if revision_notes:
+            msg += f": {revision_notes}"
+        await db.execute(
+            """INSERT INTO task_events (task_id, event_type, actor, old_value, new_value, message)
+               VALUES (?, 'iteration_requested', 'user', ?, ?, ?)""",
+            (task_id, str(current_iteration), str(current_iteration + 1), msg),
+        )
+
+        await db.commit()
+        cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        updated = dict(await cur.fetchone())
+    finally:
+        await db.close()
+
+    await broadcast({"type": "task_update", "action": "updated", "task": updated})
+    await bus.emit(CommanderEvent.TASK_ITERATION_REQUESTED, {
+        "task_id": task_id,
+        "workspace_id": updated.get("workspace_id"),
+        "title": updated.get("title"),
+        "iteration": current_iteration + 1,
+        "previous_session_id": task.get("assigned_session_id"),
+    }, source="api", actor="user")
+
+    return web.json_response(updated)
+
+
+# ─── REST: Output Captures ───────────────────────────────────────────
+
+async def list_session_captures(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    capture_type = request.query.get("type")
+    limit = int(request.query.get("limit", "20"))
+    db = await get_db()
+    try:
+        if capture_type:
+            cur = await db.execute(
+                """SELECT * FROM output_captures
+                   WHERE session_id = ? AND capture_type = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (session_id, capture_type, limit),
+            )
+        else:
+            cur = await db.execute(
+                """SELECT * FROM output_captures
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (session_id, limit),
+            )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def get_session_output(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    lines = int(request.query.get("lines", "100"))
+    text = capture_proc.get_buffer(session_id, lines)
+    return web.json_response({"session_id": session_id, "lines": lines, "text": text})
+
+
+async def switch_session_cli(request: web.Request) -> web.Response:
+    """Switch a session between Claude and Gemini CLI.
+
+    Flow:
+    1. Read last N lines of session output → build context summary
+    2. Stop current PTY
+    3. Update DB: cli_type, model, permission_mode
+    4. Clear native_session_id (can't resume cross-CLI)
+    5. Store context summary in system_prompt so next start_pty injects it
+    6. Return success — frontend will re-trigger start_pty
+    """
+    session_id = request.match_info["id"]
+    body = await request.json()
+    new_cli_type = body.get("cli_type")
+    if new_cli_type not in ("claude", "gemini"):
+        return web.json_response({"error": "cli_type must be 'claude' or 'gemini'"}, status=400)
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "session not found"}, status=404)
+        current = dict(row)
+    finally:
+        await db.close()
+
+    # Pick sensible defaults for the new CLI
+    default_model = get_profile(new_cli_type).default_model
+    default_mode = get_profile(new_cli_type).default_permission_mode
+    new_model = body.get("model", default_model)
+    new_mode = body.get("permission_mode", default_mode)
+
+    # Build rich handoff context (replaces the old 3000-char terminal tail)
+    context_summary = ""
+    try:
+        from memory_sync import sync_manager
+        old_cli = current.get("cli_type", "claude")
+        workspace_id = current.get("workspace_id", "")
+        workspace_path = ""
+        if workspace_id:
+            db2 = await get_db()
+            try:
+                cur2 = await db2.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+                ws_row = await cur2.fetchone()
+                if ws_row:
+                    workspace_path = ws_row["path"]
+            finally:
+                await db2.close()
+
+        if workspace_path:
+            # Sync memory before switching so central store is up to date
+            await sync_manager.sync(workspace_id, workspace_path, source_cli=old_cli)
+            context_summary = await sync_manager.build_handoff_context(
+                session_id, workspace_id, workspace_path,
+                old_cli, new_cli_type, capture_proc=capture_proc,
+            )
+        else:
+            # Fallback if no workspace — use trimmed transcript
+            raw_output = capture_proc.get_buffer(session_id, 30)
+            clean = _strip_ansi_bytes(
+                raw_output.encode("utf-8") if isinstance(raw_output, str) else raw_output
+            ).decode("utf-8", errors="replace")
+            tail = clean[-2000:].strip()
+            if tail:
+                context_summary = (
+                    f"[Session handoff] Switching from {old_cli.upper()} to "
+                    f"{new_cli_type.upper()}.\n\n```\n{tail}\n```"
+                )
+    except Exception as e:
+        logger.warning(f"Failed to build handoff context: {e}")
+
+    # Stop current PTY (kills the CLI process)
+    await pty_mgr.stop_session(session_id)
+
+    # Update DB
+    db = await get_db()
+    try:
+        await db.execute(
+            """UPDATE sessions SET cli_type = ?, model = ?, permission_mode = ?,
+               native_session_id = NULL, native_slug = NULL, system_prompt = ?
+               WHERE id = ?""",
+            (new_cli_type, new_model, new_mode, context_summary or None, session_id),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        result = dict(row)
+    finally:
+        await db.close()
+
+    # Notify frontend — it will re-trigger start_pty with the new config
+    await broadcast({
+        "type": "session_switched",
+        "session_id": session_id,
+        "cli_type": new_cli_type,
+        "model": new_model,
+    })
+    return web.json_response(result)
+
+
+async def switch_model(request: web.Request) -> web.Response:
+    """Switch a session's active model by injecting /model X into the PTY.
+
+    Unlike switch_session_cli (which kills and restarts the PTY), this is a
+    lightweight in-session model change. Both Claude Code and Gemini CLI
+    support /model as a slash command.
+    """
+    session_id = request.match_info["id"]
+    body = await request.json()
+    model_name = body.get("model", "").strip()
+    if not model_name:
+        return web.json_response({"error": "model required"}, status=400)
+
+    if not pty_mgr.is_alive(session_id):
+        return web.json_response({"error": "session not running"}, status=400)
+
+    # Inject /model command into PTY (short command, no newlines)
+    cmd = f"/model {model_name}"
+    pty_mgr.write(session_id, cmd.encode("utf-8") + b"\r")
+
+    # Update DB so UI reflects new model
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE sessions SET model = ? WHERE id = ?",
+            (model_name, session_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    # Broadcast model change to frontend
+    await broadcast({
+        "type": "model_changed",
+        "session_id": session_id,
+        "model": model_name,
+    })
+
+    return web.json_response({"ok": True, "session_id": session_id, "model": model_name})
+
+
+async def send_session_input(request: web.Request) -> web.Response:
+    """Type text into a running session's PTY. Used by MCP server's send_message tool."""
+    session_id = request.match_info["id"]
+    body = await request.json()
+    message = body.get("message", "")
+    if not message:
+        return web.json_response({"error": "message required"}, status=400)
+
+    if not pty_mgr.is_alive(session_id):
+        return web.json_response({"error": "session not running"}, status=400)
+
+    # Look up CLI type — Gemini's TUI handles escape sequences differently
+    # than Claude Code's Ink-based TUI, so we use CLI-specific input strategies.
+    cli_type = "claude"
+    try:
+        config = await get_session_config(session_id)
+        if config:
+            cli_type = config.get("cli_type", "claude")
+    except Exception:
+        pass  # fall back to claude behavior
+
+    msg_bytes = message.encode("utf-8")
+
+    if cli_type == "gemini":
+        # Gemini CLI: Write text directly, same as WebSocket passthrough.
+        #
+        # Gemini's Ink TUI does NOT handle Ctrl-U, Escape, or bracketed paste
+        # sequences the way Claude's does. These cause unexpected exits (code 0).
+        # The WebSocket input handler (which the browser uses) works perfectly
+        # because it just writes raw bytes — so we do the same here.
+        #
+        # For multi-line messages: collapse to single line. Gemini's TUI treats
+        # \n as Enter (submits partial lines). The model will still understand
+        # the intent from a single-line version.
+        clean = message.replace("\n", " ").replace("\r", " ")
+        pty_mgr.write(session_id, clean.encode("utf-8") + b"\r")
+    elif len(message) < 100 and "\n" not in message:
+        # Claude short messages / control keys: send directly (no Escape
+        # prefix which would cancel active selection prompts like "trust
+        # this folder")
+        pty_mgr.write(session_id, msg_bytes + b"\r")
+    else:
+        # Claude long/multiline: Escape to clear Ink input, text, delay, Enter
+        pty_mgr.write(session_id, b"\x1b" + b"\x7f" * 20)  # Escape + backspaces
+        await _asyncio.sleep(0.15)
+        pty_mgr.write(session_id, msg_bytes)
+        await _asyncio.sleep(0.4)  # Wait for paste bracket to close
+        pty_mgr.write(session_id, b"\r")
+    return web.json_response({"ok": True, "session_id": session_id})
+
+
+async def broadcast_input(request: web.Request) -> web.Response:
+    """Type text into multiple sessions' PTYs."""
+    body = await request.json()
+    session_ids = body.get("session_ids", [])
+    message = body.get("message", "")
+    if not message or not session_ids:
+        return web.json_response({"error": "session_ids and message required"}, status=400)
+
+    sent = []
+    for sid in session_ids:
+        if pty_mgr.is_alive(sid):
+            pty_mgr.write(sid, (message + "\r").encode("utf-8"))
+            sent.append(sid)
+    if sent:
+        await bus.emit(CommanderEvent.COMMANDER_BROADCAST, {
+            "session_ids": sent,
+            "session_count": len(sent),
+            "message_length": len(message),
+        }, source="api", actor="user")
+    return web.json_response({"ok": True, "sent_to": sent})
+
+
+# ─── REST: URL Screenshot ─────────────────────────────────────────────
+
+def _check_screenshot_tools() -> str | None:
+    """Return the available screenshot tool name, or None if nothing is installed."""
+    import shutil
+    if shutil.which("webkit2png"):
+        return "webkit2png"
+    # Check if playwright + chromium are importable
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", "from playwright.sync_api import sync_playwright"],
+            capture_output=True, timeout=5
+        )
+        if proc.returncode == 0:
+            return "playwright"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+# ─── REST: Preview Proxy ──────────────────────────────────────────────
+
+async def preview_proxy(request: web.Request) -> web.Response:
+    """Reverse-proxy a URL stripping X-Frame-Options / CSP so it loads in an iframe.
+    Sub-resources resolve against the original server via an injected <base> tag."""
+    from urllib.parse import urlparse, urljoin
+    import re
+
+    url = request.query.get("url", "").strip()
+    if not url:
+        return web.json_response({"error": "url required"}, status=400)
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    parsed = urlparse(url)
+    base_origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True, ssl=False) as resp:
+                body = await resp.read()
+                ct = resp.content_type or "text/html"
+
+                # Build response headers — copy safe ones, drop frame-blockers
+                drop = {
+                    "x-frame-options", "content-security-policy",
+                    "content-security-policy-report-only",
+                    "content-type", "content-length",
+                    "transfer-encoding", "content-encoding",
+                }
+                headers = {
+                    k: v for k, v in resp.headers.items()
+                    if k.lower() not in drop
+                }
+
+                # For HTML: inject <base> + fetch/XHR interceptor so the
+                # proxied page can load sub-resources and make API calls
+                if "html" in ct:
+                    html = body.decode("utf-8", errors="replace")
+                    import json as _json
+                    base_tag = f'<base href="{base_origin}/">'
+                    # Intercept fetch/XHR so JS API calls to the remote
+                    # origin go through our proxy instead of being CORS-blocked
+                    intercept_script = (
+                        '<script data-preview-proxy>'
+                        '(function(){'
+                        'var R=' + _json.dumps(base_origin) + ';'
+                        'var P=window.location.origin+"/api/preview-proxy?url=";'
+                        'function rw(u){'
+                        'try{var o=new URL(u,R);if(o.origin===R)return P+encodeURIComponent(o.href)}catch(e){}'
+                        'return null}'
+                        'var oF=window.fetch;'
+                        'window.fetch=function(i,n){'
+                        'if(typeof i==="string"){var r=rw(i);if(r)i=r}'
+                        'else if(i instanceof Request){var r=rw(i.url);if(r)i=new Request(r,i)}'
+                        'return oF.call(this,i,n)};'
+                        'var oO=XMLHttpRequest.prototype.open;'
+                        'XMLHttpRequest.prototype.open=function(m,u){'
+                        'var r=rw(u);if(r)arguments[1]=r;'
+                        'return oO.apply(this,arguments)};'
+                        '})();'
+                        '</script>'
+                    )
+                    inject = base_tag + intercept_script
+                    if "<head" in html.lower():
+                        html = re.sub(
+                            r"(<head[^>]*>)", r"\1" + inject, html, count=1, flags=re.IGNORECASE
+                        )
+                    elif "<html" in html.lower():
+                        html = re.sub(
+                            r"(<html[^>]*>)", r"\1<head>" + inject + "</head>", html, count=1, flags=re.IGNORECASE
+                        )
+                    else:
+                        html = inject + html
+                    body = html.encode("utf-8")
+
+                return web.Response(
+                    body=body,
+                    status=resp.status,
+                    content_type=ct,
+                    headers=headers,
+                )
+    except aiohttp.ClientConnectorError:
+        return web.json_response({"error": f"Cannot connect to {base_origin}"}, status=502)
+    except aiohttp.ClientError as e:
+        return web.json_response({"error": str(e)}, status=502)
+    except Exception as e:
+        return web.json_response({"error": f"Proxy error: {e}"}, status=500)
+
+
+def _capture_url_to_png(url: str, filepath) -> dict:
+    """Capture `url` to `filepath` (PNG). Tries webkit2png then playwright.
+    Returns {"ok": True} on success, or {"error": str, "reason": "no_tools"|"unreachable"|"timeout"|"capture_failed"}."""
+    import subprocess
+
+    # Sanitize: reject URLs with characters that could break subprocess args
+    if any(c in url for c in ("'", '"', ';', '`', '$', '\\', '\n', '\r')):
+        return {"error": f"Invalid characters in URL", "reason": "capture_failed"}
+
+    try:
+        # Method 1: macOS webkit2png (if installed)
+        subprocess.run(
+            ["webkit2png", "--fullsize", "--filename", str(filepath).replace('.png', ''), url],
+            capture_output=True, timeout=30
+        )
+        fullpath = filepath.parent / (filepath.stem + "-full.png")
+        if fullpath.exists():
+            fullpath.rename(filepath)
+        elif not filepath.exists():
+            raise FileNotFoundError("webkit2png failed")
+        return {"ok": True}
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Method 2: playwright — pass URL and filepath via env to avoid injection
+    import os
+    env = {**os.environ, "_SCREENSHOT_URL": url, "_SCREENSHOT_PATH": str(filepath)}
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", """
+import asyncio, os
+from playwright.async_api import async_playwright
+async def main():
+    url = os.environ["_SCREENSHOT_URL"]
+    path = os.environ["_SCREENSHOT_PATH"]
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page(viewport={"width": 1280, "height": 800})
+        await page.goto(url, wait_until="networkidle", timeout=15000)
+        await page.screenshot(path=path, full_page=False)
+        await browser.close()
+asyncio.run(main())
+"""],
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+        if filepath.exists():
+            return {"ok": True}
+        # Playwright ran but failed — parse stderr for clues
+        stderr = (proc.stderr or "").strip()
+        if "ERR_CONNECTION_REFUSED" in stderr or "ERR_NAME_NOT_RESOLVED" in stderr or "NS_ERROR_UNKNOWN_HOST" in stderr:
+            host = url.split("//")[-1].split("/")[0]
+            return {"error": f"Site unreachable: {host}", "reason": "unreachable"}
+        if "Timeout" in stderr or "timeout" in stderr:
+            return {"error": f"Page load timed out for {url}", "reason": "timeout"}
+        if "Executable doesn't exist" in stderr or "browserType.launch" in stderr:
+            return {"error": "Chromium not installed. Run: playwright install chromium", "reason": "no_tools"}
+        return {"error": f"Screenshot capture failed", "reason": "capture_failed", "detail": stderr[-300:] if stderr else ""}
+    except FileNotFoundError:
+        return {"error": "No screenshot tool available. Install playwright: pip3 install playwright && playwright install chromium", "reason": "no_tools"}
+    except subprocess.TimeoutExpired:
+        return {"error": f"Screenshot timed out after 30s for {url}", "reason": "timeout"}
+
+
+async def _run_capture(url: str, filepath) -> dict:
+    """Run _capture_url_to_png in a thread so we don't block the event loop."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _capture_url_to_png, url, filepath)
+
+
+async def take_screenshot(request: web.Request) -> web.Response:
+    """Take a screenshot of a URL using macOS webkit or playwright if available."""
+    import time
+
+    url = request.query.get("url", "").strip()
+    if not url:
+        return web.json_response({"error": "url required"}, status=400)
+    # Normalize: add https:// if no protocol specified
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    from config import DATA_DIR
+    paste_dir = DATA_DIR / "pastes"
+    paste_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"screenshot_{int(time.time())}.png"
+    filepath = paste_dir / filename
+
+    result = await _run_capture(url, filepath)
+    if not result.get("ok"):
+        status = 502 if result.get("reason") == "unreachable" else 504 if result.get("reason") == "timeout" else 500
+        return web.json_response({"error": result["error"], "reason": result.get("reason", "capture_failed")}, status=status)
+
+    return web.FileResponse(filepath, headers={
+        "Content-Type": "image/png",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    })
+
+
+async def get_workspace_preview_screenshot(request: web.Request) -> web.Response:
+    """Screenshot the preview_url configured for a workspace.
+    Convenience endpoint so the Commander MCP only needs a workspace_id."""
+    import time
+    ws_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT preview_url FROM workspaces WHERE id = ?", (ws_id,))
+        row = await cur.fetchone()
+    finally:
+        await db.close()
+    if not row:
+        return web.json_response({"error": "workspace not found"}, status=404)
+    url = (row["preview_url"] or "").strip()
+    if not url:
+        return web.json_response({"error": "no preview_url set for this workspace"}, status=400)
+    # Normalize: add https:// if no protocol specified
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    from config import DATA_DIR
+    paste_dir = DATA_DIR / "pastes"
+    paste_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"preview_{ws_id}_{int(time.time())}.png"
+    filepath = paste_dir / filename
+
+    result = await _run_capture(url, filepath)
+    if not result.get("ok"):
+        status = 502 if result.get("reason") == "unreachable" else 504 if result.get("reason") == "timeout" else 500
+        return web.json_response({"error": result["error"], "reason": result.get("reason", "capture_failed")}, status=status)
+
+    return web.FileResponse(filepath, headers={
+        "Content-Type": "image/png",
+        "Content-Disposition": f'inline; filename="{filename}"',
+    })
+
+
+# ─── REST: Install Screenshot Tools ──────────────────────────────────
+
+async def install_screenshot_tools(request: web.Request) -> web.Response:
+    """Install playwright + chromium so the screenshot endpoints work.
+    Runs pip3 install and playwright install as subprocesses."""
+    import subprocess
+
+    steps = []
+    # Step 1: pip install playwright
+    try:
+        proc = subprocess.run(
+            ["pip3", "install", "playwright"],
+            capture_output=True, text=True, timeout=120,
+        )
+        steps.append({
+            "step": "pip3 install playwright",
+            "ok": proc.returncode == 0,
+            "output": (proc.stdout + proc.stderr).strip()[-500:],  # last 500 chars
+        })
+        if proc.returncode != 0:
+            return web.json_response({"ok": False, "steps": steps}, status=500)
+    except Exception as e:
+        steps.append({"step": "pip3 install playwright", "ok": False, "output": str(e)})
+        return web.json_response({"ok": False, "steps": steps}, status=500)
+
+    # Step 2: playwright install chromium
+    try:
+        proc = subprocess.run(
+            ["python3", "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=300,
+        )
+        steps.append({
+            "step": "playwright install chromium",
+            "ok": proc.returncode == 0,
+            "output": (proc.stdout + proc.stderr).strip()[-500:],
+        })
+        if proc.returncode != 0:
+            return web.json_response({"ok": False, "steps": steps}, status=500)
+    except Exception as e:
+        steps.append({"step": "playwright install chromium", "ok": False, "output": str(e)})
+        return web.json_response({"ok": False, "steps": steps}, status=500)
+
+    return web.json_response({"ok": True, "steps": steps})
+
+
+# ─── REST: Paste Image ────────────────────────────────────────────────
+
+async def paste_image(request: web.Request) -> web.Response:
+    """Save a pasted clipboard image, return its file path for Claude Code."""
+    import os
+    import time
+    from config import DATA_DIR
+
+    paste_dir = DATA_DIR / "pastes"
+    paste_dir.mkdir(parents=True, exist_ok=True)
+
+    reader = await request.multipart()
+    field = await reader.next()
+    if not field:
+        return web.json_response({"error": "no file"}, status=400)
+
+    # Determine extension from content type
+    ct = field.headers.get('Content-Type', 'image/png')
+    ext_map = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg'}
+    ext = ext_map.get(ct, 'png')
+
+    filename = f"paste_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
+    filepath = paste_dir / filename
+
+    with open(filepath, 'wb') as f:
+        while True:
+            chunk = await field.read_chunk()
+            if not chunk:
+                break
+            f.write(chunk)
+
+    return web.json_response({
+        "path": str(filepath),
+        "url": f"/api/pastes/{filename}",
+        "filename": filename,
+        "size": os.path.getsize(filepath),
+    }, status=201)
+
+
+async def serve_paste(request: web.Request) -> web.Response:
+    from config import DATA_DIR
+    filename = request.match_info["filename"]
+    filepath = DATA_DIR / "pastes" / filename
+    if not filepath.exists():
+        return web.json_response({"error": "not found"}, status=404)
+    return web.FileResponse(filepath)
+
+
+# ─── REST: Attachments ────────────────────────────────────────────────
+
+async def upload_attachment(request: web.Request) -> web.Response:
+    """Upload an image/file attachment for a task."""
+    import os
+    from config import ATTACHMENTS_DIR
+
+    reader = await request.multipart()
+    task_id = request.match_info["id"]
+
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    task_dir = ATTACHMENTS_DIR / task_id
+    task_dir.mkdir(exist_ok=True)
+
+    files_saved = []
+    while True:
+        field = await reader.next()
+        if field is None:
+            break
+        if field.name == 'file':
+            filename = field.filename or f"upload_{uuid.uuid4().hex[:8]}"
+            # Sanitize filename
+            safe_name = "".join(c for c in filename if c.isalnum() or c in '._-')
+            filepath = task_dir / safe_name
+            with open(filepath, 'wb') as f:
+                while True:
+                    chunk = await field.read_chunk()
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            files_saved.append({
+                "filename": safe_name,
+                "url": f"/api/attachments/{task_id}/{safe_name}",
+                "path": str(filepath),
+                "size": os.path.getsize(filepath),
+            })
+
+    return web.json_response({"files": files_saved}, status=201)
+
+
+async def serve_attachment(request: web.Request) -> web.Response:
+    """Serve a task attachment file."""
+    from config import ATTACHMENTS_DIR
+    task_id = request.match_info["task_id"]
+    filename = request.match_info["filename"]
+
+    filepath = ATTACHMENTS_DIR / task_id / filename
+    if not filepath.exists():
+        return web.json_response({"error": "not found"}, status=404)
+
+    return web.FileResponse(filepath)
+
+
+async def list_attachments(request: web.Request) -> web.Response:
+    """List all attachments for a task."""
+    import os
+    from config import ATTACHMENTS_DIR
+    task_id = request.match_info["id"]
+
+    task_dir = ATTACHMENTS_DIR / task_id
+    if not task_dir.exists():
+        return web.json_response([])
+
+    files = []
+    for f in sorted(task_dir.iterdir()):
+        if f.is_file():
+            files.append({
+                "filename": f.name,
+                "url": f"/api/attachments/{task_id}/{f.name}",
+                "path": str(f),
+                "size": os.path.getsize(f),
+            })
+    return web.json_response(files)
+
+
+# ─── REST: Research DB ────────────────────────────────────────────────
+
+async def list_research(request: web.Request) -> web.Response:
+    workspace_id = request.query.get("workspace")
+    feature = request.query.get("feature")
+    db = await get_db()
+    try:
+        query = "SELECT * FROM research_entries"
+        params = []
+        conditions = []
+        if workspace_id:
+            conditions.append("workspace_id = ?")
+            params.append(workspace_id)
+        if feature:
+            conditions.append("feature_tag = ?")
+            params.append(feature)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY updated_at DESC"
+        cur = await db.execute(query, params)
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_research(request: web.Request) -> web.Response:
+    body = await request.json()
+    topic = body.get("topic", "").strip()
+    if not topic:
+        return web.json_response({"error": "topic required"}, status=400)
+
+    entry_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO research_entries (id, workspace_id, topic, query, feature_tag, status, session_id, findings_summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (entry_id, body.get("workspace_id"), topic, body.get("query", topic),
+             body.get("feature_tag"), body.get("status", "pending"), body.get("session_id"),
+             body.get("findings_summary")),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM research_entries WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def update_research(request: web.Request) -> web.Response:
+    entry_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        allowed = ("topic", "query", "feature_tag", "status", "findings_summary", "session_id")
+        fields, values = [], []
+        for key in allowed:
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        if not fields:
+            return web.json_response({"error": "no fields"}, status=400)
+        fields.append("updated_at = datetime('now')")
+        values.append(entry_id)
+        await db.execute(f"UPDATE research_entries SET {', '.join(fields)} WHERE id = ?", values)
+        await db.commit()
+        cur = await db.execute("SELECT * FROM research_entries WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+async def get_research_with_sources(request: web.Request) -> web.Response:
+    entry_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM research_entries WHERE id = ?", (entry_id,))
+        entry = await cur.fetchone()
+        if not entry:
+            return web.json_response({"error": "not found"}, status=404)
+        entry = dict(entry)
+
+        cur = await db.execute(
+            "SELECT * FROM research_sources WHERE entry_id = ? ORDER BY relevance_score DESC, created_at",
+            (entry_id,),
+        )
+        sources = [dict(r) for r in await cur.fetchall()]
+        entry["sources"] = sources
+        return web.json_response(entry)
+    finally:
+        await db.close()
+
+
+async def add_research_source(request: web.Request) -> web.Response:
+    entry_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO research_sources (entry_id, url, title, content_summary, raw_content, relevance_score)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (entry_id, body.get("url"), body.get("title"), body.get("content_summary"),
+             body.get("raw_content"), body.get("relevance_score", 0)),
+        )
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def delete_research(request: web.Request) -> web.Response:
+    entry_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM research_entries WHERE id = ?", (entry_id,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def search_research(request: web.Request) -> web.Response:
+    """Full-text search across research entries and sources."""
+    q = request.query.get("q", "").strip()
+    workspace_id = request.query.get("workspace")
+    if not q:
+        return web.json_response([])
+    db = await get_db()
+    try:
+        query = """
+            SELECT DISTINCT e.* FROM research_entries e
+            LEFT JOIN research_sources s ON e.id = s.entry_id
+            WHERE (e.topic LIKE ? OR e.findings_summary LIKE ? OR s.content_summary LIKE ? OR s.title LIKE ?)
+        """
+        params = [f"%{q}%"] * 4
+        if workspace_id:
+            query += " AND e.workspace_id = ?"
+            params.append(workspace_id)
+        query += " ORDER BY e.updated_at DESC LIMIT 50"
+        cur = await db.execute(query, params)
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+# ─── REST: AGENTS.md ──────────────────────────────────────────────────
+
+async def get_agents_md(request: web.Request) -> web.Response:
+    """Read AGENTS.md files from workspace directory hierarchy."""
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "workspace not found"}, status=404)
+        ws_path = row["path"]
+    finally:
+        await db.close()
+
+    import os
+    agents_files = []
+    scan_dir = ws_path
+    for _ in range(10):
+        agents_file = os.path.join(scan_dir, "AGENTS.md")
+        if os.path.isfile(agents_file):
+            try:
+                with open(agents_file, "r") as f:
+                    agents_files.append({
+                        "path": agents_file,
+                        "relative": os.path.relpath(agents_file, ws_path),
+                        "content": f.read(),
+                    })
+            except (OSError, IOError):
+                pass
+        parent = os.path.dirname(scan_dir)
+        if parent == scan_dir:
+            break
+        scan_dir = parent
+
+    return web.json_response({
+        "workspace_id": workspace_id,
+        "workspace_path": ws_path,
+        "files": agents_files,
+    })
+
+
+async def save_agents_md(request: web.Request) -> web.Response:
+    """Create or update AGENTS.md in the workspace root."""
+    workspace_id = request.match_info["id"]
+    body = await request.json()
+    content = body.get("content", "")
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "workspace not found"}, status=404)
+        ws_path = row["path"]
+    finally:
+        await db.close()
+
+    import os
+    agents_file = os.path.join(ws_path, "AGENTS.md")
+    try:
+        with open(agents_file, "w") as f:
+            f.write(content)
+        return web.json_response({"ok": True, "path": agents_file})
+    except (OSError, IOError) as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── REST: Git Operations (Code Review) ───────────────────────────────
+
+import git_ops
+
+
+async def _get_workspace_path(workspace_id: str) -> str | None:
+    """Look up workspace path from DB. Returns None if not found."""
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+        row = await cur.fetchone()
+        return row["path"] if row else None
+    finally:
+        await db.close()
+
+
+async def get_workspace_git_status(request: web.Request) -> web.Response:
+    ws_path = await _get_workspace_path(request.match_info["id"])
+    if not ws_path:
+        return web.json_response({"error": "workspace not found"}, status=404)
+    try:
+        result = await git_ops.git_status(ws_path)
+        return web.json_response(result)
+    except Exception as e:
+        logger.exception("git_status failed")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def get_workspace_git_diff(request: web.Request) -> web.Response:
+    ws_path = await _get_workspace_path(request.match_info["id"])
+    if not ws_path:
+        return web.json_response({"error": "workspace not found"}, status=404)
+    staged = request.query.get("staged") == "1"
+    commit_range = request.query.get("range")
+    file_path = request.query.get("file")
+    try:
+        result = await git_ops.git_diff(ws_path, staged=staged, commit_range=commit_range, file_path=file_path)
+        return web.json_response(result)
+    except Exception as e:
+        logger.exception("git_diff failed")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def get_workspace_git_log(request: web.Request) -> web.Response:
+    ws_path = await _get_workspace_path(request.match_info["id"])
+    if not ws_path:
+        return web.json_response({"error": "workspace not found"}, status=404)
+    count = min(int(request.query.get("count", 20)), 100)
+    try:
+        commits = await git_ops.git_log(ws_path, count=count)
+        return web.json_response({"commits": commits})
+    except Exception as e:
+        logger.exception("git_log failed")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+IDE_COMMANDS = {
+    "vscode": ["code"],
+    "cursor": ["cursor"],
+    "zed": ["zed"],
+    "sublime": ["subl"],
+    "idea": ["idea"],
+    "webstorm": ["webstorm"],
+    "vim": ["vim"],
+    "neovim": ["nvim"],
+    "antigravity": ["antigravity"],
+}
+
+
+async def open_in_ide(request: web.Request) -> web.Response:
+    """Open a file (optionally at a line) in the user's configured IDE."""
+    body = await request.json()
+    file_path = body.get("file")
+    workspace_id = body.get("workspace_id")
+    line = body.get("line")
+
+    if not file_path or not workspace_id:
+        return web.json_response({"error": "file and workspace_id required"}, status=400)
+
+    ws_path = await _get_workspace_path(workspace_id)
+    if not ws_path:
+        return web.json_response({"error": "workspace not found"}, status=404)
+
+    import os
+    full_path = os.path.join(ws_path, file_path)
+    if not os.path.exists(full_path):
+        return web.json_response({"error": "file not found"}, status=404)
+
+    # Get IDE preference from app_settings
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT value FROM app_settings WHERE key = 'ide'")
+        row = await cur.fetchone()
+        ide = row["value"] if row else "vscode"
+    finally:
+        await db.close()
+
+    cmd_parts = IDE_COMMANDS.get(ide, ["code"])
+
+    # Build the file argument with optional line number
+    if line and ide in ("vscode", "cursor"):
+        file_arg = f"{full_path}:{line}"
+        args = cmd_parts + ["--goto", file_arg]
+    elif line and ide in ("sublime",):
+        args = cmd_parts + [f"{full_path}:{line}"]
+    elif line and ide in ("idea", "webstorm"):
+        args = cmd_parts + ["--line", str(line), full_path]
+    else:
+        args = cmd_parts + [full_path]
+
+    import subprocess
+    try:
+        subprocess.Popen(args, cwd=ws_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return web.json_response({"ok": True, "ide": ide, "file": file_path})
+    except FileNotFoundError:
+        return web.json_response(
+            {"error": f"IDE command '{cmd_parts[0]}' not found. Is {ide} installed and in PATH?"},
+            status=500,
+        )
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── REST: Workspace Overview ─────────────────────────────────────────
+
+IGNORE_DIRS = {'.git', 'node_modules', '__pycache__', '.next', 'dist', 'build', '.venv', 'venv', '.DS_Store'}
+
+async def get_workspace_overview(request: web.Request) -> web.Response:
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "workspace not found"}, status=404)
+        ws_path = row["path"]
+    finally:
+        await db.close()
+
+    import os
+    tree_lines = []
+    files_list = []
+    total_files = 0
+
+    for root, dirs, files in os.walk(ws_path):
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+        rel = os.path.relpath(root, ws_path)
+        depth = 0 if rel == '.' else rel.count(os.sep) + 1
+        if depth <= 3:
+            indent = '  ' * depth
+            dirname = os.path.basename(root) + '/' if rel != '.' else ''
+            if dirname:
+                tree_lines.append(f"{indent}{dirname}")
+            for f in sorted(files):
+                if f.startswith('.') and f != '.env.example':
+                    continue
+                total_files += 1
+                fp = os.path.join(root, f)
+                ext = os.path.splitext(f)[1].lstrip('.')
+                try:
+                    size = os.path.getsize(fp)
+                except OSError:
+                    size = 0
+                tree_lines.append(f"{indent}  {f}")
+                files_list.append({"path": os.path.relpath(fp, ws_path), "size": size, "type": ext})
+
+    # Count by type
+    by_type = {}
+    for f in files_list:
+        by_type[f["type"]] = by_type.get(f["type"], 0) + 1
+    summary_parts = [f"{count} .{ext}" for ext, count in sorted(by_type.items(), key=lambda x: -x[1])]
+
+    return web.json_response({
+        "tree": "\n".join(tree_lines),
+        "files": files_list[:200],
+        "total_files": total_files,
+        "summary": f"{total_files} files: {', '.join(summary_parts[:8])}",
+    })
+
+
+# ─── REST: Memory Sync ───────────────────────────────────────────────
+
+
+async def _get_workspace_path_or_error(workspace_id: str):
+    """Helper: look up workspace path. Returns (path, error_response)."""
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+        row = await cur.fetchone()
+        if not row:
+            return None, web.json_response({"error": "workspace not found"}, status=404)
+        return row["path"], None
+    finally:
+        await db.close()
+
+
+async def get_workspace_memory(request: web.Request) -> web.Response:
+    """GET /api/workspaces/{id}/memory — central memory + sync status."""
+    workspace_id = request.match_info["id"]
+    ws_path, err = await _get_workspace_path_or_error(workspace_id)
+    if err:
+        return err
+
+    from memory_sync import sync_manager
+    status = await sync_manager.get_status(workspace_id, ws_path)
+    central = await sync_manager.read_central(workspace_id)
+
+    return web.json_response({
+        "content": central,
+        "enabled": status.enabled,
+        "auto_sync": status.auto_sync,
+        "last_synced_at": status.last_synced_at,
+        "central_content_length": status.central_content_length,
+        "providers": status.providers,
+    })
+
+
+async def update_workspace_memory(request: web.Request) -> web.Response:
+    """PUT /api/workspaces/{id}/memory — update central memory content."""
+    workspace_id = request.match_info["id"]
+    body = await request.json()
+    content = body.get("content")
+    if content is None:
+        return web.json_response({"error": "content required"}, status=400)
+
+    from memory_sync import sync_manager
+    await sync_manager.write_central(workspace_id, content)
+    return web.json_response({"ok": True, "content_length": len(content)})
+
+
+async def sync_workspace_memory(request: web.Request) -> web.Response:
+    """POST /api/workspaces/{id}/memory/sync — trigger sync."""
+    workspace_id = request.match_info["id"]
+    ws_path, err = await _get_workspace_path_or_error(workspace_id)
+    if err:
+        return err
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    from memory_sync import sync_manager
+    import dataclasses
+    result = await sync_manager.sync(
+        workspace_id, ws_path,
+        source_cli=body.get("source_cli"),
+    )
+    return web.json_response(dataclasses.asdict(result))
+
+
+async def get_workspace_memory_diff(request: web.Request) -> web.Response:
+    """GET /api/workspaces/{id}/memory/diff — preview what sync would change."""
+    workspace_id = request.match_info["id"]
+    ws_path, err = await _get_workspace_path_or_error(workspace_id)
+    if err:
+        return err
+
+    from memory_sync import sync_manager
+    diffs = await sync_manager.get_diff(workspace_id, ws_path)
+    return web.json_response(diffs)
+
+
+async def resolve_workspace_memory(request: web.Request) -> web.Response:
+    """POST /api/workspaces/{id}/memory/resolve — resolve merge conflicts."""
+    workspace_id = request.match_info["id"]
+    ws_path, err = await _get_workspace_path_or_error(workspace_id)
+    if err:
+        return err
+
+    body = await request.json()
+    resolved = body.get("resolved_content")
+    if resolved is None:
+        return web.json_response({"error": "resolved_content required"}, status=400)
+
+    from memory_sync import sync_manager
+    import dataclasses
+    result = await sync_manager.resolve_conflicts(
+        workspace_id, ws_path, resolved,
+        push_to=body.get("push_to"),
+    )
+    return web.json_response(dataclasses.asdict(result))
+
+
+async def get_workspace_memory_settings(request: web.Request) -> web.Response:
+    """GET /api/workspaces/{id}/memory/settings."""
+    workspace_id = request.match_info["id"]
+    from memory_sync import sync_manager
+    settings = await sync_manager.get_settings(workspace_id)
+    return web.json_response(settings)
+
+
+async def update_workspace_memory_settings(request: web.Request) -> web.Response:
+    """PUT /api/workspaces/{id}/memory/settings — toggle auto-sync, etc."""
+    workspace_id = request.match_info["id"]
+    body = await request.json()
+    from memory_sync import sync_manager
+    settings = await sync_manager.update_settings(workspace_id, body)
+    return web.json_response(settings)
+
+
+async def get_workspace_auto_memory(request: web.Request) -> web.Response:
+    """GET /api/workspaces/{id}/memory/auto — auto-memory entries from all CLIs."""
+    workspace_id = request.match_info["id"]
+    ws_path, err = await _get_workspace_path_or_error(workspace_id)
+    if err:
+        return err
+
+    from memory_sync import sync_manager
+    entries = await sync_manager.read_all_auto_memory(ws_path)
+    return web.json_response(entries)
+
+
+# ─── REST: Memory Entries (Commander-owned auto-memory) ──────────────
+
+async def list_memory_entries(request: web.Request) -> web.Response:
+    """GET /api/memory — list entries, optionally filtered."""
+    from memory_manager import memory_manager
+    entries = await memory_manager.list_entries(
+        workspace_id=request.query.get("workspace"),
+        types=request.query.get("types", "").split(",") if request.query.get("types") else None,
+        source_cli=request.query.get("source_cli"),
+        limit=int(request.query.get("limit", "200")),
+    )
+    return web.json_response(entries)
+
+
+async def create_memory_entry(request: web.Request) -> web.Response:
+    """POST /api/memory — create a new entry."""
+    from memory_manager import memory_manager
+    body = await request.json()
+    name = body.get("name", "").strip()
+    etype = body.get("type", "").strip()
+    content = body.get("content", "").strip()
+    if not name or not etype or not content:
+        return web.json_response({"error": "name, type, and content required"}, status=400)
+    try:
+        entry_id = await memory_manager.save(
+            name=name, type=etype, content=content,
+            workspace_id=body.get("workspace_id"),
+            description=body.get("description", ""),
+            source_cli=body.get("source_cli", "commander"),
+            tags=body.get("tags"),
+        )
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    entry = await memory_manager.get(entry_id)
+    return web.json_response(entry, status=201)
+
+
+async def update_memory_entry(request: web.Request) -> web.Response:
+    """PUT /api/memory/{id} — update an entry."""
+    from memory_manager import memory_manager
+    entry_id = request.match_info["id"]
+    body = await request.json()
+    try:
+        found = await memory_manager.update(entry_id, **body)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    if not found:
+        return web.json_response({"error": "not found"}, status=404)
+    entry = await memory_manager.get(entry_id)
+    return web.json_response(entry)
+
+
+async def delete_memory_entry(request: web.Request) -> web.Response:
+    """DELETE /api/memory/{id}."""
+    from memory_manager import memory_manager
+    entry_id = request.match_info["id"]
+    found = await memory_manager.delete(entry_id)
+    if not found:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def search_memory_entries(request: web.Request) -> web.Response:
+    """GET /api/memory/search?q=..."""
+    from memory_manager import memory_manager
+    query = request.query.get("q", "").strip()
+    if not query:
+        return web.json_response({"error": "q parameter required"}, status=400)
+    entries = await memory_manager.search(
+        query,
+        workspace_id=request.query.get("workspace"),
+        types=request.query.get("types", "").split(",") if request.query.get("types") else None,
+    )
+    return web.json_response(entries)
+
+
+async def import_memory_from_cli(request: web.Request) -> web.Response:
+    """POST /api/memory/import — import from a CLI's native memory format."""
+    from memory_manager import memory_manager
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    workspace_path = body.get("workspace_path")
+
+    if not workspace_path and workspace_id:
+        ws_path, err = await _get_workspace_path(workspace_id)
+        if err:
+            return err
+        workspace_path = ws_path
+
+    if not workspace_path:
+        return web.json_response({"error": "workspace_path or workspace_id required"}, status=400)
+
+    count = await memory_manager.import_from_claude_memory(
+        workspace_path, workspace_id=workspace_id,
+    )
+    return web.json_response({"imported": count})
+
+
+async def export_memory_prompt(request: web.Request) -> web.Response:
+    """GET /api/memory/prompt?workspace=... — preview the prompt injection text."""
+    from memory_manager import memory_manager
+    from output_styles import resolve_output_style
+    ws_id = request.query.get("workspace")
+    # Resolve compact mode from workspace/global output style
+    compact = False
+    if ws_id:
+        db_os = await get_db()
+        try:
+            _c = await db_os.execute("SELECT output_style FROM workspaces WHERE id = ?", (ws_id,))
+            _r = await _c.fetchone()
+            _ws_os = _r["output_style"] if _r else None
+            _c2 = await db_os.execute("SELECT value FROM app_settings WHERE key = 'output_style'")
+            _r2 = await _c2.fetchone()
+            _gl_os = _r2["value"] if _r2 else None
+            compact = resolve_output_style(None, _ws_os, _gl_os) not in ("default", "lite")
+        except Exception:
+            pass
+        finally:
+            await db_os.close()
+    text = await memory_manager.export_for_prompt(
+        workspace_id=ws_id,
+        max_chars=int(request.query.get("max_chars", "4000")),
+        compact=compact,
+    )
+    return web.json_response({"prompt": text, "length": len(text)})
+
+
+# ─── REST: Commander ─────────────────────────────────────────────────
+
+async def create_commander(request: web.Request) -> web.Response:
+    workspace_id = request.match_info["id"]
+    # Accept optional body to override CLI/model
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    cli_type = body.get("cli_type", "claude")
+    default_model = get_profile(cli_type).default_commander_model
+    model = body.get("model", default_model)
+    default_mode = get_profile(cli_type).default_permission_mode
+    permission_mode = body.get("permission_mode", default_mode)
+    effort = body.get("effort", "max") if get_profile(cli_type).effort_levels else None
+
+    db = await get_db()
+    try:
+        # Verify workspace exists
+        cur = await db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+        ws = await cur.fetchone()
+        if not ws:
+            return web.json_response({"error": "workspace not found"}, status=404)
+
+        # Check if a commander session already exists for this workspace
+        cur = await db.execute(
+            """SELECT * FROM sessions
+               WHERE workspace_id = ? AND session_type = 'commander'
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id,),
+        )
+        existing = await cur.fetchone()
+        if existing:
+            # Ensure builtin-commander MCP is attached (backfill for older sessions)
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (existing["id"], "builtin-commander"),
+            )
+            await db.commit()
+            d = dict(existing)
+            d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+            return web.json_response(d)
+
+        # Commander sessions now use the dynamic MCP server system.
+        # The builtin-commander MCP server is attached via session_mcp_servers
+        # instead of writing a raw config file. PTY start handles registration.
+        session_id = str(uuid.uuid4())
+        cli_label = get_profile(cli_type).label
+        name = f"Commander ({cli_label}) — {dict(ws)['name']}"
+
+        # Inject dynamic workspace limits into Commander system prompt
+        ws_dict = dict(ws)
+        max_w = ws_dict.get("commander_max_workers") or 3
+        max_t = ws_dict.get("tester_max_workers") or 2
+        dynamic_prompt = COMMANDER_SYSTEM_PROMPT + (
+            f"\n\nWorkspace Limits: max_workers={max_w}, max_testers={max_t}. "
+            "Do not exceed these concurrency limits when creating sessions."
+        )
+
+        await db.execute(
+            """INSERT INTO sessions (id, workspace_id, name, model, permission_mode, effort,
+               system_prompt, session_type, auto_approve_mcp, cli_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'commander', 1, ?)""",
+            (session_id, workspace_id, name, model, permission_mode, effort or "high",
+             dynamic_prompt, cli_type),
+        )
+        # Attach builtin-commander MCP server with auto-approve
+        await db.execute(
+            "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+            (session_id, "builtin-commander"),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def get_commander(request: web.Request) -> web.Response:
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT * FROM sessions
+               WHERE workspace_id = ? AND session_type = 'commander'
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "no commander session found"}, status=404)
+        d = dict(row)
+        d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+async def create_tester(request: web.Request) -> web.Response:
+    """Create or return the workspace's Testing Agent session."""
+    workspace_id = request.match_info["id"]
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    cli_type = body.get("cli_type", "claude")
+    default_model = get_profile(cli_type).default_tester_model
+    model = body.get("model", default_model)
+
+    db = await get_db()
+    try:
+        # Verify workspace exists
+        cur = await db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+        ws = await cur.fetchone()
+        if not ws:
+            return web.json_response({"error": "workspace not found"}, status=404)
+
+        # Check if a tester session already exists for this workspace
+        cur = await db.execute(
+            """SELECT * FROM sessions
+               WHERE workspace_id = ? AND session_type = 'tester'
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id,),
+        )
+        existing = await cur.fetchone()
+        if existing:
+            # Ensure Playwright MCP is attached
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (existing["id"], "builtin-playwright"),
+            )
+            # Ensure testing agent guideline is attached
+            await db.execute(
+                "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                (existing["id"], "builtin-testing-agent"),
+            )
+            await db.commit()
+            d = dict(existing)
+            d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+            return web.json_response(d)
+
+        # Determine tester mode from workspace setting
+        tester_mode = dict(ws).get("tester_mode", "direct")
+        is_delegated = tester_mode == "delegated"
+
+        # Create new tester session
+        session_id = str(uuid.uuid4())
+        cli_label = get_profile(cli_type).label
+        mode_label = "Commander" if is_delegated else "Tester"
+        name = f"{mode_label} ({cli_label}) — {dict(ws)['name']}"
+
+        if is_delegated:
+            # Delegated mode: tester is a test-commander that spawns test-workers
+            # Needs commander MCP for session management, and auto permission mode
+            system_prompt = TESTER_COMMANDER_SYSTEM_PROMPT
+            permission_mode = get_profile(cli_type).default_permission_mode
+        else:
+            # Direct mode: tester runs tests itself with Playwright
+            system_prompt = TESTER_SYSTEM_PROMPT
+            # Plan mode for Claude (read-only tester); auto for others
+            permission_mode = "plan" if get_profile(cli_type).supports(Feature.PLAN_MODE) else get_profile(cli_type).default_permission_mode
+
+        await db.execute(
+            """INSERT INTO sessions (id, workspace_id, name, model, permission_mode, effort,
+               system_prompt, session_type, auto_approve_mcp, cli_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'tester', 1, ?)""",
+            (session_id, workspace_id, name, model, permission_mode, "high",
+             system_prompt, cli_type),
+        )
+
+        if is_delegated:
+            # Delegated: attach commander MCP so tester can create/manage test-worker sessions
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (session_id, "builtin-commander"),
+            )
+        else:
+            # Direct: attach Playwright MCP with auto-approve
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (session_id, "builtin-playwright"),
+            )
+
+        # Attach testing agent guideline in both modes
+        await db.execute(
+            "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+            (session_id, "builtin-testing-agent"),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def get_tester(request: web.Request) -> web.Response:
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT * FROM sessions
+               WHERE workspace_id = ? AND session_type = 'tester'
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "no tester session found"}, status=404)
+        d = dict(row)
+        d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+# ─── REST: Documentor ────────────────────────────────────────────────
+
+
+async def create_documentor(request: web.Request) -> web.Response:
+    """Create or return the workspace's Documentor session."""
+    workspace_id = request.match_info["id"]
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    cli_type = body.get("cli_type", "claude")
+    default_model = get_profile(cli_type).default_tester_model  # same tier as tester
+    model = body.get("model", default_model)
+    allow_all_edits = body.get("allow_all_edits", False)
+
+    db = await get_db()
+    try:
+        # Verify workspace exists
+        cur = await db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+        ws = await cur.fetchone()
+        if not ws:
+            return web.json_response({"error": "workspace not found"}, status=404)
+
+        # Check if a documentor session already exists for this workspace
+        cur = await db.execute(
+            """SELECT * FROM sessions
+               WHERE workspace_id = ? AND session_type = 'documentor'
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id,),
+        )
+        existing = await cur.fetchone()
+        if existing:
+            # Ensure permission_mode and auto-approve settings are correct
+            expected_perm = "acceptEdits" if cli_type == "claude" else get_profile(cli_type).default_permission_mode
+            await db.execute(
+                "UPDATE sessions SET permission_mode = ?, auto_approve_plan = 1, auto_approve_mcp = 1, allowed_tools = ? WHERE id = ?",
+                (expected_perm, json.dumps(DOCUMENTOR_ALLOWED_TOOLS), existing["id"]),
+            )
+            # Update allow_all_edits tag if changed
+            if allow_all_edits:
+                existing_tags = json.loads(existing["tags"] or "[]")
+                if "unrestricted_edit" not in existing_tags:
+                    existing_tags.append("unrestricted_edit")
+                    await db.execute(
+                        "UPDATE sessions SET tags = ? WHERE id = ?",
+                        (json.dumps(existing_tags), existing["id"]),
+                    )
+            # Ensure Documentor MCP + Playwright MCP are attached
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (existing["id"], "builtin-documentor"),
+            )
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+                (existing["id"], "builtin-playwright"),
+            )
+            await db.execute(
+                "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                (existing["id"], "builtin-documentation-agent"),
+            )
+            await db.commit()
+            d = dict(existing)
+            d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+            return web.json_response(d)
+
+        # Create new documentor session
+        session_id = str(uuid.uuid4())
+        cli_label = get_profile(cli_type).label
+        name = f"Documentor ({cli_label}) — {dict(ws)['name']}"
+
+        # Documentor needs acceptEdits + pre-approved Bash commands for builds/sed/npm
+        permission_mode = "acceptEdits" if cli_type == "claude" else get_profile(cli_type).default_permission_mode
+
+        # Tags: "unrestricted_edit" bypasses the docs-only path guard
+        tags = json.dumps(["unrestricted_edit"]) if allow_all_edits else "[]"
+
+        await db.execute(
+            """INSERT INTO sessions (id, workspace_id, name, model, permission_mode, effort,
+               system_prompt, session_type, auto_approve_mcp, auto_approve_plan, cli_type, tags, allowed_tools)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'documentor', 1, 1, ?, ?, ?)""",
+            (session_id, workspace_id, name, model, permission_mode, "high",
+             DOCUMENTOR_SYSTEM_PROMPT, cli_type, tags, json.dumps(DOCUMENTOR_ALLOWED_TOOLS)),
+        )
+
+        # Attach Documentor MCP server (knowledge ingestion, screenshots, doc writing, build)
+        await db.execute(
+            "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+            (session_id, "builtin-documentor"),
+        )
+        # Attach Playwright MCP (direct browser automation for screenshots/GIFs)
+        await db.execute(
+            "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+            (session_id, "builtin-playwright"),
+        )
+        # Attach documentation agent guideline
+        await db.execute(
+            "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+            (session_id, "builtin-documentation-agent"),
+        )
+        await db.commit()
+
+        # Emit event
+        try:
+            from event_bus import bus
+            await bus.emit(CommanderEvent.DOCUMENTOR_STARTED, {
+                "session_id": session_id,
+                "workspace_id": workspace_id,
+                "cli_type": cli_type,
+                "model": model,
+            }, source="api", actor="user")
+        except Exception:
+            pass
+
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def get_documentor(request: web.Request) -> web.Response:
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT * FROM sessions
+               WHERE workspace_id = ? AND session_type = 'documentor'
+               ORDER BY created_at DESC LIMIT 1""",
+            (workspace_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "no documentor session found"}, status=404)
+        d = dict(row)
+        d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+async def get_docs_status(request: web.Request) -> web.Response:
+    """GET /api/workspaces/{id}/docs — docs manifest, tree, and coverage stats."""
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+        ws = await cur.fetchone()
+        if not ws:
+            return web.json_response({"error": "workspace not found"}, status=404)
+        ws_path = ws["path"]
+    finally:
+        await db.close()
+
+    import os as _os
+
+    docs_dir = _os.path.join(ws_path, "docs")
+    manifest_path = _os.path.join(docs_dir, "docs_manifest.json")
+    screenshots_dir = _os.path.join(docs_dir, "screenshots")
+    gifs_dir = _os.path.join(docs_dir, "gifs")
+
+    # Read manifest
+    manifest = {}
+    if _os.path.isfile(manifest_path):
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+        except Exception:
+            pass
+
+    # Count files
+    page_count = 0
+    screenshot_count = 0
+    gif_count = 0
+    screenshots: list[dict] = []
+    gifs: list[dict] = []
+    tree: list[str] = []
+
+    if _os.path.isdir(docs_dir):
+        for root, dirs, files in _os.walk(docs_dir):
+            dirs[:] = [d for d in dirs if d not in ("node_modules", "cache", "dist", ".vitepress")]
+            level = root.replace(docs_dir, "").count(_os.sep)
+            folder = _os.path.basename(root) or "docs"
+            tree.append("  " * level + folder + "/")
+            for fn in sorted(files):
+                tree.append("  " * (level + 1) + fn)
+                full = _os.path.join(root, fn)
+                if fn.endswith(".md"):
+                    page_count += 1
+                elif fn.endswith(".png"):
+                    screenshot_count += 1
+                    screenshots.append({
+                        "name": fn,
+                        "path": _os.path.relpath(full, docs_dir),
+                        "size_kb": round(_os.path.getsize(full) / 1024, 1),
+                    })
+                elif fn.endswith(".gif"):
+                    gif_count += 1
+                    gifs.append({
+                        "name": fn,
+                        "path": _os.path.relpath(full, docs_dir),
+                        "size_kb": round(_os.path.getsize(full) / 1024, 1),
+                    })
+
+    # Undocumented features
+    documented_tasks = set(manifest.get("documented_tasks", []))
+    undocumented: list[dict] = []
+    try:
+        db2 = await get_db()
+        try:
+            cur = await db2.execute(
+                "SELECT id, title, status, labels FROM tasks WHERE status IN ('done', 'review')"
+            )
+            rows = await cur.fetchall()
+            for r in rows:
+                if r["id"] not in documented_tasks:
+                    undocumented.append({"id": r["id"], "title": r["title"], "status": r["status"]})
+        finally:
+            await db2.close()
+    except Exception:
+        pass
+
+    # Read VitePress dev port if running
+    dev_port = None
+    dev_port_file = _os.path.join(docs_dir, ".dev-port")
+    if _os.path.isfile(dev_port_file):
+        try:
+            with open(dev_port_file) as f:
+                dev_port = int(f.read().strip())
+        except Exception:
+            pass
+
+    return web.json_response({
+        "exists": _os.path.isdir(docs_dir),
+        "manifest": manifest,
+        "pages": page_count,
+        "screenshots": screenshot_count,
+        "gifs": gif_count,
+        "screenshot_list": screenshots[:50],
+        "gif_list": gifs[:50],
+        "tree": tree,
+        "undocumented_features": undocumented,
+        "last_build": manifest.get("last_build_at"),
+        "docs_path": docs_dir,
+        "dev_port": dev_port,
+    })
+
+
+async def trigger_docs_build(request: web.Request) -> web.Response:
+    """POST /api/workspaces/{id}/docs/build — trigger VitePress build."""
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))
+        ws = await cur.fetchone()
+        if not ws:
+            return web.json_response({"error": "workspace not found"}, status=404)
+        ws_path = ws["path"]
+    finally:
+        await db.close()
+
+    import os as _os
+
+    docs_dir = _os.path.join(ws_path, "docs")
+    if not _os.path.isdir(docs_dir):
+        return web.json_response({"error": "no docs/ directory found"}, status=404)
+
+    # Auto-install if needed
+    if _os.path.isfile(_os.path.join(docs_dir, "package.json")) and not _os.path.isdir(_os.path.join(docs_dir, "node_modules")):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "npm", "install", cwd=docs_dir,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=120)
+        except Exception as e:
+            return web.json_response({"error": f"npm install failed: {e}"}, status=500)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "npx", "vitepress", "build", cwd=docs_dir,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode != 0:
+            return web.json_response({"error": stderr.decode()[:1000]}, status=500)
+
+        # Update manifest
+        manifest_path = _os.path.join(docs_dir, "docs_manifest.json")
+        manifest = {}
+        if _os.path.isfile(manifest_path):
+            try:
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+            except Exception:
+                pass
+        manifest["last_build_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        # Emit event
+        try:
+            from event_bus import bus
+            await bus.emit(CommanderEvent.DOCS_BUILD_COMPLETED, {
+                "workspace_id": workspace_id,
+                "docs_path": docs_dir,
+            }, source="api", actor="user")
+        except Exception:
+            pass
+
+        dist_path = _os.path.join(docs_dir, ".vitepress", "dist")
+        return web.json_response({
+            "ok": True,
+            "dist_path": dist_path,
+            "stdout": stdout.decode()[-500:],
+        })
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "build timed out after 120s"}, status=500)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── REST: Test Queue ────────────────────────────────────────────────
+
+async def list_test_queue(request: web.Request) -> web.Response:
+    """GET /api/workspaces/{id}/test-queue — list queued/running tests."""
+    workspace_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM test_queue WHERE workspace_id = ? ORDER BY created_at ASC",
+            (workspace_id,),
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def enqueue_test(request: web.Request) -> web.Response:
+    """POST /api/workspaces/{id}/test-queue — add a test to the queue.
+
+    Body: { task_id?, title, description?, acceptance_criteria? }
+    If task_id is provided, title/description/acceptance_criteria are pulled from the task.
+    """
+    workspace_id = request.match_info["id"]
+    body = await request.json()
+    task_id = body.get("task_id")
+
+    db = await get_db()
+    try:
+        title = body.get("title", "")
+        description = body.get("description", "")
+        acceptance_criteria = body.get("acceptance_criteria", "")
+
+        # If task_id provided, pull details from the task
+        if task_id:
+            cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            task = await cur.fetchone()
+            if task:
+                task = dict(task)
+                title = title or task.get("title", "")
+                description = description or task.get("description", "")
+                acceptance_criteria = acceptance_criteria or task.get("acceptance_criteria", "")
+
+        if not title:
+            return web.json_response({"error": "title required"}, status=400)
+
+        entry_id = str(uuid.uuid4())
+        await db.execute(
+            """INSERT INTO test_queue (id, workspace_id, task_id, title, description, acceptance_criteria)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (entry_id, workspace_id, task_id, title, description, acceptance_criteria),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM test_queue WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+        entry = dict(row)
+
+        # Broadcast to WebSocket clients
+        for ws in ws_clients:
+            try:
+                await ws.send_json({"type": "test_queue_update", "workspace_id": workspace_id, "entry": entry})
+            except Exception:
+                pass
+
+        # Try to process the queue (start next test if tester is idle)
+        import asyncio
+        asyncio.ensure_future(_process_test_queue(workspace_id))
+
+        return web.json_response(entry, status=201)
+    finally:
+        await db.close()
+
+
+async def remove_from_test_queue(request: web.Request) -> web.Response:
+    """DELETE /api/test-queue/{id} — remove a queued test."""
+    entry_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM test_queue WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        workspace_id = dict(row)["workspace_id"]
+        await db.execute("DELETE FROM test_queue WHERE id = ?", (entry_id,))
+        await db.commit()
+
+        for ws in ws_clients:
+            try:
+                await ws.send_json({"type": "test_queue_update", "workspace_id": workspace_id, "removed": entry_id})
+            except Exception:
+                pass
+
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def _process_test_queue(workspace_id: str):
+    """Background: pick the next queued test and dispatch to the tester.
+
+    In 'direct' mode: sends the test to the singleton tester session.
+    In 'delegated' mode: spawns a new test-worker session for each test.
+    """
+    import asyncio
+
+    db = await get_db()
+    try:
+        # Get workspace tester_mode
+        cur = await db.execute("SELECT tester_mode FROM workspaces WHERE id = ?", (workspace_id,))
+        ws_row = await cur.fetchone()
+        tester_mode = dict(ws_row).get("tester_mode", "direct") if ws_row else "direct"
+
+        if tester_mode == "direct":
+            # Check if there's already a running test
+            cur = await db.execute(
+                "SELECT id FROM test_queue WHERE workspace_id = ? AND status = 'running' LIMIT 1",
+                (workspace_id,),
+            )
+            if await cur.fetchone():
+                return  # Already processing one
+
+            # Get next queued item
+            cur = await db.execute(
+                "SELECT * FROM test_queue WHERE workspace_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1",
+                (workspace_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return
+            entry = dict(row)
+
+            # Mark as running
+            await db.execute(
+                "UPDATE test_queue SET status = 'running', started_at = datetime('now') WHERE id = ?",
+                (entry["id"],),
+            )
+            await db.commit()
+
+            # Get or create tester session
+            cur = await db.execute(
+                "SELECT id FROM sessions WHERE workspace_id = ? AND session_type = 'tester' ORDER BY created_at DESC LIMIT 1",
+                (workspace_id,),
+            )
+            tester_row = await cur.fetchone()
+            if not tester_row:
+                # No tester yet — can't process, revert to queued
+                await db.execute(
+                    "UPDATE test_queue SET status = 'queued', started_at = NULL WHERE id = ?",
+                    (entry["id"],),
+                )
+                await db.commit()
+                return
+
+            tester_id = dict(tester_row)["id"]
+
+            # Build test prompt and send to tester via PTY input
+            prompt = _build_test_prompt(entry)
+            if pty_mgr.is_alive(tester_id):
+                pty_mgr.write(tester_id, prompt + "\n")
+
+            # Broadcast status update
+            for ws in ws_clients:
+                try:
+                    await ws.send_json({
+                        "type": "test_queue_update",
+                        "workspace_id": workspace_id,
+                        "entry": {**entry, "status": "running"},
+                    })
+                except Exception:
+                    pass
+
+        elif tester_mode == "delegated":
+            # In delegated mode, pick ALL queued items and spawn a test-worker for each
+            cur = await db.execute(
+                "SELECT * FROM test_queue WHERE workspace_id = ? AND status = 'queued' ORDER BY created_at ASC",
+                (workspace_id,),
+            )
+            queued = [dict(r) for r in await cur.fetchall()]
+            if not queued:
+                return
+
+            # Get or create the tester (test-commander) session
+            cur = await db.execute(
+                "SELECT id FROM sessions WHERE workspace_id = ? AND session_type = 'tester' ORDER BY created_at DESC LIMIT 1",
+                (workspace_id,),
+            )
+            tester_row = await cur.fetchone()
+            if not tester_row:
+                return
+
+            tester_id = dict(tester_row)["id"]
+            if not pty_mgr.is_alive(tester_id):
+                return
+
+            # Mark all as running and send batch to test-commander
+            for entry in queued:
+                await db.execute(
+                    "UPDATE test_queue SET status = 'running', started_at = datetime('now') WHERE id = ?",
+                    (entry["id"],),
+                )
+            await db.commit()
+
+            # Build a batch prompt for the test-commander
+            prompt_parts = ["New test requests to delegate to test-workers:\n"]
+            for i, entry in enumerate(queued, 1):
+                prompt_parts.append(f"## Test {i}: {entry['title']}")
+                if entry.get("description"):
+                    prompt_parts.append(f"Description: {entry['description']}")
+                if entry.get("acceptance_criteria"):
+                    prompt_parts.append(f"Acceptance Criteria: {entry['acceptance_criteria']}")
+                prompt_parts.append(f"Queue ID: {entry['id']}")
+                prompt_parts.append("")
+
+            prompt_parts.append("Create test-worker sessions and delegate these tests. Report results when all workers complete.")
+            pty_mgr.write(tester_id, "\n".join(prompt_parts) + "\n")
+
+            for ws in ws_clients:
+                try:
+                    await ws.send_json({
+                        "type": "test_queue_update",
+                        "workspace_id": workspace_id,
+                        "batch_started": [e["id"] for e in queued],
+                    })
+                except Exception:
+                    pass
+    finally:
+        await db.close()
+
+
+def _build_test_prompt(entry: dict) -> str:
+    """Build a test prompt from a queue entry."""
+    parts = [f"Please test the following:\n\n## {entry['title']}"]
+    if entry.get("description"):
+        parts.append(f"\nDescription:\n{entry['description']}")
+    if entry.get("acceptance_criteria"):
+        parts.append(f"\nAcceptance Criteria:\n{entry['acceptance_criteria']}")
+    parts.append("\nRun the tests now and report results with screenshots.")
+    return "\n".join(parts)
+
+
+async def update_test_queue_entry(request: web.Request) -> web.Response:
+    """PUT /api/test-queue/{id} — update a queue entry (e.g. mark done/failed with summary)."""
+    entry_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        allowed = ("status", "result_summary", "assigned_session_id")
+        fields, values = [], []
+        for key in allowed:
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        if not fields:
+            return web.json_response({"error": "no fields"}, status=400)
+
+        # Auto-set completed_at when moving to done/failed
+        if body.get("status") in ("done", "failed"):
+            fields.append("completed_at = datetime('now')")
+
+        values.append(entry_id)
+        await db.execute(f"UPDATE test_queue SET {', '.join(fields)} WHERE id = ?", values)
+        await db.commit()
+
+        cur = await db.execute("SELECT * FROM test_queue WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        entry = dict(row)
+
+        # Broadcast
+        for ws in ws_clients:
+            try:
+                await ws.send_json({
+                    "type": "test_queue_update",
+                    "workspace_id": entry["workspace_id"],
+                    "entry": entry,
+                })
+            except Exception:
+                pass
+
+        # If this was the running test in direct mode and it's now done/failed, process next
+        if body.get("status") in ("done", "failed"):
+            import asyncio
+            asyncio.ensure_future(_process_test_queue(entry["workspace_id"]))
+            # Emit event for pipeline to pick up
+            await bus.emit(CommanderEvent.TEST_QUEUE_ENTRY_COMPLETED, {
+                "test_queue_id": entry_id,
+                "task_id": entry.get("task_id"),
+                "workspace_id": entry.get("workspace_id"),
+                "status": body["status"],
+                "result_summary": entry.get("result_summary"),
+            }, source="test_queue")
+
+        return web.json_response(entry)
+    finally:
+        await db.close()
+
+
+# ─── REST: Session Tree ──────────────────────────────────────────────
+
+async def get_session_tree(request: web.Request) -> web.Response:
+    """Return a recursive tree of sessions rooted at the given session."""
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        # Fetch root session
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        root = await cur.fetchone()
+        if not root:
+            return web.json_response({"error": "session not found"}, status=404)
+
+        async def build_tree(sid: str) -> dict:
+            cur2 = await db.execute("SELECT * FROM sessions WHERE id = ?", (sid,))
+            row = await cur2.fetchone()
+            if not row:
+                return None
+            node = dict(row)
+            node["status"] = "running" if pty_mgr.is_alive(node["id"]) else "idle"
+            # Find children
+            cur3 = await db.execute(
+                "SELECT id FROM sessions WHERE parent_session_id = ? ORDER BY created_at",
+                (sid,),
+            )
+            child_rows = await cur3.fetchall()
+            children = []
+            for child in child_rows:
+                child_tree = await build_tree(child["id"])
+                if child_tree:
+                    children.append(child_tree)
+            node["children"] = children
+            return node
+
+        tree = await build_tree(session_id)
+        return web.json_response(tree)
+    finally:
+        await db.close()
+
+
+# ─── REST: Session Subagents ─────────────────────────────────────────
+
+async def get_session_subagents(request: web.Request) -> web.Response:
+    """Return the in-memory sub-agent list for a session (from CLI hooks)."""
+    from hooks import get_subagents
+    session_id = request.match_info["id"]
+    return web.json_response(get_subagents(session_id))
+
+
+async def get_subagent_transcript(request: web.Request) -> web.Response:
+    """Read and return a sub-agent's transcript as formatted markdown."""
+    from hooks import get_subagents
+    from history_reader import read_session_messages, export_session_as_markdown
+
+    session_id = request.match_info["id"]
+    agent_id = request.match_info["agent_id"]
+
+    # Find the agent in hook state
+    agents = get_subagents(session_id)
+    agent = next((a for a in agents if a.get("id") == agent_id), None)
+    if not agent:
+        return web.json_response({"error": "Agent not found"}, status=404)
+
+    transcript_path = agent.get("transcript_path")
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return web.json_response({
+            "markdown": None,
+            "agent": agent,
+            "error": "Transcript file not available",
+        })
+
+    messages = read_session_messages(transcript_path)
+    markdown = export_session_as_markdown(messages)
+    return web.json_response({
+        "markdown": markdown,
+        "agent": agent,
+    })
+
+
+# ─── REST: Accounts ──────────────────────────────────────────────────
+
+async def list_accounts(request):
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM accounts ORDER BY is_default DESC, name")
+        rows = await cur.fetchall()
+        # Mask API keys in response
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get("api_key"):
+                key = d["api_key"]
+                d["api_key_masked"] = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+                del d["api_key"]  # Don't send raw key in list
+            result.append(d)
+        return web.json_response(result)
+    finally:
+        await db.close()
+
+async def create_account(request):
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+
+    acc_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO accounts (id, name, type, api_key, is_default, browser_path, chrome_profile) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (acc_id, name, body.get("type", "api_key"), body.get("api_key"), 1 if body.get("is_default") else 0,
+             body.get("browser_path"), body.get("chrome_profile")),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM accounts WHERE id = ?", (acc_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+async def update_account(request):
+    acc_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        allowed = ("name", "type", "api_key", "is_default", "status", "quota_reset_at", "browser_path", "chrome_profile")
+        fields, values = [], []
+        for key in allowed:
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        if not fields:
+            return web.json_response({"error": "no fields"}, status=400)
+        values.append(acc_id)
+        await db.execute(f"UPDATE accounts SET {', '.join(fields)} WHERE id = ?", values)
+        await db.commit()
+        cur = await db.execute("SELECT * FROM accounts WHERE id = ?", (acc_id,))
+        row = await cur.fetchone()
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+async def delete_account(request):
+    acc_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM accounts WHERE id = ?", (acc_id,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+async def test_account(request):
+    """Test an API key by making a simple API call."""
+    acc_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT api_key FROM accounts WHERE id = ?", (acc_id,))
+        row = await cur.fetchone()
+        if not row or not row["api_key"]:
+            return web.json_response({"error": "no API key"}, status=400)
+
+        import urllib.request
+        import urllib.error
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": row["api_key"],
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            data=json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+            }).encode(),
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            await db.execute("UPDATE accounts SET status = 'active', last_used_at = datetime('now') WHERE id = ?", (acc_id,))
+            await db.commit()
+            return web.json_response({"status": "ok", "message": "API key is valid"})
+        except urllib.error.HTTPError as e:
+            status_code = e.code
+            if status_code == 401:
+                return web.json_response({"status": "error", "message": "Invalid API key"})
+            elif status_code == 429:
+                await db.execute(
+                    "UPDATE accounts SET status = 'quota_exceeded', quota_reset_at = datetime('now', '+4 hours') WHERE id = ?",
+                    (acc_id,),
+                )
+                await db.commit()
+                return web.json_response({"status": "quota_exceeded", "message": "Rate limited — 4h cooldown started"})
+            return web.json_response({"status": "error", "message": f"HTTP {status_code}"})
+    finally:
+        await db.close()
+
+
+# ─── REST: Account Browser ───────────────────────────────────────────────
+
+async def open_account_browser(request: web.Request) -> web.Response:
+    """Open a browser for a specific account using its configured browser/profile."""
+    import subprocess
+    acc_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM accounts WHERE id = ?", (acc_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "account not found"}, status=404)
+        acc = dict(row)
+    finally:
+        await db.close()
+
+    browser_path = acc.get("browser_path") or ""
+    chrome_profile = acc.get("chrome_profile") or ""
+
+    body = await request.json() if request.content_length else {}
+    url = body.get("url", "https://claude.ai")
+
+    try:
+        if browser_path and chrome_profile:
+            # Launch specific browser with profile
+            if browser_path.endswith(".app") or ".app/" in browser_path:
+                # macOS .app bundle — use open -na
+                subprocess.Popen(["open", "-na", browser_path, "--args", f"--profile-directory={chrome_profile}", url])
+            else:
+                subprocess.Popen([browser_path, f"--profile-directory={chrome_profile}", url])
+        elif browser_path:
+            # Browser without profile
+            if browser_path.endswith(".app") or ".app/" in browser_path:
+                subprocess.Popen(["open", "-na", browser_path, url])
+            else:
+                subprocess.Popen([browser_path, url])
+        elif chrome_profile:
+            # Default Chrome with profile
+            subprocess.Popen(["open", "-na", "Google Chrome", "--args", f"--profile-directory={chrome_profile}", url])
+        else:
+            # Just open URL in default browser
+            subprocess.Popen(["open", url])
+
+        return web.json_response({"ok": True, "account": acc["name"], "browser_path": browser_path, "chrome_profile": chrome_profile})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def open_next_account(request: web.Request) -> web.Response:
+    """Find the next usable non-API-key account and open its browser."""
+    db = await get_db()
+    try:
+        # Find OAuth accounts that are active, ordered by least recently used
+        cur = await db.execute(
+            "SELECT * FROM accounts WHERE type != 'api_key' AND status = 'active' "
+            "ORDER BY last_used_at ASC NULLS FIRST, created_at ASC"
+        )
+        rows = await cur.fetchall()
+        if not rows:
+            # Fallback: try quota_exceeded accounts whose reset time has passed
+            cur = await db.execute(
+                "SELECT * FROM accounts WHERE type != 'api_key' AND status = 'quota_exceeded' "
+                "AND quota_reset_at <= datetime('now') "
+                "ORDER BY quota_reset_at ASC"
+            )
+            rows = await cur.fetchall()
+
+        if not rows:
+            return web.json_response({"error": "no available accounts", "message": "All non-API accounts are exhausted or none configured"}, status=404)
+
+        acc = dict(rows[0])
+
+        # Mark this account as used now
+        await db.execute(
+            "UPDATE accounts SET last_used_at = datetime('now') WHERE id = ?",
+            (acc["id"],),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    # Open the browser for this account
+    import subprocess
+    browser_path = acc.get("browser_path") or ""
+    chrome_profile = acc.get("chrome_profile") or ""
+
+    body = await request.json() if request.content_length else {}
+    url = body.get("url", "https://claude.ai")
+
+    try:
+        if browser_path and chrome_profile:
+            if browser_path.endswith(".app") or ".app/" in browser_path:
+                subprocess.Popen(["open", "-na", browser_path, "--args", f"--profile-directory={chrome_profile}", url])
+            else:
+                subprocess.Popen([browser_path, f"--profile-directory={chrome_profile}", url])
+        elif browser_path:
+            if browser_path.endswith(".app") or ".app/" in browser_path:
+                subprocess.Popen(["open", "-na", browser_path, url])
+            else:
+                subprocess.Popen([browser_path, url])
+        elif chrome_profile:
+            subprocess.Popen(["open", "-na", "Google Chrome", "--args", f"--profile-directory={chrome_profile}", url])
+        else:
+            subprocess.Popen(["open", url])
+
+        return web.json_response({
+            "ok": True,
+            "account_id": acc["id"],
+            "account_name": acc["name"],
+            "browser_path": browser_path,
+            "chrome_profile": chrome_profile,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── REST: Account OAuth Sandbox ──────────────────────────────────────────
+
+async def snapshot_account(request: web.Request) -> web.Response:
+    """Snapshot current ~/.claude/ auth state for an OAuth account."""
+    from account_sandbox import snapshot_current_auth
+    acc_id = request.match_info["id"]
+    result = snapshot_current_auth(acc_id)
+    if result.get("error"):
+        return web.json_response(result, status=400)
+
+    # Mark account as oauth type with snapshot
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE accounts SET type = 'oauth', status = 'active', last_used_at = datetime('now') WHERE id = ?",
+            (acc_id,),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    return web.json_response(result)
+
+
+async def restart_with_account(request: web.Request) -> web.Response:
+    """Stop a session and restart it with a different account (for quota failover)."""
+    session_id = request.match_info["id"]
+    body = await request.json()
+    new_account_id = body.get("account_id")
+    if not new_account_id:
+        return web.json_response({"error": "account_id required"}, status=400)
+
+    # Update session's account
+    db = await get_db()
+    try:
+        await db.execute("UPDATE sessions SET account_id = ? WHERE id = ?", (new_account_id, session_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+    # Stop current PTY (if running)
+    await pty_mgr.stop_session(session_id)
+
+    # The frontend will detect the exit and can restart via start_pty
+    # which will pick up the new account_id and inject the right auth
+    await broadcast({
+        "session_id": session_id,
+        "type": "account_switched",
+        "new_account_id": new_account_id,
+        "message": "Account switched. Session will restart with new auth.",
+    })
+
+    return web.json_response({"ok": True, "session_id": session_id, "new_account_id": new_account_id})
+
+
+# ─── REST: Native Terminal Pop-Out ──────────────────────────────────────────
+
+async def pop_out_session(request: web.Request) -> web.Response:
+    """POST /api/sessions/{id}/pop-out
+
+    Opens the session in a native OS terminal (Terminal.app / iTerm2 on macOS).
+    Builds the same CLI command as start_pty would, but instead of spawning a
+    PTY inside Commander, opens a real terminal window. Hooks still relay events
+    back to Commander so session state, tool tracking, and subagent tracking
+    all continue to work.
+
+    The session is marked as is_external=1 so the frontend knows to show a
+    status card instead of an xterm.js terminal.
+    """
+    import shlex
+    import sys
+
+    session_id = request.match_info["id"]
+
+    config = await get_session_config(session_id)
+    if not config:
+        return web.json_response({"error": "Session not found"}, status=400)
+
+    # Check workspace has native terminals enabled
+    workspace_id = config.get("workspace_id", "")
+    db_check = await get_db()
+    try:
+        cur = await db_check.execute(
+            "SELECT native_terminals_enabled FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        )
+        ws_row = await cur.fetchone()
+        if not ws_row or not ws_row["native_terminals_enabled"]:
+            return web.json_response(
+                {"error": "Native terminals not enabled for this workspace"},
+                status=400,
+            )
+    finally:
+        await db_check.close()
+
+    # Stop existing PTY if running (can't have both)
+    if pty_mgr.is_alive(session_id):
+        await pty_mgr.stop_session(session_id)
+
+    # Build CLI command via UnifiedSession (same logic as start_pty)
+    cli_type = config.get("cli_type", "claude")
+    session_obj = UnifiedSession(cli_type, config)
+
+    # Minimal system prompt for pop-out (guidelines omitted — user manages their own)
+    if config.get("system_prompt"):
+        session_obj.append_system_prompt(config["system_prompt"])
+
+    # Resume if native_session_id exists
+    native_sid = config.get("native_session_id")
+    if native_sid:
+        session_obj.set(Feature.RESUME_ID, native_sid)
+
+    cmd = session_obj.build_command()
+    workspace_path = config.get("workspace_path", os.path.expanduser("~"))
+
+    # Env vars for hook relay (critical — this is what keeps Commander connected)
+    env_exports = (
+        f'export COMMANDER_SESSION_ID="{session_id}"; '
+        f'export COMMANDER_API_URL="http://{HOST}:{PORT}"; '
+        f'export COMMANDER_WORKSPACE_ID="{workspace_id}"; '
+    )
+    cli_cmd = " ".join(shlex.quote(c) for c in cmd)
+    full_cmd = f'{env_exports}cd {shlex.quote(workspace_path)} && {cli_cmd}'
+
+    # Open in native terminal (macOS)
+    if sys.platform == "darwin":
+        # Try iTerm2 first, fall back to Terminal.app
+        iterm_script = (
+            f'tell application "iTerm"\n'
+            f'  create window with default profile\n'
+            f'  tell current session of current window\n'
+            f'    write text {json.dumps(full_cmd)}\n'
+            f'  end tell\n'
+            f'end tell'
+        )
+        terminal_script = (
+            f'tell application "Terminal"\n'
+            f'  do script {json.dumps(full_cmd)}\n'
+            f'  activate\n'
+            f'end tell'
+        )
+
+        # Prefer iTerm2 if installed
+        try:
+            proc = await _asyncio.create_subprocess_exec(
+                "osascript", "-e", iterm_script,
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(stderr.decode())
+            terminal_app = "iTerm2"
+        except Exception:
+            # Fall back to Terminal.app
+            proc = await _asyncio.create_subprocess_exec(
+                "osascript", "-e", terminal_script,
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                return web.json_response(
+                    {"error": f"Failed to open terminal: {stderr.decode()[:200]}"},
+                    status=500,
+                )
+            terminal_app = "Terminal.app"
+    else:
+        return web.json_response(
+            {"error": "Native terminal pop-out is currently macOS-only"},
+            status=400,
+        )
+
+    # Mark session as external
+    db_up = await get_db()
+    try:
+        await db_up.execute(
+            "UPDATE sessions SET is_external = 1 WHERE id = ?",
+            (session_id,),
+        )
+        await db_up.commit()
+    finally:
+        await db_up.close()
+
+    await broadcast({
+        "session_id": session_id,
+        "type": "session_popped_out",
+        "terminal": terminal_app,
+    })
+
+    return web.json_response({
+        "ok": True,
+        "session_id": session_id,
+        "terminal": terminal_app,
+        "command": cli_cmd,
+    })
+
+
+async def handle_pipeline_result(request: web.Request) -> web.Response:
+    """POST /api/hooks/pipeline-result
+
+    Called by agents (via worker MCP report_pipeline_result tool) to report
+    structured pass/fail results for pipeline stages. This gives the pipeline
+    engine a definitive signal instead of keyword-matching terminal output.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    session_id = payload.get("session_id")
+    status = payload.get("status", "pass")   # 'pass' or 'fail'
+    summary = payload.get("summary", "")
+    details = payload.get("details", "")
+
+    if not session_id:
+        return web.json_response({"error": "session_id required"}, status=400)
+
+    import pipeline_engine
+    run_id = pipeline_engine._session_to_run.get(session_id)
+    if not run_id:
+        return web.json_response({"ok": False, "message": "session not in active pipeline"})
+
+    run = await pipeline_engine.get_run(run_id)
+    if not run:
+        return web.json_response({"ok": False, "message": "run not found"})
+
+    # Find the stage for this session
+    stage_history = run.get("stage_history", {})
+    if isinstance(stage_history, str):
+        import json as _json
+        stage_history = _json.loads(stage_history)
+    stage_id = None
+    for sid, sh in stage_history.items():
+        if sh.get("session_id") == session_id and sh.get("status") == "running":
+            stage_id = sid
+            break
+
+    if not stage_id:
+        return web.json_response({"ok": False, "message": "no active stage for session"})
+
+    # Store the structured result — prefixed with __pipeline_result: so the
+    # condition evaluator can detect it vs. raw terminal output
+    result_output = f"__pipeline_result:{status}:{summary}"
+    if details:
+        result_output += f"\n{details[:1500]}"
+    await pipeline_engine._update_stage_status(run_id, stage_id, "completed", output_summary=result_output)
+
+    logger.info("Pipeline result: session %s stage %s → %s: %s", session_id[:8], stage_id, status, summary[:100])
+
+    # Complete the stage and advance the pipeline
+    import asyncio as _asyncio
+    _asyncio.ensure_future(pipeline_engine._complete_stage(run_id, stage_id))
+
+    return web.json_response({"ok": True, "stage_id": stage_id, "status": status})
+
+
+async def handle_hook_discover(request: web.Request) -> web.Response:
+    """POST /api/hooks/discover
+
+    Called by the hook relay script when COMMANDER_SESSION_ID is NOT set but
+    auto-register is enabled. The hook sends the workspace path (CWD) and
+    CLI process PID. Commander matches the path to a workspace and, if
+    auto_register_terminals is enabled, creates a session and returns the
+    session_id so subsequent hook calls can include it.
+
+    The hook script caches the returned session_id in a temp file keyed by
+    PID so it only calls discover once per CLI process lifetime.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    cwd = payload.get("cwd", "")
+    pid = payload.get("pid", "")
+    cli_type = payload.get("cli_type", "claude")
+    hook_event = payload.get("hook_event_name", "")
+
+    if not cwd:
+        return web.json_response({})
+
+    # Normalize the CWD path
+    cwd = os.path.realpath(cwd)
+
+    # Find workspace matching this CWD
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM workspaces WHERE auto_register_terminals = 1")
+        rows = await cur.fetchall()
+
+        matched_ws = None
+        for ws in rows:
+            ws_path = os.path.realpath(ws["path"])
+            if cwd == ws_path or cwd.startswith(ws_path + os.sep):
+                matched_ws = dict(ws)
+                break
+
+        if not matched_ws:
+            return web.json_response({})  # No matching workspace — ignore
+
+        # Check if we already have a session for this PID
+        cur2 = await db.execute(
+            "SELECT id FROM sessions WHERE is_external = 1 AND external_pid = ? AND workspace_id = ?",
+            (str(pid), matched_ws["id"]),
+        )
+        existing = await cur2.fetchone()
+        if existing:
+            return web.json_response({"session_id": existing["id"]})
+
+        # Create a new external session
+        session_id = str(uuid.uuid4())
+        name = f"External {cli_type.title()} {session_id[:6]}"
+        default_model = get_profile(cli_type).default_model
+
+        await db.execute(
+            """INSERT INTO sessions
+               (id, workspace_id, name, model, cli_type, is_external, external_pid)
+               VALUES (?, ?, ?, ?, ?, 1, ?)""",
+            (session_id, matched_ws["id"], name, default_model, cli_type, str(pid)),
+        )
+        await db.commit()
+
+        logger.info(
+            "Auto-registered external %s session %s (PID %s) in workspace %s",
+            cli_type, session_id[:8], pid, matched_ws["name"],
+        )
+
+        await broadcast({
+            "type": "session_created",
+            "session_id": session_id,
+            "workspace_id": matched_ws["id"],
+            "name": name,
+            "is_external": True,
+        })
+
+        return web.json_response({"session_id": session_id})
+    finally:
+        await db.close()
+
+
+# ─── REST: Config ─────────────────────────────────────────────────────────
+
+_discovered_models: dict = {}  # Populated at startup
+
+
+async def get_cli_info(request: web.Request) -> web.Response:
+    import shutil
+    return web.json_response({
+        "version": VERSION,
+        "models": _discovered_models.get("claude") or AVAILABLE_MODELS,
+        "permission_modes": PERMISSION_MODES,
+        "effort_levels": EFFORT_LEVELS,
+        "gemini_models": _discovered_models.get("gemini") or GEMINI_MODELS,
+        "gemini_approval_modes": GEMINI_APPROVAL_MODES,
+        "cli_types": CLI_TYPES,
+        "available_clis": {
+            "claude": shutil.which("claude") is not None,
+            "gemini": shutil.which("gemini") is not None,
+        },
+    })
+
+
+async def get_cli_feature_matrix(request: web.Request) -> web.Response:
+    """Return the unified feature compatibility matrix.
+
+    Driven entirely by cli_profiles.py so CLI-capability information has a
+    single source of truth. Consumed by the marketplace UI to render
+    compatibility badges and by plugin tooling to check feature support.
+    """
+    from cli_session import build_feature_matrix
+    return web.json_response(build_feature_matrix())
+
+
+# ─── REST: Global app settings ────────────────────────────────────────────
+#
+# Simple key/value store. Today the main use is experimental feature flags
+# which MUST be opt-in — nothing here takes effect until the user explicitly
+# sets a value.
+
+async def list_output_styles(request: web.Request) -> web.Response:
+    """List available output styles for token-saving modes."""
+    from output_styles import OUTPUT_STYLE_LIST
+    return web.json_response(OUTPUT_STYLE_LIST)
+
+
+async def list_app_settings(request: web.Request) -> web.Response:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT key, value, updated_at FROM app_settings")
+        rows = await cur.fetchall()
+        settings = {row["key"]: row["value"] for row in rows}
+        return web.json_response(settings)
+    finally:
+        await db.close()
+
+
+async def get_app_setting(request: web.Request) -> web.Response:
+    key = request.match_info["key"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT value, updated_at FROM app_settings WHERE key = ?", (key,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"key": key, "value": None})
+        return web.json_response({
+            "key": key,
+            "value": row["value"],
+            "updated_at": row["updated_at"],
+        })
+    finally:
+        await db.close()
+
+
+async def put_app_setting(request: web.Request) -> web.Response:
+    key = request.match_info["key"]
+    body = await request.json()
+    value = body.get("value")
+    if value is not None and not isinstance(value, str):
+        return web.json_response(
+            {"error": "value must be a string (JSON-encode complex values)"},
+            status=400,
+        )
+
+    # If this key corresponds to a known experimental flag, require the
+    # value to be "on" or "off" so we don't accidentally accept garbage.
+    if experimental.is_known_feature(key) and value not in (None, "on", "off"):
+        return web.json_response(
+            {"error": "experimental flags must be 'on' or 'off'"},
+            status=400,
+        )
+
+    db = await get_db()
+    try:
+        if value is None:
+            await db.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        else:
+            await db.execute(
+                """INSERT INTO app_settings (key, value, updated_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(key) DO UPDATE SET
+                     value = excluded.value,
+                     updated_at = excluded.updated_at""",
+                (key, value),
+            )
+        await db.commit()
+    finally:
+        await db.close()
+
+    # ── Side-effects for specific settings ──────────────────────────
+    if key == "experimental_avcp_protection":
+        from hook_installer import install_avcp_hooks, uninstall_avcp_hooks
+        try:
+            if value == "on":
+                install_avcp_hooks()
+            else:
+                uninstall_avcp_hooks()
+        except Exception as e:
+            logger.warning(f"AVCP hook toggle failed: {e}")
+            return web.json_response({
+                "ok": True, "key": key, "value": value,
+                "warning": f"Setting saved but hook installation failed: {e}",
+            })
+
+    if key == "experimental_safety_gate":
+        from hook_installer import install_safety_gate_hooks, uninstall_safety_gate_hooks
+        try:
+            if value == "on":
+                install_safety_gate_hooks()
+                db2 = await get_db()
+                try:
+                    from safety_engine import seed_builtin_rules
+                    await seed_builtin_rules(db2)
+                finally:
+                    await db2.close()
+            else:
+                uninstall_safety_gate_hooks()
+        except Exception as e:
+            logger.warning(f"Safety Gate hook toggle failed: {e}")
+            return web.json_response({
+                "ok": True, "key": key, "value": value,
+                "warning": f"Setting saved but hook installation failed: {e}",
+            })
+
+    if key == "experimental_myelin_coordination":
+        from hook_installer import install_myelin_hooks, uninstall_myelin_hooks
+        try:
+            if value == "on":
+                install_myelin_hooks()
+            else:
+                uninstall_myelin_hooks()
+        except Exception as e:
+            logger.warning(f"Myelin hook toggle failed: {e}")
+            return web.json_response({
+                "ok": True, "key": key, "value": value,
+                "warning": f"Setting saved but hook installation failed: {e}",
+            })
+
+    return web.json_response({"ok": True, "key": key, "value": value})
+
+
+# ─── REST: Safety Gate ────────────────────────────────────────────────────
+#
+# General-purpose tool call safety engine. Evaluates ALL tool calls against
+# configurable rules. Called synchronously by the safety_gate.sh hook script.
+
+async def evaluate_safety(request: web.Request) -> web.Response:
+    """POST /api/safety/evaluate — evaluate a tool call against safety rules.
+
+    Called by safety_gate.sh hook script synchronously.  Must be fast (<50ms).
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"decision": "allow", "reason": "invalid input"})
+
+    tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input", {})
+    session_id = data.get("session_id") or ""
+    workspace_id = data.get("workspace_id") or ""
+    tool_use_id = data.get("tool_use_id") or ""
+
+    # ── Documentor path guard (always active, not behind feature flag) ───
+    # Documentor sessions can only write to docs-related paths unless
+    # the "unrestricted_edit" tag is set (user opted in at creation).
+    # Writes outside docs/ get "ask" so the user must confirm.
+    if session_id and tool_name in ("Write", "Edit", "write_file", "edit_file"):
+        file_path = tool_input.get("file_path", "")
+        if file_path:
+            try:
+                _db_guard = await get_db()
+                try:
+                    _cur = await _db_guard.execute(
+                        "SELECT session_type, workspace_id, tags FROM sessions WHERE id = ?",
+                        (session_id,),
+                    )
+                    _sess = await _cur.fetchone()
+                    if _sess and _sess["session_type"] == "documentor":
+                        # Skip guard if user opted in to unrestricted edits
+                        _tags = json.loads(_sess["tags"] or "[]") if _sess["tags"] else []
+                        if "unrestricted_edit" not in _tags:
+                            _cur2 = await _db_guard.execute(
+                                "SELECT path FROM workspaces WHERE id = ?",
+                                (_sess["workspace_id"],),
+                            )
+                            _ws = await _cur2.fetchone()
+                            ws_path = _ws["path"] if _ws else ""
+                            import os as _os_guard
+                            abs_file = _os_guard.path.abspath(file_path)
+                            docs_root = _os_guard.path.abspath(_os_guard.path.join(ws_path, "docs"))
+                            is_docs = abs_file.startswith(docs_root + _os_guard.sep) or abs_file == docs_root
+                            is_safe = _os_guard.path.basename(abs_file).lower() in (
+                                "plan.md", "docs_manifest.json", "package.json", "package-lock.json",
+                            )
+                            if not is_docs and not is_safe:
+                                return web.json_response({
+                                    "decision": "ask",
+                                    "reason": (
+                                        f"Documentor wants to edit {_os_guard.path.basename(file_path)} "
+                                        f"which is outside docs/. Allow?"
+                                    ),
+                                })
+                finally:
+                    await _db_guard.close()
+            except Exception as _e:
+                logger.debug("Documentor path guard check failed: %s", _e)
+
+    # Check if feature is enabled
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT value FROM app_settings WHERE key = 'experimental_safety_gate'")
+        row = await cur.fetchone()
+        if not row or row["value"] != "on":
+            return web.json_response({"decision": "allow", "reason": "safety gate disabled"})
+    finally:
+        await db.close()
+
+    from safety_engine import evaluate, init_cache, _extract_match_field
+
+    # Ensure cache is initialized with DB loader
+    async def _load_rules():
+        d = await get_db()
+        try:
+            cur = await d.execute("SELECT * FROM safety_rules")
+            return await cur.fetchall()
+        finally:
+            await d.close()
+
+    init_cache(_load_rules)
+
+    result = await evaluate(tool_name, tool_input, workspace_id=workspace_id or None)
+
+    # Log decision asynchronously if rule matched or decision is not allow
+    if result.action != "allow" or result.rule_id:
+        async def _log():
+            try:
+                from safety_learning import log_decision
+                # Use matched_input as summary — it's the exact field the rule
+                # matched against, so approval lookups correlate correctly.
+                summary = result.matched_input or _extract_match_field(tool_name, tool_input)
+                d = await get_db()
+                try:
+                    await log_decision(
+                        d,
+                        tool_use_id=tool_use_id or None,
+                        session_id=session_id or None,
+                        workspace_id=workspace_id or None,
+                        tool_name=tool_name,
+                        tool_input_summary=summary,
+                        decision=result.action,
+                        reason=result.reason,
+                        matched_rule_id=result.rule_id,
+                        latency_ms=result.latency_ms,
+                    )
+                finally:
+                    await d.close()
+            except Exception as e:
+                logger.warning("Failed to log safety decision: %s", e)
+
+        _asyncio.ensure_future(_log())
+
+    # Emit event if rule triggered
+    if result.rule_id:
+        _asyncio.ensure_future(bus.emit(
+            CommanderEvent.SAFETY_RULE_TRIGGERED,
+            {
+                "rule_id": result.rule_id,
+                "rule_name": result.rule_name,
+                "severity": result.severity,
+                "tool_name": tool_name,
+                "decision": result.action,
+                "session_id": session_id,
+                "workspace_id": workspace_id,
+            },
+        ))
+
+    return web.json_response({
+        "decision": result.action,
+        "reason": result.reason,
+        "rule_id": result.rule_id,
+        "latency_ms": result.latency_ms,
+    })
+
+
+async def list_safety_rules(request: web.Request) -> web.Response:
+    """GET /api/safety/rules — list all safety rules."""
+    workspace_id = request.query.get("workspace_id")
+    db = await get_db()
+    try:
+        if workspace_id:
+            cur = await db.execute(
+                "SELECT * FROM safety_rules WHERE workspace_id IS NULL OR workspace_id = ? ORDER BY severity, name",
+                (workspace_id,),
+            )
+        else:
+            cur = await db.execute("SELECT * FROM safety_rules ORDER BY severity, name")
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_safety_rule(request: web.Request) -> web.Response:
+    """POST /api/safety/rules — create a custom safety rule."""
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    pattern = (body.get("pattern") or "").strip()
+    if not name or not pattern:
+        return web.json_response({"error": "name and pattern required"}, status=400)
+
+    # Validate regex
+    import re
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        return web.json_response({"error": f"Invalid regex: {e}"}, status=400)
+
+    rule_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO safety_rules
+               (id, name, description, category, severity, tool_match,
+                pattern, pattern_field, action, enabled, is_builtin, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+            (
+                rule_id,
+                name,
+                body.get("description", ""),
+                body.get("category", "custom"),
+                body.get("severity", "medium"),
+                body.get("tool_match", "Bash"),
+                pattern,
+                body.get("pattern_field", ""),
+                body.get("action", "ask"),
+                1 if body.get("enabled", True) else 0,
+                body.get("workspace_id"),
+            ),
+        )
+        await db.commit()
+        from safety_engine import invalidate_cache
+        invalidate_cache()
+        return web.json_response({"ok": True, "id": rule_id})
+    finally:
+        await db.close()
+
+
+async def update_safety_rule(request: web.Request) -> web.Response:
+    """PUT /api/safety/rules/{id} — update a safety rule."""
+    rule_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM safety_rules WHERE id = ?", (rule_id,))
+        existing = await cur.fetchone()
+        if not existing:
+            return web.json_response({"error": "rule not found"}, status=404)
+
+        # Validate regex if pattern changed
+        pattern = body.get("pattern", existing["pattern"])
+        if pattern != existing["pattern"]:
+            import re
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                return web.json_response({"error": f"Invalid regex: {e}"}, status=400)
+
+        await db.execute(
+            """UPDATE safety_rules SET
+                name = ?, description = ?, category = ?, severity = ?,
+                tool_match = ?, pattern = ?, pattern_field = ?, action = ?,
+                enabled = ?, workspace_id = ?, updated_at = datetime('now')
+               WHERE id = ?""",
+            (
+                body.get("name", existing["name"]),
+                body.get("description", existing["description"]),
+                body.get("category", existing["category"]),
+                body.get("severity", existing["severity"]),
+                body.get("tool_match", existing["tool_match"]),
+                pattern,
+                body.get("pattern_field", existing["pattern_field"]),
+                body.get("action", existing["action"]),
+                1 if body.get("enabled", bool(existing["enabled"])) else 0,
+                body.get("workspace_id", existing["workspace_id"]),
+                rule_id,
+            ),
+        )
+        await db.commit()
+        from safety_engine import invalidate_cache
+        invalidate_cache()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def delete_safety_rule(request: web.Request) -> web.Response:
+    """DELETE /api/safety/rules/{id} — delete a custom rule (builtins cannot be deleted)."""
+    rule_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT is_builtin FROM safety_rules WHERE id = ?", (rule_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "rule not found"}, status=404)
+        if row["is_builtin"]:
+            return web.json_response({"error": "cannot delete builtin rules — disable instead"}, status=400)
+        await db.execute("DELETE FROM safety_rules WHERE id = ?", (rule_id,))
+        await db.commit()
+        from safety_engine import invalidate_cache
+        invalidate_cache()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def seed_safety_rules(request: web.Request) -> web.Response:
+    """POST /api/safety/rules/seed — reset builtin rules to defaults."""
+    db = await get_db()
+    try:
+        from safety_engine import seed_builtin_rules
+        await seed_builtin_rules(db)
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def get_safety_decisions(request: web.Request) -> web.Response:
+    """GET /api/safety/decisions — query the decision audit log."""
+    session_id = request.query.get("session_id")
+    workspace_id = request.query.get("workspace_id")
+    limit = min(int(request.query.get("limit", "100")), 500)
+    offset = int(request.query.get("offset", "0"))
+
+    where_parts = []
+    params: list = []
+    if session_id:
+        where_parts.append("session_id = ?")
+        params.append(session_id)
+    if workspace_id:
+        where_parts.append("workspace_id = ?")
+        params.append(workspace_id)
+
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            f"SELECT * FROM safety_decisions {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def get_safety_proposals(request: web.Request) -> web.Response:
+    """GET /api/safety/proposals — get proposed rules from decision analysis."""
+    workspace_id = request.query.get("workspace_id")
+    db = await get_db()
+    try:
+        from safety_learning import analyze_patterns
+        proposals = await analyze_patterns(db, workspace_id=workspace_id)
+        return web.json_response([
+            {
+                "id": p.id,
+                "tool_name": p.tool_name,
+                "pattern_summary": p.pattern_summary,
+                "suggested_pattern": p.suggested_pattern,
+                "suggested_action": p.suggested_action,
+                "sample_count": p.sample_count,
+                "approve_count": p.approve_count,
+                "deny_count": p.deny_count,
+                "consistency": p.consistency,
+                "confidence": p.confidence,
+            }
+            for p in proposals
+        ])
+    finally:
+        await db.close()
+
+
+async def accept_safety_proposal(request: web.Request) -> web.Response:
+    """POST /api/safety/proposals/{id}/accept — accept a proposal and create a rule."""
+    body = await request.json()
+    rule_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO safety_rules
+               (id, name, description, category, severity, tool_match,
+                pattern, pattern_field, action, enabled, is_builtin, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)""",
+            (
+                rule_id,
+                body.get("name", "Learned rule"),
+                body.get("description", body.get("pattern_summary", "")),
+                "custom",
+                "low",
+                body.get("tool_name", "Bash"),
+                body.get("pattern", ""),
+                "",
+                body.get("action", "allow"),
+                body.get("workspace_id"),
+            ),
+        )
+        await db.commit()
+        from safety_engine import invalidate_cache
+        invalidate_cache()
+
+        await bus.emit(CommanderEvent.SAFETY_RULE_LEARNED, {
+            "rule_id": rule_id,
+            "pattern": body.get("pattern", ""),
+            "action": body.get("action", "allow"),
+        })
+
+        return web.json_response({"ok": True, "rule_id": rule_id})
+    finally:
+        await db.close()
+
+
+async def dismiss_safety_proposal(request: web.Request) -> web.Response:
+    """POST /api/safety/proposals/{id}/dismiss — dismiss a proposal."""
+    proposal_id = request.match_info["id"]
+    from safety_learning import dismiss_proposal
+    dismiss_proposal(proposal_id)
+    return web.json_response({"ok": True})
+
+
+async def report_safety_approved(request: web.Request) -> web.Response:
+    """POST /api/safety/approved — report that a user approved an ask decision.
+
+    Called by safety_gate_post.sh (PostToolUse hook).  Looks up the rule
+    that triggered the ask and remembers it so it auto-allows next time.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False})
+
+    tool_use_id = data.get("tool_use_id", "")
+    if not tool_use_id:
+        return web.json_response({"ok": False})
+
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT matched_rule_id, tool_input_summary FROM safety_decisions WHERE tool_use_id = ? AND decision = 'ask'",
+            (tool_use_id,),
+        )
+        row = await cur.fetchone()
+        if row and row["matched_rule_id"] and row["tool_input_summary"]:
+            from safety_engine import remember_approval
+            remember_approval(row["matched_rule_id"], row["tool_input_summary"])
+            # Also record user response for the learning system
+            from safety_learning import record_user_response
+            await record_user_response(db, tool_use_id, "approved")
+    except Exception as e:
+        logger.debug("Safety approval report failed: %s", e)
+    finally:
+        await db.close()
+
+    return web.json_response({"ok": True})
+
+
+async def get_safety_status(request: web.Request) -> web.Response:
+    """GET /api/safety/status — check safety gate installation and status."""
+    from hook_installer import check_safety_gate_installation
+    installation = check_safety_gate_installation()
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT value FROM app_settings WHERE key = 'experimental_safety_gate'")
+        row = await cur.fetchone()
+        enabled = row["value"] == "on" if row else False
+
+        cur = await db.execute("SELECT COUNT(*) as cnt FROM safety_rules WHERE enabled = 1")
+        rule_count = (await cur.fetchone())["cnt"]
+
+        cur = await db.execute("SELECT COUNT(*) as cnt FROM safety_decisions")
+        decision_count = (await cur.fetchone())["cnt"]
+
+        return web.json_response({
+            "enabled": enabled,
+            "installation": installation,
+            "rule_count": rule_count,
+            "decision_count": decision_count,
+        })
+    finally:
+        await db.close()
+
+
+# ─── REST: Prompt Cascades ────────────────────────────────────────────────
+#
+# ── Pipeline Engine API (configurable graph pipelines) ────────────────
+
+async def list_pipeline_definitions(request: web.Request) -> web.Response:
+    import pipeline_engine
+    workspace_id = request.query.get("workspace_id")
+    defs = await pipeline_engine.list_definitions(workspace_id)
+    return web.json_response(defs)
+
+
+async def create_pipeline_definition(request: web.Request) -> web.Response:
+    import pipeline_engine
+    body = await request.json()
+    defn = await pipeline_engine.create_definition(body)
+    return web.json_response(defn, status=201)
+
+
+async def get_pipeline_definition(request: web.Request) -> web.Response:
+    import pipeline_engine
+    pid = request.match_info["id"]
+    defn = await pipeline_engine.get_definition(pid)
+    if not defn:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(defn)
+
+
+async def update_pipeline_definition(request: web.Request) -> web.Response:
+    import pipeline_engine
+    pid = request.match_info["id"]
+    body = await request.json()
+    defn = await pipeline_engine.update_definition(pid, body)
+    if not defn:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(defn)
+
+
+async def delete_pipeline_definition(request: web.Request) -> web.Response:
+    import pipeline_engine
+    pid = request.match_info["id"]
+    ok = await pipeline_engine.delete_definition(pid)
+    if not ok:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def list_pipeline_runs(request: web.Request) -> web.Response:
+    import pipeline_engine
+    workspace_id = request.query.get("workspace_id")
+    pipeline_id = request.query.get("pipeline_id")
+    active_only = request.query.get("active") == "1"
+    runs = await pipeline_engine.list_runs(workspace_id, pipeline_id, active_only)
+    return web.json_response(runs)
+
+
+async def start_pipeline_run(request: web.Request) -> web.Response:
+    import pipeline_engine
+    body = await request.json()
+    pipeline_id = body.get("pipeline_id")
+    if not pipeline_id:
+        return web.json_response({"error": "pipeline_id required"}, status=400)
+    run = await pipeline_engine.start_run(
+        pipeline_id,
+        workspace_id=body.get("workspace_id"),
+        task_id=body.get("task_id"),
+        variables=body.get("variables"),
+        trigger_type=body.get("trigger_type", "manual"),
+    )
+    if not run:
+        return web.json_response({"error": "failed to start"}, status=400)
+    return web.json_response(run, status=201)
+
+
+async def get_pipeline_run(request: web.Request) -> web.Response:
+    import pipeline_engine
+    run_id = request.match_info["id"]
+    run = await pipeline_engine.get_run(run_id)
+    if not run:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(run)
+
+
+async def update_pipeline_run(request: web.Request) -> web.Response:
+    import pipeline_engine
+    run_id = request.match_info["id"]
+    body = await request.json()
+    action = body.get("action")
+    if action == "pause":
+        run = await pipeline_engine.pause_run(run_id)
+    elif action == "resume":
+        run = await pipeline_engine.resume_run(run_id)
+    elif action == "cancel":
+        run = await pipeline_engine.cancel_run(run_id)
+    else:
+        return web.json_response({"error": f"unknown action: {action}"}, status=400)
+    if not run:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(run)
+
+
+async def start_ralph_pipeline(request: web.Request) -> web.Response:
+    """POST /api/pipeline-runs/ralph — quick-start a RALPH pipeline from @ralph token."""
+    import pipeline_engine
+    body = await request.json()
+    session_id = body.get("session_id")
+    task = body.get("task", "").strip()
+    if not session_id or not task:
+        return web.json_response({"error": "session_id and task required"}, status=400)
+    run = await pipeline_engine.start_ralph(session_id, task, body.get("workspace_id"))
+    if not run:
+        return web.json_response({"error": "failed to start RALPH pipeline"}, status=400)
+    return web.json_response(run, status=201)
+
+
+# Cascades are ordered sequences of prompts. The runner lives on the frontend
+# (watches session status → sends next prompt when idle). Backend is storage.
+
+async def list_cascades(request: web.Request) -> web.Response:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM cascades ORDER BY usage_count DESC, name"
+        )
+        rows = await cur.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["steps"] = json.loads(d["steps"]) if d["steps"] else []
+            except (json.JSONDecodeError, TypeError):
+                d["steps"] = []
+            try:
+                d["variables"] = json.loads(d["variables"]) if d.get("variables") else []
+            except (json.JSONDecodeError, TypeError):
+                d["variables"] = []
+            results.append(d)
+        return web.json_response(results)
+    finally:
+        await db.close()
+
+
+async def create_cascade(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    steps = body.get("steps") or []
+    if not name or not steps:
+        return web.json_response(
+            {"error": "name and steps (non-empty array) required"}, status=400
+        )
+
+    cascade_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        variables = body.get("variables", [])
+        await db.execute(
+            """INSERT INTO cascades (id, name, steps, loop, auto_approve, bypass_permissions, auto_approve_plan, variables, loop_reprompt)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (cascade_id, name, json.dumps(steps),
+             1 if body.get("loop") else 0,
+             1 if body.get("auto_approve") else 0,
+             1 if body.get("bypass_permissions") else 0,
+             1 if body.get("auto_approve_plan") else 0,
+             json.dumps(variables),
+             1 if body.get("loop_reprompt") else 0),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM cascades WHERE id = ?", (cascade_id,))
+        row = await cur.fetchone()
+        d = dict(row)
+        d["steps"] = json.loads(d["steps"])
+        try:
+            d["variables"] = json.loads(d["variables"]) if d.get("variables") else []
+        except (json.JSONDecodeError, TypeError):
+            d["variables"] = []
+        return web.json_response(d, status=201)
+    finally:
+        await db.close()
+
+
+async def update_cascade(request: web.Request) -> web.Response:
+    cascade_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        fields, values = [], []
+        if "name" in body:
+            fields.append("name = ?")
+            values.append(body["name"])
+        if "steps" in body:
+            fields.append("steps = ?")
+            values.append(json.dumps(body["steps"]))
+        if "loop" in body:
+            fields.append("loop = ?")
+            values.append(1 if body["loop"] else 0)
+        if "auto_approve" in body:
+            fields.append("auto_approve = ?")
+            values.append(1 if body["auto_approve"] else 0)
+        if "bypass_permissions" in body:
+            fields.append("bypass_permissions = ?")
+            values.append(1 if body["bypass_permissions"] else 0)
+        if "auto_approve_plan" in body:
+            fields.append("auto_approve_plan = ?")
+            values.append(1 if body["auto_approve_plan"] else 0)
+        if "variables" in body:
+            fields.append("variables = ?")
+            values.append(json.dumps(body["variables"]))
+        if "loop_reprompt" in body:
+            fields.append("loop_reprompt = ?")
+            values.append(1 if body["loop_reprompt"] else 0)
+        if not fields:
+            return web.json_response({"error": "no fields"}, status=400)
+        fields.append("updated_at = datetime('now')")
+        values.append(cascade_id)
+        await db.execute(
+            f"UPDATE cascades SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM cascades WHERE id = ?", (cascade_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        d = dict(row)
+        d["steps"] = json.loads(d["steps"]) if d["steps"] else []
+        try:
+            d["variables"] = json.loads(d["variables"]) if d.get("variables") else []
+        except (json.JSONDecodeError, TypeError):
+            d["variables"] = []
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+async def delete_cascade(request: web.Request) -> web.Response:
+    cascade_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM cascades WHERE id = ?", (cascade_id,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def use_cascade(request: web.Request) -> web.Response:
+    """Increment usage count when a cascade is run. Frontend calls this
+    when starting a cascade so the most-used ones sort to the top."""
+    cascade_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE cascades SET usage_count = usage_count + 1 WHERE id = ?",
+            (cascade_id,),
+        )
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+# ─── REST: Cascade runs (server-side execution) ─────────────────────────
+
+
+async def list_cascade_runs(request: web.Request) -> web.Response:
+    """GET /api/cascade-runs — list runs, optionally filtered by session."""
+    import cascade_runner
+    session_id = request.query.get("session")
+    active_only = request.query.get("active") == "1"
+    runs = await cascade_runner.list_runs(session_id=session_id, active_only=active_only)
+    return web.json_response(runs)
+
+
+async def create_cascade_run(request: web.Request) -> web.Response:
+    """POST /api/cascade-runs — start a server-side cascade run."""
+    import cascade_runner
+    body = await request.json()
+    session_id = body.get("session_id")
+    if not session_id:
+        return web.json_response({"error": "session_id required"}, status=400)
+
+    steps = body.get("steps", [])
+    if not steps:
+        return web.json_response({"error": "steps required"}, status=400)
+
+    # Track usage if cascade_id provided
+    cascade_id = body.get("cascade_id")
+    if cascade_id:
+        db = await get_db()
+        try:
+            await db.execute(
+                "UPDATE cascades SET usage_count = usage_count + 1 WHERE id = ?",
+                (cascade_id,),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    run = await cascade_runner.start_run(
+        session_id,
+        cascade_id=cascade_id,
+        steps=steps,
+        original_steps=body.get("original_steps"),
+        loop=bool(body.get("loop")),
+        auto_approve=bool(body.get("auto_approve")),
+        bypass_permissions=bool(body.get("bypass_permissions")),
+        auto_approve_plan=bool(body.get("auto_approve_plan")),
+        variables=body.get("variables"),
+        variable_values=body.get("variable_values"),
+        loop_reprompt=bool(body.get("loop_reprompt")),
+    )
+    return web.json_response(run)
+
+
+async def get_cascade_run(request: web.Request) -> web.Response:
+    """GET /api/cascade-runs/:id — get a specific run."""
+    import cascade_runner
+    run = await cascade_runner.get_run(request.match_info["id"])
+    if not run:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(run)
+
+
+async def update_cascade_run(request: web.Request) -> web.Response:
+    """PUT /api/cascade-runs/:id — pause, resume, stop, or resume with variables."""
+    import cascade_runner
+    run_id = request.match_info["id"]
+    body = await request.json()
+    action = body.get("action")
+
+    if action == "pause":
+        run = await cascade_runner.pause_run(run_id)
+    elif action == "resume":
+        run = await cascade_runner.resume_run(run_id)
+    elif action == "stop":
+        run = await cascade_runner.stop_run(run_id)
+    elif action == "resume_with_variables":
+        values = body.get("variable_values", {})
+        run = await cascade_runner.resume_with_variables(run_id, values)
+    else:
+        return web.json_response({"error": f"unknown action: {action}"}, status=400)
+
+    if not run:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(run)
+
+
+async def delete_cascade_run(request: web.Request) -> web.Response:
+    """DELETE /api/cascade-runs/:id — stop and remove a run."""
+    import cascade_runner
+    run_id = request.match_info["id"]
+    await cascade_runner.stop_run(run_id)
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM cascade_runs WHERE id = ?", (run_id,))
+        await db.commit()
+    finally:
+        await db.close()
+    return web.json_response({"ok": True})
+
+
+# ─── REST: Broadcast groups ──────────────────────────────────────────────
+
+
+async def list_broadcast_groups(request: web.Request) -> web.Response:
+    workspace_id = request.query.get("workspace")
+    db = await get_db()
+    try:
+        if workspace_id:
+            cur = await db.execute(
+                "SELECT * FROM broadcast_groups WHERE workspace_id = ? ORDER BY name",
+                (workspace_id,),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT * FROM broadcast_groups ORDER BY name"
+            )
+        rows = await cur.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["session_ids"] = json.loads(d["session_ids"]) if d["session_ids"] else []
+            except (json.JSONDecodeError, TypeError):
+                d["session_ids"] = []
+            results.append(d)
+        return web.json_response(results)
+    finally:
+        await db.close()
+
+
+async def create_broadcast_group(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    session_ids = body.get("session_ids") or []
+    if not name or not session_ids:
+        return web.json_response(
+            {"error": "name and session_ids (non-empty array) required"}, status=400
+        )
+
+    group_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO broadcast_groups (id, name, session_ids, workspace_id)
+               VALUES (?, ?, ?, ?)""",
+            (group_id, name, json.dumps(session_ids), body.get("workspace_id")),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM broadcast_groups WHERE id = ?", (group_id,))
+        row = await cur.fetchone()
+        d = dict(row)
+        d["session_ids"] = json.loads(d["session_ids"])
+        return web.json_response(d, status=201)
+    finally:
+        await db.close()
+
+
+async def update_broadcast_group(request: web.Request) -> web.Response:
+    group_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        fields, values = [], []
+        if "name" in body:
+            fields.append("name = ?")
+            values.append(body["name"])
+        if "session_ids" in body:
+            fields.append("session_ids = ?")
+            values.append(json.dumps(body["session_ids"]))
+        if not fields:
+            return web.json_response({"error": "no fields"}, status=400)
+        fields.append("updated_at = datetime('now')")
+        values.append(group_id)
+        await db.execute(
+            f"UPDATE broadcast_groups SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM broadcast_groups WHERE id = ?", (group_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        d = dict(row)
+        d["session_ids"] = json.loads(d["session_ids"]) if d["session_ids"] else []
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+async def delete_broadcast_group(request: web.Request) -> web.Response:
+    group_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM broadcast_groups WHERE id = ?", (group_id,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+# ─── REST: Commander event bus ────────────────────────────────────────────
+#
+# The event bus is Commander's central state-change feed. Every mutation in
+# the task board, session lifecycle, plugin marketplace, etc. fires a
+# canonical CommanderEvent through bus.emit() which:
+#
+#   1. Writes to the commander_events audit log
+#   2. Broadcasts over WebSocket to any connected UI
+#   3. POSTs to matching webhook subscribers (event_subscriptions)
+#   4. [future] Dispatches to plugin components subscribed to the event
+#
+# Routes exposed here:
+#   GET    /api/events                        — query audit log (filters)
+#   GET    /api/events/catalog                — list every known event type
+#   POST   /api/events/emit                   — manual emission (testing / external)
+#   GET    /api/events/subscriptions          — list subscribers
+#   POST   /api/events/subscriptions          — create a webhook subscription
+#   PUT    /api/events/subscriptions/{id}     — update a subscription
+#   DELETE /api/events/subscriptions/{id}     — remove a subscription
+
+async def list_events(request: web.Request) -> web.Response:
+    try:
+        limit = int(request.query.get("limit", "100"))
+    except ValueError:
+        limit = 100
+    try:
+        since_id = int(request.query["since_id"]) if "since_id" in request.query else None
+    except ValueError:
+        since_id = None
+    events = await bus.query_events(
+        limit=limit,
+        event_type=request.query.get("type"),
+        workspace_id=request.query.get("workspace"),
+        session_id=request.query.get("session"),
+        task_id=request.query.get("task"),
+        since_id=since_id,
+    )
+    return web.json_response({"events": events, "count": len(events)})
+
+
+async def get_event_catalog(request: web.Request) -> web.Response:
+    """Return the full list of canonical events for plugin manifests + UI."""
+    return web.json_response({"events": build_event_catalog()})
+
+
+async def emit_event_handler(request: web.Request) -> web.Response:
+    """Manually emit an event. For testing + external integrations.
+
+    Body: {
+        "event_type": "task_completed",
+        "payload": {...},
+        "source": "external",
+        "actor": "..."
+    }
+    """
+    body = await request.json()
+    event_type = body.get("event_type", "").strip()
+    if not event_type:
+        return web.json_response({"error": "event_type required"}, status=400)
+
+    # Validate against the canonical catalog so we don't log typo events.
+    valid = {e.value for e in CommanderEvent}
+    if event_type not in valid:
+        return web.json_response(
+            {"error": f"unknown event_type: {event_type}",
+             "hint": "GET /api/events/catalog for the full list"},
+            status=400,
+        )
+
+    record = await bus.emit(
+        event_type,
+        body.get("payload") or {},
+        source=body.get("source") or "external",
+        actor=body.get("actor"),
+    )
+    return web.json_response({
+        "ok": True,
+        "id": record.id,
+        "event_type": record.event_type,
+        "created_at": record.created_at,
+    }, status=201)
+
+
+async def list_event_subscriptions(request: web.Request) -> web.Response:
+    subs = await bus.list_subscriptions()
+    return web.json_response({"subscriptions": subs})
+
+
+async def create_event_subscription(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    event_types = (body.get("event_types") or "").strip()
+    delivery_type = body.get("delivery_type") or "webhook"
+    webhook_url = body.get("webhook_url")
+    webhook_secret = body.get("webhook_secret")
+
+    if not name or not event_types:
+        return web.json_response(
+            {"error": "name and event_types required"}, status=400
+        )
+    if delivery_type == "webhook" and not webhook_url:
+        return web.json_response(
+            {"error": "webhook_url required for delivery_type=webhook"}, status=400
+        )
+
+    # Validate event_types against the catalog (allow * wildcard).
+    if event_types != "*":
+        valid = {e.value for e in CommanderEvent}
+        wanted = {t.strip() for t in event_types.split(",") if t.strip()}
+        unknown = wanted - valid
+        if unknown:
+            return web.json_response(
+                {"error": f"unknown event types: {sorted(unknown)}",
+                 "hint": "GET /api/events/catalog"},
+                status=400,
+            )
+
+    sub = await bus.create_subscription(
+        name=name,
+        event_types=event_types,
+        delivery_type=delivery_type,
+        webhook_url=webhook_url,
+        webhook_secret=webhook_secret,
+        workspace_id=body.get("workspace_id"),
+        created_by=body.get("created_by") or "user",
+    )
+    return web.json_response(sub, status=201)
+
+
+async def update_event_subscription(request: web.Request) -> web.Response:
+    sub_id = request.match_info["id"]
+    body = await request.json()
+    sub = await bus.update_subscription(sub_id, **body)
+    if not sub:
+        return web.json_response({"error": "subscription not found or no fields"}, status=400)
+    return web.json_response(sub)
+
+
+async def delete_event_subscription(request: web.Request) -> web.Response:
+    sub_id = request.match_info["id"]
+    ok = await bus.delete_subscription(sub_id)
+    if not ok:
+        return web.json_response({"error": "subscription not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def list_experimental_features(request: web.Request) -> web.Response:
+    """Return every experimental feature + its current enabled state.
+
+    The UI renders one toggle card per feature, showing the label,
+    long_description, and a prominent warning if modifies_prompt is True.
+    """
+    features = experimental.features_as_dicts()
+
+    # Fill in current state from app_settings so the UI can show the toggle
+    # in its real position without a second round-trip.
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT key, value FROM app_settings WHERE key LIKE 'experimental_%'"
+        )
+        rows = await cur.fetchall()
+        states = {row["key"]: row["value"] for row in rows}
+    finally:
+        await db.close()
+
+    for f in features:
+        f["enabled"] = states.get(f["key"]) == "on"
+
+    return web.json_response({"features": features})
+
+
+# ─── Deep Research integration ───────────────────────────────────────────
+
+import os
+import shlex
+from pathlib import Path as _Path
+
+# Project root for invoking deep_research as a module
+_PROJECT_ROOT = _Path(__file__).parent.parent
+_RESEARCH_DIR = _PROJECT_ROOT / "research"
+
+# Track running research jobs: { job_id: { proc, query, started_at, status, output_path } }
+_research_jobs: dict[str, dict] = {}
+
+
+def _slugify_query(text: str) -> str:
+    """Slugify a query the same way deep_research does, so we can locate
+    the output directory it wrote. Lazy-imports the real `_slugify` from
+    deep_research to avoid drift if it's ever changed there. Falls back to
+    an inline copy if the import fails (e.g. deep_research moved/renamed)."""
+    try:
+        from deep_research.researcher import _slugify as _real_slugify
+        return _real_slugify(text)
+    except Exception:
+        # Mirror of deep_research.researcher._slugify @ researcher.py:412.
+        # Kept as a fallback in case the upstream module is unavailable —
+        # if upstream changes the rules, the import branch above will still
+        # produce correct paths; this branch will silently drift.
+        import re as _re
+        text = text.lower().strip()
+        text = _re.sub(r"[^\w\s-]", "", text)
+        text = _re.sub(r"[\s_]+", "-", text)
+        return text[:60].rstrip("-")
+
+
+def _read_findings(query: str) -> str | None:
+    """After a deep_research job completes, locate its output dir and return
+    a findings summary. Prefers comprehensive-report.md, falls back to
+    scratchpad.md, returns None if neither exists."""
+    topic_dir = _RESEARCH_DIR / _slugify_query(query)
+    if not topic_dir.exists():
+        return None
+    for fname in ("comprehensive-report.md", "scratchpad.md"):
+        f = topic_dir / fname
+        if f.exists():
+            try:
+                return f.read_text(encoding="utf-8")
+            except Exception:
+                continue
+    return None
+
+
+async def _set_entry_status(entry_id: str | None, status: str, findings: str | None = None):
+    """Update a research_entries row from a background job context."""
+    if not entry_id:
+        return
+    db = await get_db()
+    try:
+        if findings is not None:
+            await db.execute(
+                "UPDATE research_entries SET status = ?, findings_summary = ?, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (status, findings, entry_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE research_entries SET status = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (status, entry_id),
+            )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def _check_standalone_llm(llm_url: str | None) -> bool:
+    """Quick health check on the standalone LLM (Ollama/vLLM/etc.)."""
+    url = (llm_url or "http://localhost:11434").rstrip("/")
+    # Try the standard health / models endpoint
+    for suffix in ("/v1/models", "/api/tags", "/"):
+        try:
+            proc = await _asyncio.create_subprocess_exec(
+                "curl", "-s", "--max-time", "3", f"{url}{suffix}",
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await _asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode == 0 and stdout:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _build_research_prompt(query: str, entry_id: str | None, job: dict) -> str:
+    """Build the research prompt incorporating depth, recency, and cross-temporal options."""
+    depth = job.get("depth", "standard")
+    recency_months = job.get("recency_months")
+    cross_temporal = job.get("cross_temporal", False)
+    dig_deeper = job.get("dig_deeper", False)
+
+    # Depth → rounds and scope
+    depth_instructions = {
+        "quick": (
+            "Do a QUICK scan: 1-2 search rounds, focus on the top results. "
+            "Prioritize breadth over depth. Keep it concise."
+        ),
+        "standard": (
+            "Do at least 3 search rounds from different angles. "
+            "Balance breadth and depth."
+        ),
+        "deep": (
+            "Do a THOROUGH deep dive this round: 3-5 search rounds from different angles. "
+            "Use extract_pages to read primary sources in full. "
+            "Cross-reference claims across multiple sources. "
+            "Verify key findings. Explore contrarian views and edge cases. "
+            "You will be asked to continue for multiple iterations, so focus on "
+            "QUALITY over trying to cover everything in one pass. "
+            "Save findings with save_research after each round (include sources!). "
+            "Do NOT call finish_research until you're told this is the final iteration "
+            "or you're genuinely satisfied the research is exhaustive."
+        ),
+    }.get(depth, "Do at least 3 search rounds from different angles.")
+
+    parts = [f"Deep research: {query}\n"]
+    parts.append(
+        "Follow the Deep Research Methodology from your guidelines. "
+        "Use all available research tools (multi_search, extract_pages, gather, "
+        "save_research, finish_research)."
+    )
+    parts.append(depth_instructions)
+
+    # Recency filter
+    if recency_months:
+        parts.append(
+            f"\nRECENCY FOCUS: Prioritize content from the last {recency_months} months. "
+            f"Append '2025' or '2026' to search queries. Deprioritize results older than "
+            f"{recency_months} months. For each finding, note when it was published."
+        )
+
+    # Cross-temporal: look at old paradigms applied to new systems
+    if cross_temporal:
+        parts.append(
+            "\nCROSS-TEMPORAL ANALYSIS: Actively look for established paradigms, "
+            "architectures, and solutions from older/adjacent fields that are being "
+            "reapplied in this domain. Many 'new' systems are rephrasings of proven "
+            "concepts (e.g., Unix philosophy in CLI tools, Actor model in AI agents, "
+            "MapReduce patterns in LLM pipelines). Search for: "
+            "'[topic] inspired by', '[topic] based on [classic concept]', "
+            "'history of [approach]', '[topic] origins'. "
+            "Include a dedicated 'Foundational Patterns' section in findings."
+        )
+
+    # Dig deeper: continuing from existing findings
+    if dig_deeper:
+        parts.append(
+            "\nDIG DEEPER: This is a continuation of previous research on this topic. "
+            "Start by calling get_research to see what's already been found. "
+            "Focus on gaps, unverified claims, and new angles NOT covered in existing findings. "
+            "Do NOT repeat what's already known. Update the existing entry with new findings."
+        )
+
+    # Source and entry management
+    parts.append(
+        f"\nSave findings incrementally with save_research after each round. "
+        f"Use entry_id='{entry_id}' for all save_research and finish_research calls. "
+        "IMPORTANT: Always include the sources array with ALL URLs you found. "
+        "When done, call finish_research with the full report AND all source URLs."
+    )
+
+    return "\n".join(parts)
+
+
+async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | None,
+                                 entry_id: str | None):
+    """Run deep research via a CLI session with the deep-research plugin.
+
+    Uses the REST API to create a session, attach tools, start the PTY, and
+    send the prompt — same path as the UI. Monitors completion via hook-driven
+    session state polling. No internal WebSocket needed."""
+    _API = f"http://127.0.0.1:{PORT}"
+
+    async def _rest(method: str, path: str, body: dict | None = None) -> dict | list:
+        url = f"{_API}{path}"
+        async with aiohttp.ClientSession() as http:
+            async with http.request(method, url, json=body, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                return await resp.json()
+
+    job = _research_jobs.get(job_id)
+    if not job:
+        return
+
+    job["status"] = "running"
+    job["started_at"] = _time.time()
+    job["backend"] = "cli"
+    job["entry_id"] = entry_id
+    await _set_entry_status(entry_id, "in_progress")
+    await broadcast({
+        "type": "research_started", "job_id": job_id,
+        "query": query, "entry_id": entry_id, "backend": "cli",
+    })
+    await broadcast({
+        "type": "research_progress", "job_id": job_id,
+        "line": "Standalone LLM unavailable — running via CLI session",
+        "entry_id": entry_id,
+    })
+
+    session_id = None
+    try:
+        # Find the deep-research MCP server ID
+        db = await get_db()
+        try:
+            dr_mcp_id = None
+            for candidate_id in ("builtin-deep-research",):
+                cur = await db.execute("SELECT id FROM mcp_servers WHERE id = ?", (candidate_id,))
+                if await cur.fetchone():
+                    dr_mcp_id = candidate_id
+                    break
+            if not dr_mcp_id:
+                cur = await db.execute(
+                    "SELECT id FROM mcp_servers WHERE server_name LIKE '%deep-research%' LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row:
+                    dr_mcp_id = row["id"]
+
+            dr_guideline_id = None
+            for candidate_id in ("builtin-deep-research",):
+                cur = await db.execute("SELECT id FROM guidelines WHERE id = ?", (candidate_id,))
+                if await cur.fetchone():
+                    dr_guideline_id = candidate_id
+                    break
+            if not dr_guideline_id:
+                cur = await db.execute(
+                    "SELECT id FROM guidelines WHERE name LIKE '%Deep Research%' LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row:
+                    dr_guideline_id = row["id"]
+        finally:
+            await db.close()
+
+        if not dr_mcp_id:
+            raise RuntimeError(
+                "Deep research MCP server not found. Restart backend or register it in MCP panel."
+            )
+
+        # 1. Create session via REST API (proper setup, same as UI)
+        await broadcast({
+            "type": "research_progress", "job_id": job_id,
+            "line": "Creating research session...", "entry_id": entry_id,
+        })
+        sess = await _rest("POST", "/api/sessions", {
+            "name": f"Deep Research — {query[:50]}",
+            "workspace_id": workspace_id,
+            "model": "sonnet",
+            "cli_type": "claude",
+            "permission_mode": "bypassPermissions",
+        })
+        session_id = sess["id"]
+        job["session_id"] = session_id
+
+        # 2. Attach MCP server + guideline
+        await _rest("PUT", f"/api/sessions/{session_id}/mcp-servers", {
+            "mcp_server_ids": [dr_mcp_id],
+        })
+        if dr_guideline_id:
+            await _rest("PUT", f"/api/sessions/{session_id}/guidelines", {
+                "guideline_ids": [dr_guideline_id],
+            })
+
+        # 3. Start PTY via the shared WebSocket (broadcast action)
+        await broadcast({
+            "type": "research_progress", "job_id": job_id,
+            "line": "Starting CLI session...", "entry_id": entry_id,
+        })
+        # Use the WS handler's start_pty action via a brief connection
+        async with aiohttp.ClientSession() as http:
+            async with http.ws_connect(f"{_API}/ws") as ws:
+                await ws.send_json({
+                    "action": "start_pty",
+                    "session_id": session_id,
+                    "cols": 200, "rows": 50,
+                })
+                # Wait for PTY to start (idle state from hooks)
+                t0 = _time.time()
+                ready = False
+                while _time.time() - t0 < 60:
+                    try:
+                        msg = await _asyncio.wait_for(ws.receive(), timeout=3)
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            if data.get("type") == "session_state" and data.get("state") == "idle":
+                                ready = True
+                                break
+                    except _asyncio.TimeoutError:
+                        # Check if PTY is alive via pty_manager
+                        if pty_mgr.is_alive(session_id):
+                            ready = True
+                            break
+                if not ready:
+                    raise RuntimeError("CLI session failed to start")
+
+                # 4. Research loop — send prompt, wait for idle, nudge to continue
+                depth = job.get("depth", "standard")
+                default_max = {"quick": 1, "standard": 1, "deep": 5}.get(depth, 1)
+                # Workspace-level override for max iterations
+                ws_max = None
+                if workspace_id:
+                    try:
+                        _db = await get_db()
+                        try:
+                            _cur = await _db.execute(
+                                "SELECT research_max_iterations FROM workspaces WHERE id = ?",
+                                (workspace_id,),
+                            )
+                            _row = await _cur.fetchone()
+                            if _row and _row["research_max_iterations"]:
+                                ws_max = _row["research_max_iterations"]
+                        finally:
+                            await _db.close()
+                    except Exception:
+                        pass
+                max_iterations = ws_max or default_max
+                done = False
+
+                for iteration in range(max_iterations):
+                    # Build prompt: initial on first iteration, continuation on subsequent
+                    if iteration == 0:
+                        prompt = _build_research_prompt(query, entry_id, job)
+                    else:
+                        # Continuation nudge — push the agent to go deeper
+                        prompt = (
+                            f"Continue researching: {query}\n\n"
+                            f"This is research iteration {iteration + 1}. "
+                            f"Call get_research(entry_id='{entry_id}') to see what you've found so far. "
+                            "Then:\n"
+                            "1. Identify gaps — what aspects remain unexplored or weakly sourced?\n"
+                            "2. Search for new angles NOT covered in existing findings\n"
+                            "3. Verify key claims that only have one source\n"
+                            "4. Look for contrarian views and edge cases\n"
+                            "5. Update findings with save_research (include sources!)\n\n"
+                            "If the research is genuinely thorough and saturated (new searches return "
+                            "mostly known information), call finish_research with the complete report "
+                            f"and ALL source URLs. entry_id='{entry_id}'"
+                        )
+
+                    await broadcast({
+                        "type": "research_progress", "job_id": job_id,
+                        "line": f"{'Sending initial prompt' if iteration == 0 else f'Iteration {iteration + 1}/{max_iterations} — nudging deeper'}...",
+                        "entry_id": entry_id,
+                    })
+                    await ws.send_json({
+                        "action": "input",
+                        "session_id": session_id,
+                        "data": prompt + "\r",
+                    })
+
+                    # Monitor until idle (up to 5 min per iteration)
+                    t0 = _time.time()
+                    last_activity = _time.time()
+                    round_done = False
+
+                    while _time.time() - t0 < 300:
+                        try:
+                            msg = await _asyncio.wait_for(ws.receive(), timeout=5)
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                data = json.loads(msg.data)
+                                mtype = data.get("type", "")
+                                if mtype == "output":
+                                    last_activity = _time.time()
+                                elif mtype == "session_state":
+                                    state = data.get("state", "")
+                                    if state == "idle":
+                                        round_done = True
+                                        break
+                                    last_activity = _time.time()
+                                elif mtype == "session_idle":
+                                    round_done = True
+                                    break
+                                elif mtype == "tool_event":
+                                    tool = data.get("tool", "")
+                                    if tool:
+                                        await broadcast({
+                                            "type": "research_progress", "job_id": job_id,
+                                            "line": f"Tool: {tool}",
+                                            "entry_id": entry_id,
+                                        })
+                                    last_activity = _time.time()
+                            elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                                done = True
+                                break
+                        except _asyncio.TimeoutError:
+                            if _time.time() - last_activity > 90:
+                                break
+
+                    if not round_done:
+                        done = True
+                        break
+
+                    # Check if agent already called finish_research (status=complete)
+                    db_check = await get_db()
+                    try:
+                        cur = await db_check.execute(
+                            "SELECT status, findings_summary FROM research_entries WHERE id = ?",
+                            (entry_id,),
+                        )
+                        row = await cur.fetchone()
+                        if row and row["status"] == "complete":
+                            await broadcast({
+                                "type": "research_progress", "job_id": job_id,
+                                "line": f"Research marked complete after iteration {iteration + 1}",
+                                "entry_id": entry_id,
+                            })
+                            done = True
+                            break
+                        # Check if findings are substantial enough to stop
+                        findings_len = len(row["findings_summary"] or "") if row else 0
+                        if iteration > 0 and findings_len > 5000:
+                            await broadcast({
+                                "type": "research_progress", "job_id": job_id,
+                                "line": f"Findings substantial ({findings_len} chars) — continuing to iteration {iteration + 2}",
+                                "entry_id": entry_id,
+                            })
+                    finally:
+                        await db_check.close()
+
+                    done = round_done
+
+                # 5. Stop the PTY
+                try:
+                    await ws.send_json({"action": "stop", "session_id": session_id})
+                except Exception:
+                    pass
+
+        # 7. Check results
+        db = await get_db()
+        try:
+            cur = await db.execute("SELECT * FROM research_entries WHERE id = ?", (entry_id,))
+            row = await cur.fetchone()
+            if row:
+                entry = dict(row)
+                if entry.get("status") == "complete" or entry.get("findings_summary"):
+                    job["status"] = "completed"
+                elif done:
+                    job["status"] = "completed"
+                    await _set_entry_status(entry_id, "complete")
+                else:
+                    job["status"] = "failed"
+                    await _set_entry_status(entry_id, "failed")
+            else:
+                job["status"] = "completed" if done else "failed"
+        finally:
+            await db.close()
+
+        await broadcast({
+            "type": "research_done", "job_id": job_id,
+            "status": job["status"], "entry_id": entry_id, "backend": "cli",
+        })
+
+    except Exception as e:
+        logger.exception("research CLI fallback failed: %s", e)
+        job["status"] = "error"
+        job["error"] = str(e)
+        await _set_entry_status(entry_id, "failed")
+        await broadcast({
+            "type": "research_done", "job_id": job_id,
+            "status": "error", "error": str(e), "entry_id": entry_id,
+        })
+
+    # Clean up session (keep it around for debugging — user can delete manually)
+    if session_id:
+        try:
+            # Mark as idle so it doesn't show as "running" in sidebar
+            db = await get_db()
+            try:
+                await db.execute(
+                    "UPDATE sessions SET session_type = 'worker' WHERE id = ?",
+                    (session_id,),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+        except Exception:
+            pass
+
+
+async def _run_research_job(job_id: str, query: str, model: str | None,
+                             llm_url: str | None, workspace_path: str | None,
+                             entry_id: str | None = None,
+                             workspace_id: str | None = None):
+    """Run deep_research — tries standalone engine first, falls back to CLI session.
+
+    Backend selection:
+      - 'standalone': force standalone engine (needs local LLM)
+      - 'cli': force CLI session (uses deep-research plugin)
+      - 'auto' (default): try standalone, fall back to CLI if LLM unavailable
+    """
+    job = _research_jobs.get(job_id)
+    if not job:
+        return
+
+    # Check app setting for research backend preference
+    backend_pref = "auto"
+    try:
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                "SELECT value FROM app_settings WHERE key = 'research_backend'"
+            )
+            row = await cur.fetchone()
+            if row and row["value"]:
+                backend_pref = row["value"]
+        finally:
+            await db.close()
+    except Exception:
+        pass
+
+    # Also allow per-request override
+    backend_pref = job.get("backend") or backend_pref
+
+    use_cli = False
+    if backend_pref == "cli":
+        use_cli = True
+    elif backend_pref == "auto":
+        # Check if standalone LLM is reachable
+        llm_ok = await _check_standalone_llm(llm_url)
+        if not llm_ok:
+            use_cli = True
+            logger.info("research job %s: standalone LLM unreachable, falling back to CLI", job_id)
+
+    if use_cli:
+        return await _run_research_via_cli(job_id, query, workspace_id, entry_id)
+
+    # ── Standalone engine path ────────────────────────────────
+    from resource_path import is_frozen
+    if is_frozen():
+        # In compiled distribution, use the compiled deep-research binary
+        cmd = [str(_PROJECT_ROOT / "deep-research"), "research", query]
+    else:
+        cmd = ["python3", "-m", "deep_research", "research", query]
+    if model:
+        cmd.extend(["--model", model])
+    if llm_url:
+        cmd.extend(["--llm-url", llm_url])
+    if workspace_path:
+        cmd.extend(["--codebase-dir", workspace_path])
+    cmd.extend(["--output-dir", str(_RESEARCH_DIR)])
+
+    job["status"] = "running"
+    job["started_at"] = _time.time()
+    job["cmd"] = cmd
+    job["entry_id"] = entry_id
+    job["backend"] = "standalone"
+    await _set_entry_status(entry_id, "in_progress")
+    await broadcast({
+        "type": "research_started", "job_id": job_id,
+        "query": query, "entry_id": entry_id, "backend": "standalone",
+    })
+
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            *cmd, cwd=str(_PROJECT_ROOT),
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.STDOUT,
+        )
+        job["proc"] = proc
+        async for line in proc.stdout:
+            decoded = line.decode("utf-8", errors="replace").rstrip()
+            if not decoded:
+                continue
+            await broadcast({
+                "type": "research_progress", "job_id": job_id,
+                "line": decoded, "entry_id": entry_id,
+            })
+        await proc.wait()
+        ok = proc.returncode == 0
+        job["status"] = "completed" if ok else "failed"
+        findings = _read_findings(query) if ok else None
+        await _set_entry_status(
+            entry_id,
+            "complete" if ok else "failed",
+            findings,
+        )
+        await broadcast({
+            "type": "research_done", "job_id": job_id,
+            "status": job["status"], "code": proc.returncode,
+            "entry_id": entry_id,
+        })
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        await _set_entry_status(entry_id, "failed")
+        await broadcast({
+            "type": "research_done", "job_id": job_id,
+            "status": "error", "error": str(e), "entry_id": entry_id,
+        })
+
+
+async def start_research(request: web.Request) -> web.Response:
+    """POST /api/research/jobs — start a deep research job.
+
+    Optionally accepts an existing `entry_id` to attach the job to a
+    `research_entries` row created via the panel's "+ new" button. If no
+    entry_id is provided, one is auto-created so every job is recorded in
+    the Research DB and shows up in the panel."""
+    body = await request.json()
+    query = body.get("query", "").strip()
+    workspace_id = body.get("workspace_id")
+    entry_id = body.get("entry_id")
+    feature_tag = body.get("feature_tag")
+    model = body.get("model")  # Override model
+    llm_url = body.get("llm_url")  # Override LLM URL
+    if not query:
+        return web.json_response({"error": "query required"}, status=400)
+
+    # Resolve entry first (so we can inherit its workspace), then resolve
+    # workspace context, then either validate or auto-create the entry. The
+    # ordering matters: if a slash-command caller passes only `entry_id`, we
+    # still want the workspace path / model defaults.
+    workspace_path = None
+    db = await get_db()
+    try:
+        if entry_id:
+            cur = await db.execute("SELECT * FROM research_entries WHERE id = ?", (entry_id,))
+            row = await cur.fetchone()
+            if not row:
+                return web.json_response({"error": "entry_id not found"}, status=404)
+            if not workspace_id:
+                workspace_id = dict(row).get("workspace_id")
+
+        if workspace_id:
+            cur = await db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+            ws = await cur.fetchone()
+            if ws:
+                ws_d = dict(ws)
+                workspace_path = ws_d.get("path")
+                if not model:
+                    model = ws_d.get("research_model")
+                if not llm_url:
+                    llm_url = ws_d.get("research_llm_url")
+
+        if not entry_id:
+            entry_id = str(uuid.uuid4())
+            await db.execute(
+                """INSERT INTO research_entries
+                   (id, workspace_id, topic, query, feature_tag, status)
+                   VALUES (?, ?, ?, ?, ?, 'pending')""",
+                (entry_id, workspace_id, query, query, feature_tag),
+            )
+            await db.commit()
+    finally:
+        await db.close()
+
+    job_id = str(uuid.uuid4())
+    backend = body.get("backend")  # Optional: 'standalone', 'cli', or 'auto'
+    # Research options
+    depth = body.get("depth", "standard")      # quick | standard | deep
+    recency_months = body.get("recency_months") # int or None — restrict to recent N months
+    cross_temporal = body.get("cross_temporal", False)  # look at old paradigms applied to new
+    dig_deeper = body.get("dig_deeper", False)  # continuing from previous findings
+    _research_jobs[job_id] = {
+        "query": query, "model": model, "status": "pending",
+        "entry_id": entry_id, "backend": backend,
+        "depth": depth, "recency_months": recency_months,
+        "cross_temporal": cross_temporal, "dig_deeper": dig_deeper,
+    }
+    _asyncio.ensure_future(_run_research_job(
+        job_id, query, model, llm_url, workspace_path, entry_id,
+        workspace_id=workspace_id,
+    ))
+    return web.json_response({"job_id": job_id, "entry_id": entry_id, "query": query})
+
+
+async def list_research_jobs(request: web.Request) -> web.Response:
+    """GET /api/research/jobs — list active and recent research jobs."""
+    jobs = []
+    for jid, j in _research_jobs.items():
+        jobs.append({
+            "job_id": jid,
+            "query": j.get("query"),
+            "status": j.get("status"),
+            "started_at": j.get("started_at"),
+            "model": j.get("model"),
+            "entry_id": j.get("entry_id"),
+            "error": j.get("error"),
+            "backend": j.get("backend"),
+        })
+    return web.json_response(jobs)
+
+
+async def stop_research_job(request: web.Request) -> web.Response:
+    """DELETE /api/research/jobs/{job_id} — stop a running research job."""
+    job_id = request.match_info["job_id"]
+    job = _research_jobs.get(job_id)
+    if not job:
+        return web.json_response({"error": "job not found"}, status=404)
+    proc = job.get("proc")
+    if proc and proc.returncode is None:
+        proc.terminate()
+        try:
+            await _asyncio.wait_for(proc.wait(), timeout=5)
+        except _asyncio.TimeoutError:
+            proc.kill()
+    job["status"] = "stopped"
+    return web.json_response({"ok": True})
+
+
+# ─── Plan file read/write ────────────────────────────────────────────────
+
+_PLANS_DIR = _Path.home() / ".claude" / "plans"
+
+
+def _resolve_plan_path(raw_path: str) -> _Path | None:
+    """Resolve a plan file path like ~/.claude/plans/foo.md safely."""
+    expanded = _Path(os.path.expanduser(raw_path)).resolve()
+    plans_dir = _PLANS_DIR.resolve()
+    # Security: only allow files inside ~/.claude/plans/
+    if not str(expanded).startswith(str(plans_dir)):
+        return None
+    if not expanded.suffix == ".md":
+        return None
+    return expanded
+
+
+async def list_plan_files(request: web.Request) -> web.Response:
+    """List all plan files in ~/.claude/plans/ with optional workspace filtering."""
+    workspace_id = request.query.get("workspace_id")
+    plans_dir = _PLANS_DIR.resolve()
+    if not plans_dir.exists():
+        return web.json_response({"plans": []})
+
+    db = await get_db()
+    try:
+        # Always match against ALL sessions so we know each plan's workspace
+        cur = await db.execute(
+            "SELECT id, name, native_slug, workspace_id FROM sessions WHERE native_slug IS NOT NULL"
+        )
+        rows = await cur.fetchall()
+        slug_to_session = {}
+        for r in rows:
+            slug_to_session[r["native_slug"]] = {
+                "session_id": r["id"],
+                "session_name": r["name"],
+                "workspace_id": r["workspace_id"],
+            }
+
+        plans = []
+        for f in sorted(plans_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+            stem = f.stem  # e.g. "buzzing-dancing-snowglobe"
+            stat = f.stat()
+            entry = {
+                "filename": f.name,
+                "path": f"~/.claude/plans/{f.name}",
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            }
+            # Match: exact slug, or slug is prefix (for agent sub-plans like slug-agent-xxx.md)
+            matched = slug_to_session.get(stem)
+            if matched:
+                entry.update(matched)
+            else:
+                # Try prefix match for agent sub-plans
+                for slug, sess in slug_to_session.items():
+                    if stem.startswith(slug):
+                        entry.update(sess)
+                        entry["sub_plan"] = True
+                        break
+
+            # Filter to requested workspace: include matched plans belonging to
+            # the workspace, plus unmatched plans (no session_id — orphaned)
+            if workspace_id:
+                plan_ws = entry.get("workspace_id")
+                if plan_ws and plan_ws != workspace_id:
+                    continue  # belongs to a different workspace — skip
+            plans.append(entry)
+        return web.json_response({"plans": plans})
+    finally:
+        await db.close()
+
+
+async def get_plan_file(request: web.Request) -> web.Response:
+    raw = request.query.get("path", "")
+    if not raw:
+        return web.json_response({"error": "missing path"}, status=400)
+    p = _resolve_plan_path(raw)
+    if not p:
+        return web.json_response({"error": "invalid path"}, status=400)
+    if not p.exists():
+        return web.json_response({"error": "file not found"}, status=404)
+    content = p.read_text(encoding="utf-8")
+    return web.json_response({"path": str(p), "content": content})
+
+
+async def put_plan_file(request: web.Request) -> web.Response:
+    body = await request.json()
+    raw = body.get("path", "")
+    content = body.get("content", "")
+    if not raw:
+        return web.json_response({"error": "missing path"}, status=400)
+    p = _resolve_plan_path(raw)
+    if not p:
+        return web.json_response({"error": "invalid path"}, status=400)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return web.json_response({"ok": True, "path": str(p)})
+
+
+# ─── App ──────────────────────────────────────────────────────────────────
+
+@web.middleware
+async def cors_middleware(request: web.Request, handler):
+    if request.method == "OPTIONS":
+        resp = web.Response()
+    else:
+        try:
+            resp = await handler(request)
+        except web.HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Unhandled error")
+            resp = web.json_response({"error": str(e)}, status=500)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return resp
+
+
+async def on_startup(app: web.Application):
+    await init_db()
+    pty_mgr.on_output(handle_pty_output)
+    pty_mgr.on_output(capture_proc.process)
+    pty_mgr.on_exit(handle_pty_exit)
+
+    # ── Dynamic model discovery ────────────────────────────────────
+    global _discovered_models
+    try:
+        from model_discovery import discover_all
+        _discovered_models = await _asyncio.to_thread(discover_all)
+        for cli, models in _discovered_models.items():
+            if models:
+                logger.info("Discovered %d %s models dynamically", len(models), cli)
+    except Exception as e:
+        logger.debug("Model discovery skipped: %s", e)
+
+    # ── CLI lifecycle hooks ──────────────────────────────────────────
+    from config import HOOKS_ENABLED
+    if HOOKS_ENABLED:
+        from hooks import set_broadcast_fn, set_capture_proc, set_pty_manager as hooks_set_pty
+        from hook_installer import install_all
+        set_broadcast_fn(broadcast)
+        set_capture_proc(capture_proc)
+        hooks_set_pty(pty_mgr)
+        install_all()
+        logger.info("CLI hooks installed and receiver ready")
+
+    # ── Server-side cascade runner ──────────────────────────────────
+    import cascade_runner
+    cascade_runner.set_pty_manager(pty_mgr)
+    cascade_runner.set_broadcast_fn(broadcast)
+    await cascade_runner.recover_active_runs()
+    logger.info("Cascade runner initialized")
+
+    # ── Auto-exec: event-driven task dispatch ────────────────────────
+    import auto_exec
+    auto_exec.set_pty_manager(pty_mgr)
+    auto_exec.set_broadcast_fn(broadcast)
+    auto_exec.register_subscribers()
+
+    # ── Worker queue: per-worker task auto-delivery ────────────────
+    import worker_queue
+    worker_queue.set_pty_manager(pty_mgr)
+    worker_queue.set_broadcast_fn(broadcast)
+    worker_queue.register_subscribers()
+
+    # ── Pipeline: implement → test → document loop ──────────────────
+    import pipeline
+    pipeline.set_pty_manager(pty_mgr)
+    pipeline.set_broadcast_fn(broadcast)
+    pipeline.register_subscribers()
+
+    # ── Pipeline Engine: configurable graph-based pipelines ──────────
+    import pipeline_engine
+    pipeline_engine.set_pty_manager(pty_mgr)
+    pipeline_engine.set_broadcast_fn(broadcast)
+    pipeline_engine.register_subscribers()
+    await pipeline_engine.ensure_presets()
+    await pipeline_engine.recover_active_runs()
+
+    async def store_and_broadcast_capture(session_id: str, capture: dict):
+        """Store capture in DB and broadcast via WebSocket."""
+        db = await get_db()
+        try:
+            await db.execute(
+                """INSERT INTO output_captures (session_id, capture_type, tool_name, raw_text, status)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_id, capture.get("capture_type"), capture.get("tool_name"),
+                 capture.get("raw_text"), capture.get("status", "pending")),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+        await broadcast({
+            "type": "capture",
+            "session_id": session_id,
+            "capture": capture,
+        })
+
+        # Context-low pre-warning → dedicated event for the UI indicator.
+        # Fired by output_capture when "Context left until auto-compact: N%"
+        # crosses the warn threshold. Drives the same yellow/orange tab
+        # indicator system as PreCompact/PostCompact hooks.
+        if capture.get("capture_type") == "context_low":
+            await broadcast({
+                "type": "context_low",
+                "session_id": session_id,
+                "percent_left": capture.get("percent_left"),
+            })
+
+        # Quota exceeded → mark account + broadcast for failover UI
+        if capture.get("capture_type") == "quota_exceeded":
+            db2 = await get_db()
+            try:
+                cur2 = await db2.execute("SELECT account_id FROM sessions WHERE id = ?", (session_id,))
+                row2 = await cur2.fetchone()
+                if row2 and row2["account_id"]:
+                    await db2.execute(
+                        "UPDATE accounts SET status = 'quota_exceeded', quota_reset_at = datetime('now', '+4 hours') WHERE id = ?",
+                        (row2["account_id"],),
+                    )
+                    await db2.commit()
+            finally:
+                await db2.close()
+            await broadcast({
+                "type": "quota_exceeded",
+                "session_id": session_id,
+                "message": capture.get("raw_text", "Quota exceeded"),
+            })
+
+        # Branch detected → /branch switched this PTY to the branch.
+        # Create a new session for the ORIGINAL conversation so it opens
+        # as a sibling tab.  The current PTY continues as the branch.
+        if capture.get("capture_type") == "branch_detected":
+            original_native_id = capture.get("original_native_id")
+            if original_native_id:
+                _fire_and_forget(_open_original_as_tab(session_id, original_native_id))
+
+    capture_proc.on_capture(store_and_broadcast_capture)
+    logger.info(f"IVE v{VERSION} backend on http://{HOST}:{PORT}")
+
+
+async def on_cleanup(app: web.Application):
+    await pty_mgr.stop_all()
+    try:
+        import preview_browser
+        await preview_browser.shutdown()
+    except Exception:
+        pass
+    for ws in list(ws_clients):
+        await ws.close()
+
+
+# ─── REST: Agent Skills ───────────────────────────────────────────────────
+
+async def list_agent_skills(request: web.Request) -> web.Response:
+    """List available skills from the Agent Skills ecosystem."""
+    from skills_client import fetch_skills_index
+    skills = await fetch_skills_index()
+    # Strip full content from index (keep it lightweight)
+    return web.json_response([
+        {k: v for k, v in s.items() if k != "content"} for s in skills
+    ])
+
+
+async def get_agent_skill(request: web.Request) -> web.Response:
+    """Get a single skill's full content."""
+    skill_path = request.match_info["path"]
+    repo = request.query.get("repo", "anthropics/skills")
+    from skills_client import fetch_skill_content
+    skill = await fetch_skill_content(skill_path, repo=repo)
+    if not skill:
+        return web.json_response({"error": "skill not found"}, status=404)
+    return web.json_response(skill)
+
+
+async def install_agent_skill(request: web.Request) -> web.Response:
+    """Install a skill to disk for native CLI discovery."""
+    from skill_installer import install_skill
+    body = await request.json()
+    name = body.get("name", "").strip()
+    content = body.get("content", "").strip()
+    if not name or not content:
+        return web.json_response({"error": "name and content required"}, status=400)
+
+    # Determine workspace path from query or body
+    workspace_path = body.get("workspace_path")
+    if not workspace_path:
+        # Try to get from active workspace
+        ws_id = body.get("workspace_id")
+        if ws_id:
+            db = await get_db()
+            try:
+                cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (ws_id,))
+                row = await cur.fetchone()
+                if row:
+                    workspace_path = row["path"]
+            finally:
+                await db.close()
+
+    cli_types = body.get("cli_types", ["claude", "gemini"])
+    scope = body.get("scope", "project")
+
+    results = await install_skill(
+        name=name,
+        content=content,
+        workspace_path=workspace_path,
+        cli_types=cli_types,
+        scope=scope,
+        source_url=body.get("source_url", ""),
+        repo=body.get("repo", ""),
+        skill_path=body.get("skill_path", ""),
+    )
+    return web.json_response({"ok": True, "results": results}, status=201)
+
+
+async def uninstall_agent_skill(request: web.Request) -> web.Response:
+    """Remove a skill from disk."""
+    from skill_installer import uninstall_skill
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+
+    workspace_path = body.get("workspace_path")
+    if not workspace_path:
+        ws_id = body.get("workspace_id")
+        if ws_id:
+            db = await get_db()
+            try:
+                cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (ws_id,))
+                row = await cur.fetchone()
+                if row:
+                    workspace_path = row["path"]
+            finally:
+                await db.close()
+
+    cli_types = body.get("cli_types", ["claude", "gemini"])
+    scope = body.get("scope", "project")
+
+    results = await uninstall_skill(
+        name=name,
+        workspace_path=workspace_path,
+        cli_types=cli_types,
+        scope=scope,
+    )
+    return web.json_response({"ok": True, "results": results})
+
+
+async def list_installed_skills_handler(request: web.Request) -> web.Response:
+    """List skills installed on disk for all CLIs."""
+    from skill_installer import list_installed_skills
+
+    workspace_path = request.query.get("workspace_path")
+    if not workspace_path:
+        ws_id = request.query.get("workspace_id")
+        if ws_id:
+            db = await get_db()
+            try:
+                cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (ws_id,))
+                row = await cur.fetchone()
+                if row:
+                    workspace_path = row["path"]
+            finally:
+                await db.close()
+
+    scope = request.query.get("scope", "project")
+    skills = list_installed_skills(workspace_path=workspace_path, scope=scope)
+    return web.json_response(skills)
+
+
+async def sync_agent_skill(request: web.Request) -> web.Response:
+    """Sync a skill from one CLI to another."""
+    from skill_installer import sync_skill
+    body = await request.json()
+    name = body.get("name", "").strip()
+    from_cli = body.get("from_cli", "").strip()
+    to_cli = body.get("to_cli", "").strip()
+    if not name or not from_cli or not to_cli:
+        return web.json_response({"error": "name, from_cli, to_cli required"}, status=400)
+
+    workspace_path = body.get("workspace_path")
+    if not workspace_path:
+        ws_id = body.get("workspace_id")
+        if ws_id:
+            db = await get_db()
+            try:
+                cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (ws_id,))
+                row = await cur.fetchone()
+                if row:
+                    workspace_path = row["path"]
+            finally:
+                await db.close()
+
+    scope = body.get("scope", "project")
+    result = await sync_skill(
+        name=name, from_cli=from_cli, to_cli=to_cli,
+        workspace_path=workspace_path, scope=scope,
+    )
+    return web.json_response(result)
+
+
+# ─── REST: Plugin marketplace ─────────────────────────────────────────────
+
+async def list_plugin_registries(request: web.Request) -> web.Response:
+    regs = await plugin_manager.list_registries()
+    return web.json_response(regs)
+
+
+async def add_plugin_registry(request: web.Request) -> web.Response:
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    url = (body.get("url") or "").strip()
+    if not name or not url:
+        return web.json_response({"error": "name and url required"}, status=400)
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return web.json_response({"error": "url must start with http:// or https://"}, status=400)
+    try:
+        reg = await plugin_manager.add_registry(name, url)
+        return web.json_response(reg, status=201)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
+async def update_plugin_registry(request: web.Request) -> web.Response:
+    rid = request.match_info["id"]
+    body = await request.json()
+    reg = await plugin_manager.update_registry(
+        rid,
+        name=body.get("name"),
+        url=body.get("url"),
+        enabled=body.get("enabled"),
+    )
+    if not reg:
+        return web.json_response({"error": "no fields to update or registry not found"}, status=400)
+    return web.json_response(reg)
+
+
+async def delete_plugin_registry(request: web.Request) -> web.Response:
+    rid = request.match_info["id"]
+    ok = await plugin_manager.delete_registry(rid)
+    if not ok:
+        return web.json_response({"error": "registry not found or built-in (cannot delete)"}, status=400)
+    return web.json_response({"ok": True})
+
+
+async def sync_plugin_registry(request: web.Request) -> web.Response:
+    rid = request.match_info["id"]
+    result = await plugin_manager.sync_registry(rid)
+    if result.get("ok"):
+        await bus.emit(CommanderEvent.REGISTRY_SYNCED, {
+            "registry_id": rid,
+            "plugin_count": result.get("plugin_count", 0),
+        }, source="api", actor="user")
+        return web.json_response(result, status=200)
+    await bus.emit(CommanderEvent.REGISTRY_SYNC_FAILED, {
+        "registry_id": rid,
+        "error": result.get("error"),
+    }, source="api", actor="user")
+    return web.json_response(result, status=502)
+
+
+async def sync_all_plugin_registries(request: web.Request) -> web.Response:
+    regs = await plugin_manager.list_registries()
+    results = []
+    for reg in regs:
+        if not reg.get("enabled"):
+            continue
+        result = await plugin_manager.sync_registry(reg["id"])
+        results.append({"registry_id": reg["id"], "name": reg["name"], **result})
+    return web.json_response({"results": results})
+
+
+async def list_plugins_handler(request: web.Request) -> web.Response:
+    installed_only = request.query.get("installed") == "1"
+    registry_id = request.query.get("registry") or None
+    plugins = await plugin_manager.list_plugins(
+        installed_only=installed_only, registry_id=registry_id
+    )
+    return web.json_response(plugins)
+
+
+async def get_plugin_handler(request: web.Request) -> web.Response:
+    plugin_id = request.match_info["id"]
+    plugin = await plugin_manager.get_plugin(plugin_id)
+    if not plugin:
+        return web.json_response({"error": "plugin not found"}, status=404)
+    return web.json_response(plugin)
+
+
+async def install_plugin_handler(request: web.Request) -> web.Response:
+    plugin_id = request.match_info["id"]
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    skip_scripts = bool(body.get("skip_scripts"))
+    result = await plugin_manager.install_plugin(plugin_id, skip_scripts=skip_scripts)
+    if result.get("ok"):
+        await bus.emit(CommanderEvent.PLUGIN_INSTALLED, {
+            "plugin_id": plugin_id,
+            "skip_scripts": skip_scripts,
+            "skipped_components": result.get("skipped") or [],
+        }, source="api", actor="user")
+        return web.json_response(result, status=200)
+    return web.json_response(result, status=400)
+
+
+async def uninstall_plugin_handler(request: web.Request) -> web.Response:
+    plugin_id = request.match_info["id"]
+    ok = await plugin_manager.uninstall_plugin(plugin_id)
+    if not ok:
+        return web.json_response({"error": "plugin not found"}, status=404)
+    await bus.emit(CommanderEvent.PLUGIN_UNINSTALLED, {
+        "plugin_id": plugin_id,
+    }, source="api", actor="user")
+    return web.json_response({"ok": True})
+
+
+async def get_session_plugin_components(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    comps = await plugin_manager.get_session_components(session_id)
+    return web.json_response(comps)
+
+
+async def set_session_plugin_components(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    body = await request.json()
+    component_ids = body.get("component_ids") or []
+    count = await plugin_manager.set_session_components(session_id, component_ids)
+    return web.json_response({"ok": True, "count": count})
+
+
+# ── W2W: Similar task search ──────────────────────────────────────────────
+
+async def find_similar_tasks(request: web.Request) -> web.Response:
+    """Find completed tasks similar to a query — uses embedding cosine with LIKE fallback."""
+    query = (request.query.get("q") or "").strip()
+    if not query:
+        return web.json_response({"error": "q query param required"}, status=400)
+    workspace_id = request.query.get("workspace_id")
+    limit = int(request.query.get("limit", "10"))
+
+    # Try semantic search first
+    try:
+        from embedder import search_similar
+        semantic_results = await search_similar(
+            query, entity_type="task", workspace_id=workspace_id,
+            limit=limit, min_score=0.35,
+        )
+        if semantic_results:
+            # Fetch full task data for matching entity_ids
+            task_ids = [r["entity_id"] for r in semantic_results]
+            scores = {r["entity_id"]: r["score"] for r in semantic_results}
+            db = await get_db()
+            try:
+                placeholders = ",".join("?" for _ in task_ids)
+                cur = await db.execute(
+                    f"""SELECT id, workspace_id, title, description, status, result_summary,
+                               lessons_learned, important_notes, labels, completed_at
+                        FROM tasks WHERE id IN ({placeholders})""",
+                    task_ids,
+                )
+                rows = await cur.fetchall()
+                results = []
+                for row in rows:
+                    d = dict(row)
+                    d["similarity_score"] = scores.get(d["id"], 0)
+                    results.append(d)
+                results.sort(key=lambda r: r["similarity_score"], reverse=True)
+                return web.json_response(results)
+            finally:
+                await db.close()
+    except Exception:
+        pass  # fall through to keyword search
+
+    # Fallback: keyword LIKE search
+    db = await get_db()
+    try:
+        keywords = [w.strip() for w in query.split() if len(w.strip()) >= 2]
+        if not keywords:
+            return web.json_response([])
+
+        conditions = []
+        params: list = []
+        for kw in keywords[:8]:
+            like = f"%{kw}%"
+            conditions.append(
+                "(title LIKE ? OR description LIKE ? OR result_summary LIKE ? "
+                "OR lessons_learned LIKE ? OR important_notes LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
+
+        sql = f"""SELECT id, workspace_id, title, description, status, result_summary,
+                         lessons_learned, important_notes, labels, completed_at
+                  FROM tasks
+                  WHERE status IN ('done', 'review', 'verified')
+                    AND ({' OR '.join(conditions)})"""
+        if workspace_id:
+            sql += " AND workspace_id = ?"
+            params.append(workspace_id)
+        sql += " ORDER BY completed_at DESC LIMIT ?"
+        params.append(limit)
+
+        cur = await db.execute(sql, params)
+        rows = await cur.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            text = " ".join(str(d.get(c) or "") for c in ("title", "description", "result_summary", "lessons_learned"))
+            hits = sum(1 for kw in keywords if kw.lower() in text.lower())
+            d["relevance_hits"] = hits
+            results.append(d)
+        results.sort(key=lambda r: r["relevance_hits"], reverse=True)
+        return web.json_response(results)
+    finally:
+        await db.close()
+
+
+# ── W2W: Similar sessions search ─────────────────────────────────────────
+
+async def find_similar_sessions(request: web.Request) -> web.Response:
+    """Find sessions with similar work — uses digest embeddings."""
+    query = (request.query.get("q") or "").strip()
+    if not query:
+        return web.json_response({"error": "q query param required"}, status=400)
+    workspace_id = request.query.get("workspace_id")
+    exclude = request.query.get("exclude_session")
+    limit = int(request.query.get("limit", "10"))
+
+    try:
+        from embedder import search_similar
+        results = await search_similar(
+            query, entity_type="digest", workspace_id=workspace_id,
+            limit=limit, min_score=0.35, exclude_id=exclude,
+        )
+        if not results:
+            return web.json_response([])
+
+        # Enrich with session info
+        session_ids = [r["entity_id"] for r in results]
+        scores = {r["entity_id"]: r["score"] for r in results}
+        db = await get_db()
+        try:
+            placeholders = ",".join("?" for _ in session_ids)
+            cur = await db.execute(
+                f"""SELECT s.id, s.name, s.status, s.model, s.cli_type, s.workspace_id,
+                           d.task_summary, d.current_focus, d.files_touched,
+                           d.decisions, d.discoveries
+                    FROM sessions s
+                    LEFT JOIN session_digests d ON s.id = d.session_id
+                    WHERE s.id IN ({placeholders})""",
+                session_ids,
+            )
+            rows = await cur.fetchall()
+            enriched = []
+            for row in rows:
+                d = dict(row)
+                d["similarity_score"] = scores.get(d["id"], 0)
+                for jf in ("files_touched", "decisions", "discoveries"):
+                    d[jf] = _parse_json_field(d.get(jf))
+                enriched.append(d)
+            enriched.sort(key=lambda r: r["similarity_score"], reverse=True)
+            return web.json_response(enriched)
+        finally:
+            await db.close()
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ── W2W: Coordination overlap check ─────────────────────────────────────
+
+async def check_coordination_overlap(request: web.Request) -> web.Response:
+    """Check if a session's intent overlaps with active peers (Myelin-inspired)."""
+    ws_id = request.match_info["id"]
+    body = await request.json()
+    intent = (body.get("intent") or "").strip()
+    exclude_session = body.get("exclude_session")
+    if not intent:
+        return web.json_response({"error": "intent required"}, status=400)
+
+    try:
+        from embedder import check_overlap
+        overlaps = await check_overlap(intent, ws_id, exclude_session)
+        return web.json_response(overlaps)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ── W2W: Unified memory search ───────────────────────────────────────────
+
+async def unified_memory_search(request: web.Request) -> web.Response:
+    """Search across all W2W memory types: tasks, digests, knowledge, messages, file activity.
+
+    Returns results grouped by type, each with relevance scores.
+    Uses embedding cosine search with keyword fallback per type.
+    """
+    ws_id = request.match_info["id"]
+    query = (request.query.get("q") or "").strip()
+    if not query:
+        return web.json_response({"error": "q query param required"}, status=400)
+    types_param = request.query.get("types", "tasks,digests,knowledge,messages")
+    requested = set(t.strip() for t in types_param.split(","))
+    limit_per = int(request.query.get("limit", "5"))
+
+    result: dict = {}
+
+    # 1. Tasks (semantic + keyword fallback)
+    if "tasks" in requested:
+        try:
+            from embedder import search_similar
+            sem = await search_similar(query, "task", ws_id, limit=limit_per, min_score=0.35)
+            if sem:
+                task_ids = [r["entity_id"] for r in sem]
+                scores = {r["entity_id"]: r["score"] for r in sem}
+                db = await get_db()
+                try:
+                    ph = ",".join("?" for _ in task_ids)
+                    cur = await db.execute(
+                        f"SELECT id, title, status, result_summary, lessons_learned, important_notes, completed_at FROM tasks WHERE id IN ({ph})",
+                        task_ids,
+                    )
+                    rows = await cur.fetchall()
+                    result["tasks"] = sorted(
+                        [{**dict(r), "score": scores.get(r["id"], 0)} for r in rows],
+                        key=lambda x: x["score"], reverse=True
+                    )
+                finally:
+                    await db.close()
+        except Exception:
+            pass
+        if "tasks" not in result:
+            # Keyword fallback
+            db = await get_db()
+            try:
+                like = f"%{query}%"
+                cur = await db.execute(
+                    """SELECT id, title, status, result_summary, lessons_learned, important_notes, completed_at
+                       FROM tasks WHERE workspace_id = ? AND (title LIKE ? OR description LIKE ? OR lessons_learned LIKE ?)
+                       ORDER BY completed_at DESC LIMIT ?""",
+                    (ws_id, like, like, like, limit_per),
+                )
+                result["tasks"] = [dict(r) for r in await cur.fetchall()]
+            finally:
+                await db.close()
+
+    # 2. Session digests (semantic + keyword fallback)
+    if "digests" in requested:
+        try:
+            from embedder import search_similar
+            sem = await search_similar(query, "digest", ws_id, limit=limit_per, min_score=0.35)
+            if sem:
+                sids = [r["entity_id"] for r in sem]
+                scores = {r["entity_id"]: r["score"] for r in sem}
+                db = await get_db()
+                try:
+                    ph = ",".join("?" for _ in sids)
+                    cur = await db.execute(
+                        f"""SELECT s.id, s.name, s.status, s.cli_type, s.model,
+                                   d.task_summary, d.current_focus, d.files_touched, d.decisions, d.discoveries
+                            FROM sessions s LEFT JOIN session_digests d ON s.id = d.session_id
+                            WHERE s.id IN ({ph})""",
+                        sids,
+                    )
+                    rows = await cur.fetchall()
+                    digests = []
+                    for r in rows:
+                        d = dict(r)
+                        d["score"] = scores.get(d["id"], 0)
+                        for jf in ("files_touched", "decisions", "discoveries"):
+                            d[jf] = _parse_json_field(d.get(jf))
+                        digests.append(d)
+                    result["digests"] = sorted(digests, key=lambda x: x["score"], reverse=True)
+                finally:
+                    await db.close()
+        except Exception:
+            pass
+        if "digests" not in result:
+            db = await get_db()
+            try:
+                like = f"%{query}%"
+                cur = await db.execute(
+                    """SELECT s.id, s.name, s.status, s.cli_type, d.task_summary, d.current_focus,
+                              d.files_touched, d.decisions, d.discoveries
+                       FROM session_digests d JOIN sessions s ON d.session_id = s.id
+                       WHERE d.workspace_id = ? AND (d.task_summary LIKE ? OR d.current_focus LIKE ?)
+                       ORDER BY d.updated_at DESC LIMIT ?""",
+                    (ws_id, like, like, limit_per),
+                )
+                rows = await cur.fetchall()
+                result["digests"] = [{**dict(r), **{jf: _parse_json_field(dict(r).get(jf)) for jf in ("files_touched","decisions","discoveries")}} for r in rows]
+            finally:
+                await db.close()
+
+    # 3. Knowledge entries (semantic + keyword fallback)
+    if "knowledge" in requested:
+        try:
+            from embedder import search_similar
+            sem = await search_similar(query, "knowledge", ws_id, limit=limit_per, min_score=0.35)
+            if sem:
+                kids = [r["entity_id"] for r in sem]
+                scores = {r["entity_id"]: r["score"] for r in sem}
+                db = await get_db()
+                try:
+                    ph = ",".join("?" for _ in kids)
+                    cur = await db.execute(
+                        f"SELECT * FROM workspace_knowledge WHERE id IN ({ph})", kids,
+                    )
+                    result["knowledge"] = sorted(
+                        [{**dict(r), "score": scores.get(r["id"], 0)} for r in await cur.fetchall()],
+                        key=lambda x: x["score"], reverse=True
+                    )
+                finally:
+                    await db.close()
+        except Exception:
+            pass
+        if "knowledge" not in result:
+            db = await get_db()
+            try:
+                like = f"%{query}%"
+                cur = await db.execute(
+                    "SELECT * FROM workspace_knowledge WHERE workspace_id = ? AND content LIKE ? ORDER BY confirmed_count DESC LIMIT ?",
+                    (ws_id, like, limit_per),
+                )
+                result["knowledge"] = [dict(r) for r in await cur.fetchall()]
+            finally:
+                await db.close()
+
+    # 4. Peer messages (keyword only — not embedded)
+    if "messages" in requested:
+        db = await get_db()
+        try:
+            like = f"%{query}%"
+            cur = await db.execute(
+                """SELECT pm.*, s.name AS from_session_name
+                   FROM peer_messages pm LEFT JOIN sessions s ON pm.from_session_id = s.id
+                   WHERE pm.workspace_id = ? AND (pm.content LIKE ? OR pm.topic LIKE ?)
+                   ORDER BY pm.created_at DESC LIMIT ?""",
+                (ws_id, like, like, limit_per),
+            )
+            rows = await cur.fetchall()
+            msgs = []
+            for r in rows:
+                d = dict(r)
+                d["files"] = _parse_json_field(d.get("files"))
+                d["read_by"] = _parse_json_field(d.get("read_by"))
+                msgs.append(d)
+            result["messages"] = msgs
+        finally:
+            await db.close()
+
+    # 5. File activity (keyword on file path)
+    if "files" in requested:
+        db = await get_db()
+        try:
+            like = f"%{query}%"
+            cur = await db.execute(
+                """SELECT file_path, session_name, task_summary, task_title, tool_name,
+                          MAX(created_at) AS last_edited
+                   FROM file_activity WHERE workspace_id = ? AND (file_path LIKE ? OR task_summary LIKE ?)
+                   GROUP BY file_path, session_id ORDER BY last_edited DESC LIMIT ?""",
+                (ws_id, like, like, limit_per),
+            )
+            result["files"] = [dict(r) for r in await cur.fetchall()]
+        finally:
+            await db.close()
+
+    return web.json_response(result)
+
+
+# ── W2W: Export knowledge to native config files ────────────────────────
+
+async def export_knowledge_to_config(request: web.Request) -> web.Response:
+    """Export workspace knowledge to a native config file.
+
+    Targets:
+      - ``agents_md``   — shared AGENTS.md (CLI-agnostic, no sync needed)
+      - ``claude_md``   — CLAUDE.md (writes + syncs to all CLI memory files)
+      - ``gemini_md``   — GEMINI.md (writes + syncs to all CLI memory files)
+      - ``memory_file`` — resolves via CLI profiles and writes through the
+                          sync hub so every CLI's memory file stays in sync
+    """
+    ws_id = request.match_info["id"]
+    body = await request.json()
+    target = body.get("target", "agents_md")  # agents_md | claude_md | gemini_md | memory_file
+    scope = body.get("scope", "")  # optional subfolder scope
+
+    db = await get_db()
+    try:
+        # Get workspace path
+        cur = await db.execute("SELECT path FROM workspaces WHERE id = ?", (ws_id,))
+        ws = await cur.fetchone()
+        if not ws:
+            return web.json_response({"error": "workspace not found"}, status=404)
+        ws_path = ws["path"]
+
+        # Get knowledge entries (optionally scoped)
+        sql = "SELECT * FROM workspace_knowledge WHERE workspace_id = ?"
+        params: list = [ws_id]
+        if scope:
+            sql += " AND scope LIKE ?"
+            params.append(f"%{scope}%")
+        sql += " ORDER BY confirmed_count DESC, category, updated_at DESC"
+        cur = await db.execute(sql, params)
+        rows = await cur.fetchall()
+        if not rows:
+            return web.json_response({"error": "no knowledge entries to export"}, status=400)
+    finally:
+        await db.close()
+
+    # Build the knowledge section
+    sections: dict[str, list[str]] = {}
+    for r in rows:
+        cat = r["category"] or "general"
+        entry = f"- {r['content']}"
+        if r["scope"]:
+            entry += f" [{r['scope']}]"
+        sections.setdefault(cat, []).append(entry)
+
+    lines = ["\n## Workspace Knowledge (auto-generated)\n"]
+    for cat, entries in sections.items():
+        lines.append(f"### {cat.title()}")
+        lines.extend(entries)
+        lines.append("")
+    knowledge_block = "\n".join(lines)
+
+    # Determine target file path(s) — profile-aware resolution
+    import os as _os
+    from cli_profiles import get_profile, PROFILES
+    from memory_sync import sync_manager, get_provider
+
+    if scope:
+        base = _os.path.join(ws_path, scope)
+    else:
+        base = ws_path
+
+    # Map target → (file_path, source_cli_for_sync)
+    # source_cli is set when we write to a CLI-specific memory file and need
+    # the sync hub to propagate the change to the other CLIs.
+    source_cli: str | None = None
+
+    if target == "agents_md":
+        target_file = _os.path.join(base, "AGENTS.md")
+    elif target == "memory_file":
+        # Generic: pick first available CLI profile, write to its file,
+        # then sync propagates to all others.
+        first_cli = next(iter(PROFILES))
+        profile = get_profile(first_cli)
+        from cli_features import Feature as _Feat
+        binding = profile.binding(_Feat.PROJECT_MEMORY_FILE)
+        fname = binding.file_path if binding else "CLAUDE.md"
+        target_file = _os.path.join(base, fname)
+        source_cli = first_cli
+    else:
+        # CLI-specific target: claude_md, gemini_md, or future <cli>_md
+        cli_id = target.replace("_md", "")
+        if cli_id not in PROFILES:
+            return web.json_response(
+                {"error": f"unknown target '{target}', expected one of: "
+                          f"agents_md, memory_file, "
+                          + ", ".join(f"{c}_md" for c in PROFILES)},
+                status=400,
+            )
+        profile = get_profile(cli_id)
+        from cli_features import Feature as _Feat
+        binding = profile.binding(_Feat.PROJECT_MEMORY_FILE)
+        fname = binding.file_path if binding else f"{cli_id.upper()}.md"
+        target_file = _os.path.join(base, fname)
+        source_cli = cli_id
+
+    # Read existing file and replace/append the knowledge section
+    marker_start = "## Workspace Knowledge (auto-generated)"
+    try:
+        existing = ""
+        if _os.path.isfile(target_file):
+            with open(target_file, "r") as f:
+                existing = f.read()
+
+        if marker_start in existing:
+            # Replace existing section (find next ## heading or EOF)
+            start_idx = existing.index(marker_start)
+            # Find next ## heading after our section
+            rest = existing[start_idx + len(marker_start):]
+            next_heading = -1
+            for i, line in enumerate(rest.split("\n")):
+                if i > 0 and line.startswith("## ") and "auto-generated" not in line:
+                    next_heading = start_idx + len(marker_start) + sum(len(l) + 1 for l in rest.split("\n")[:i])
+                    break
+            if next_heading > 0:
+                new_content = existing[:start_idx] + knowledge_block.strip() + "\n\n" + existing[next_heading:]
+            else:
+                new_content = existing[:start_idx] + knowledge_block.strip() + "\n"
+        else:
+            # Append to file
+            new_content = existing.rstrip() + "\n\n" + knowledge_block.strip() + "\n"
+
+        _os.makedirs(_os.path.dirname(target_file), exist_ok=True)
+        with open(target_file, "w") as f:
+            f.write(new_content)
+
+        # If we wrote to a CLI-specific memory file, trigger the sync hub
+        # so all other CLI memory files (CLAUDE.md ↔ GEMINI.md etc.) get
+        # the update propagated via three-way merge.
+        synced_to: list[str] = []
+        if source_cli:
+            try:
+                result = await sync_manager.sync(
+                    ws_id, ws_path, source_cli=source_cli,
+                )
+                synced_to = result.providers_updated
+            except Exception as sync_err:
+                logger.warning("Post-export sync failed: %s", sync_err)
+
+        return web.json_response({
+            "ok": True,
+            "file": target_file,
+            "entries": len(rows),
+            "synced_to": synced_to,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ── W2W: Peer Messages ────────────────────────────────────────────────────
+
+def _parse_json_field(val, fallback=None):
+    if fallback is None:
+        fallback = []
+    if isinstance(val, (list, dict)):
+        return val
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return fallback
+
+
+async def list_peer_messages(request: web.Request) -> web.Response:
+    ws_id = request.match_info["id"]
+    since = request.query.get("since")
+    topic = request.query.get("topic")
+    priority = request.query.get("priority")
+    exclude_from = request.query.get("exclude_from")
+    db = await get_db()
+    try:
+        sql = "SELECT * FROM peer_messages WHERE workspace_id = ?"
+        params: list = [ws_id]
+        if since:
+            sql += " AND created_at > ?"
+            params.append(since)
+        if topic:
+            sql += " AND topic = ?"
+            params.append(topic)
+        if priority:
+            sql += " AND priority = ?"
+            params.append(priority)
+        if exclude_from:
+            sql += " AND from_session_id != ?"
+            params.append(exclude_from)
+        sql += " ORDER BY created_at DESC LIMIT 100"
+        cur = await db.execute(sql, params)
+        rows = await cur.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d["files"] = _parse_json_field(d.get("files"))
+            d["read_by"] = _parse_json_field(d.get("read_by"))
+            results.append(d)
+        return web.json_response(results)
+    finally:
+        await db.close()
+
+
+async def create_peer_message(request: web.Request) -> web.Response:
+    ws_id = request.match_info["id"]
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    if not content:
+        return web.json_response({"error": "content required"}, status=400)
+
+    msg_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO peer_messages (id, workspace_id, from_session_id, topic, content, priority, files)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (msg_id, ws_id, body.get("from_session_id", ""),
+             body.get("topic", "general"), content,
+             body.get("priority", "info"),
+             body.get("files", "[]") if isinstance(body.get("files"), str) else json.dumps(body.get("files", []))),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM peer_messages WHERE id = ?", (msg_id,))
+        row = await cur.fetchone()
+        d = dict(row)
+        d["files"] = _parse_json_field(d.get("files"))
+        d["read_by"] = _parse_json_field(d.get("read_by"))
+
+        # Emit event
+        try:
+            from event_bus import get_event_bus
+            from commander_events import CommanderEvent
+            bus = get_event_bus()
+            if bus:
+                await bus.emit(
+                    CommanderEvent.PEER_MESSAGE_SENT, "w2w",
+                    payload={"message_id": msg_id, "priority": d.get("priority"), "topic": d.get("topic")},
+                    workspace_id=ws_id, session_id=body.get("from_session_id"),
+                )
+        except Exception:
+            pass
+
+        return web.json_response(d, status=201)
+    finally:
+        await db.close()
+
+
+async def mark_peer_message_read(request: web.Request) -> web.Response:
+    msg_id = request.match_info["id"]
+    body = await request.json()
+    session_id = body.get("session_id", "")
+    if not session_id:
+        return web.json_response({"error": "session_id required"}, status=400)
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT read_by FROM peer_messages WHERE id = ?", (msg_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        read_by = _parse_json_field(row["read_by"])
+        if session_id not in read_by:
+            read_by.append(session_id)
+            await db.execute(
+                "UPDATE peer_messages SET read_by = ? WHERE id = ?",
+                (json.dumps(read_by), msg_id),
+            )
+            await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+# ── W2W: Session Digests ─────────────────────────────────────────────────
+
+async def get_session_digest(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM session_digests WHERE session_id = ?", (session_id,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            # Auto-create empty digest
+            digest_id = str(uuid.uuid4())
+            # Look up workspace_id from the session
+            scur = await db.execute(
+                "SELECT workspace_id FROM sessions WHERE id = ?", (session_id,)
+            )
+            srow = await scur.fetchone()
+            ws_id = srow["workspace_id"] if srow else None
+            await db.execute(
+                """INSERT OR IGNORE INTO session_digests (id, session_id, workspace_id)
+                   VALUES (?, ?, ?)""",
+                (digest_id, session_id, ws_id),
+            )
+            await db.commit()
+            cur = await db.execute(
+                "SELECT * FROM session_digests WHERE session_id = ?", (session_id,)
+            )
+            row = await cur.fetchone()
+        d = dict(row)
+        d["files_touched"] = _parse_json_field(d.get("files_touched"))
+        d["decisions"] = _parse_json_field(d.get("decisions"))
+        d["discoveries"] = _parse_json_field(d.get("discoveries"))
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+async def update_session_digest(request: web.Request) -> web.Response:
+    session_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        # Ensure digest exists first
+        cur = await db.execute(
+            "SELECT id FROM session_digests WHERE session_id = ?", (session_id,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            digest_id = str(uuid.uuid4())
+            scur = await db.execute(
+                "SELECT workspace_id FROM sessions WHERE id = ?", (session_id,)
+            )
+            srow = await scur.fetchone()
+            ws_id = srow["workspace_id"] if srow else None
+            await db.execute(
+                """INSERT INTO session_digests (id, session_id, workspace_id)
+                   VALUES (?, ?, ?)""",
+                (digest_id, session_id, ws_id),
+            )
+
+        fields, values = [], []
+        for key in ("task_summary", "current_focus"):
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(body[key])
+        for key in ("decisions", "discoveries"):
+            if key in body:
+                fields.append(f"{key} = ?")
+                values.append(json.dumps(body[key]))
+        if not fields:
+            return web.json_response({"error": "nothing to update"}, status=400)
+        fields.append("updated_at = datetime('now')")
+        values.append(session_id)
+        await db.execute(
+            f"UPDATE session_digests SET {', '.join(fields)} WHERE session_id = ?",
+            values,
+        )
+        await db.commit()
+
+        # Emit event
+        try:
+            from event_bus import get_event_bus
+            from commander_events import CommanderEvent
+            bus = get_event_bus()
+            if bus:
+                await bus.emit(
+                    CommanderEvent.DIGEST_UPDATED, "w2w",
+                    session_id=session_id,
+                )
+        except Exception:
+            pass
+
+        cur = await db.execute(
+            "SELECT * FROM session_digests WHERE session_id = ?", (session_id,)
+        )
+        row = await cur.fetchone()
+        d = dict(row)
+        d["files_touched"] = _parse_json_field(d.get("files_touched"))
+        d["decisions"] = _parse_json_field(d.get("decisions"))
+        d["discoveries"] = _parse_json_field(d.get("discoveries"))
+
+        # Auto-embed digest for coordination overlap detection + session search
+        try:
+            from embedder import embed_digest
+            await embed_digest(d)
+        except Exception:
+            pass
+
+        return web.json_response(d)
+    finally:
+        await db.close()
+
+
+# ── W2W: Workspace Knowledge Base ────────────────────────────────────────
+
+
+async def list_all_knowledge(request: web.Request) -> web.Response:
+    """List knowledge entries across all workspaces (global view)."""
+    category = request.query.get("category")
+    query = request.query.get("query")
+    workspace_id = request.query.get("workspace_id")  # optional filter
+    db = await get_db()
+    try:
+        sql = "SELECT k.*, w.name as workspace_name FROM workspace_knowledge k LEFT JOIN workspaces w ON k.workspace_id = w.id"
+        conditions, params = [], []
+        if workspace_id:
+            conditions.append("k.workspace_id = ?")
+            params.append(workspace_id)
+        if category:
+            conditions.append("k.category = ?")
+            params.append(category)
+        if query:
+            conditions.append("k.content LIKE ?")
+            params.append(f"%{query}%")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY k.confirmed_count DESC, k.updated_at DESC LIMIT 500"
+        cur = await db.execute(sql, params)
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def list_workspace_knowledge(request: web.Request) -> web.Response:
+    ws_id = request.match_info["id"]
+    category = request.query.get("category")
+    scope = request.query.get("scope")
+    query = request.query.get("query")
+    db = await get_db()
+    try:
+        sql = "SELECT * FROM workspace_knowledge WHERE workspace_id = ?"
+        params: list = [ws_id]
+        if category:
+            sql += " AND category = ?"
+            params.append(category)
+        if scope:
+            sql += " AND scope LIKE ?"
+            params.append(f"%{scope}%")
+        if query:
+            sql += " AND content LIKE ?"
+            params.append(f"%{query}%")
+        sql += " ORDER BY confirmed_count DESC, updated_at DESC LIMIT 200"
+        cur = await db.execute(sql, params)
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def create_knowledge_entry(request: web.Request) -> web.Response:
+    ws_id = request.match_info["id"]
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    category = (body.get("category") or "").strip()
+    if not content or not category:
+        return web.json_response({"error": "content and category required"}, status=400)
+
+    entry_id = str(uuid.uuid4())
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO workspace_knowledge (id, workspace_id, category, content, scope, contributed_by)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (entry_id, ws_id, category, content,
+             body.get("scope", ""), body.get("contributed_by", "")),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM workspace_knowledge WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+
+        try:
+            from event_bus import get_event_bus
+            from commander_events import CommanderEvent
+            bus = get_event_bus()
+            if bus:
+                await bus.emit(
+                    CommanderEvent.KNOWLEDGE_CONTRIBUTED, "w2w",
+                    payload={"entry_id": entry_id, "category": category, "scope": body.get("scope", "")},
+                    workspace_id=ws_id, session_id=body.get("contributed_by"),
+                )
+        except Exception:
+            pass
+
+        # Auto-embed for semantic search
+        try:
+            from embedder import embed_knowledge
+            await embed_knowledge(dict(row))
+        except Exception:
+            pass
+
+        return web.json_response(dict(row), status=201)
+    finally:
+        await db.close()
+
+
+async def update_knowledge_entry(request: web.Request) -> web.Response:
+    entry_id = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        # Special action: "confirm" increments confirmed_count
+        if body.get("action") == "confirm":
+            await db.execute(
+                "UPDATE workspace_knowledge SET confirmed_count = confirmed_count + 1, updated_at = datetime('now') WHERE id = ?",
+                (entry_id,),
+            )
+            await db.commit()
+            try:
+                from event_bus import get_event_bus
+                from commander_events import CommanderEvent
+                bus = get_event_bus()
+                if bus:
+                    await bus.emit(CommanderEvent.KNOWLEDGE_CONFIRMED, "w2w", payload={"entry_id": entry_id})
+            except Exception:
+                pass
+        else:
+            fields, values = [], []
+            for key in ("content", "category", "scope"):
+                if key in body:
+                    fields.append(f"{key} = ?")
+                    values.append(body[key])
+            if fields:
+                fields.append("updated_at = datetime('now')")
+                values.append(entry_id)
+                await db.execute(
+                    f"UPDATE workspace_knowledge SET {', '.join(fields)} WHERE id = ?",
+                    values,
+                )
+                await db.commit()
+
+        cur = await db.execute("SELECT * FROM workspace_knowledge WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(dict(row))
+    finally:
+        await db.close()
+
+
+async def delete_knowledge_entry(request: web.Request) -> web.Response:
+    entry_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM workspace_knowledge WHERE id = ?", (entry_id,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def get_knowledge_prompt(request: web.Request) -> web.Response:
+    """Export workspace knowledge as a system prompt fragment for injection at PTY start."""
+    ws_id = request.match_info["id"]
+    scope = request.query.get("scope")
+    max_chars = int(request.query.get("max_chars", "4000"))
+    db = await get_db()
+    try:
+        sql = "SELECT * FROM workspace_knowledge WHERE workspace_id = ?"
+        params: list = [ws_id]
+        if scope:
+            sql += " AND scope LIKE ?"
+            params.append(f"%{scope}%")
+        sql += " ORDER BY confirmed_count DESC, updated_at DESC"
+        cur = await db.execute(sql, params)
+        rows = await cur.fetchall()
+
+        if not rows:
+            return web.json_response({"prompt": ""})
+
+        # Resolve output style for compact formatting
+        from output_styles import resolve_output_style
+        _ws_os = None
+        try:
+            _c = await db.execute("SELECT output_style FROM workspaces WHERE id = ?", (ws_id,))
+            _r = await _c.fetchone()
+            _ws_os = _r["output_style"] if _r else None
+        except Exception:
+            pass
+        try:
+            _c2 = await db.execute("SELECT value FROM app_settings WHERE key = 'output_style'")
+            _r2 = await _c2.fetchone()
+            _gl_os = _r2["value"] if _r2 else None
+        except Exception:
+            _gl_os = None
+        compact = resolve_output_style(None, _ws_os, _gl_os) not in ("default", "lite")
+
+        sections: dict[str, list[str]] = {}
+        total_len = 0
+        for row in rows:
+            cat = row["category"] or "general"
+            entry = f"- {row['content']}"
+            if not compact and row["scope"]:
+                entry += f" [{row['scope']}]"
+            if total_len + len(entry) + 10 > max_chars:
+                break
+            sections.setdefault(cat, []).append(entry)
+            total_len += len(entry) + 2
+
+        if compact:
+            lines = []
+            for cat, entries in sections.items():
+                lines.append(f"**{cat}**")
+                lines.extend(entries)
+        else:
+            lines = ["## Workspace Knowledge Base", ""]
+            for cat, entries in sections.items():
+                lines.append(f"### {cat.title()}")
+                lines.extend(entries)
+                lines.append("")
+
+        return web.json_response({"prompt": "\n".join(lines)})
+    finally:
+        await db.close()
+
+
+# ── W2W: File Activity ────────────────────────────────────────────────────
+
+async def get_file_activity(request: web.Request) -> web.Response:
+    """Get recent edit activity for a file path — who touched it and what task they were on."""
+    ws_id = request.match_info["id"]
+    file_path = request.query.get("path", "")
+    if not file_path:
+        return web.json_response({"error": "path query param required"}, status=400)
+    limit = int(request.query.get("limit", "20"))
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT * FROM file_activity
+               WHERE workspace_id = ? AND file_path = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (ws_id, file_path, limit),
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def list_recent_file_activity(request: web.Request) -> web.Response:
+    """List recently edited files across the workspace with task context."""
+    ws_id = request.match_info["id"]
+    since = request.query.get("since")
+    exclude_session = request.query.get("exclude_session")
+    limit = int(request.query.get("limit", "50"))
+    db = await get_db()
+    try:
+        sql = """SELECT file_path, session_id, session_name, task_summary, task_title,
+                        tool_name, MAX(created_at) AS last_edited
+                 FROM file_activity
+                 WHERE workspace_id = ?"""
+        params: list = [ws_id]
+        if since:
+            sql += " AND created_at > ?"
+            params.append(since)
+        if exclude_session:
+            sql += " AND session_id != ?"
+            params.append(exclude_session)
+        sql += " GROUP BY file_path, session_id ORDER BY last_edited DESC LIMIT ?"
+        params.append(limit)
+        cur = await db.execute(sql, params)
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+def create_app() -> web.Application:
+    app = web.Application(middlewares=[cors_middleware])
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+
+    app.router.add_get("/ws", ws_handler)
+
+    app.router.add_get("/api/workspaces", list_workspaces)
+    app.router.add_post("/api/workspaces", create_workspace)
+    app.router.add_post("/api/browse-folder", browse_folder)
+    app.router.add_put("/api/workspaces/order", reorder_workspaces)
+    app.router.add_put("/api/workspaces/{id}", update_workspace)
+    app.router.add_delete("/api/workspaces/{id}", delete_workspace)
+    app.router.add_get("/api/workspaces/{id}/preview-screenshot", get_workspace_preview_screenshot)
+
+    app.router.add_get("/api/sessions", list_sessions)
+    app.router.add_post("/api/sessions", create_session)
+    app.router.add_put("/api/sessions/order", reorder_sessions)
+    app.router.add_delete("/api/sessions/{id}", delete_session)
+
+    app.router.add_get("/api/sessions/{id}/messages", list_messages)
+
+    app.router.add_get("/api/prompts", list_prompts)
+    app.router.add_post("/api/prompts", create_prompt)
+    app.router.add_put("/api/prompts/quickaction-order", reorder_quickactions)
+    app.router.add_put("/api/prompts/{id}", update_prompt)
+    app.router.add_delete("/api/prompts/{id}", delete_prompt)
+    app.router.add_post("/api/prompts/{id}/use", use_prompt)
+
+    app.router.add_get("/api/guidelines", list_guidelines)
+    app.router.add_post("/api/guidelines", create_guideline)
+    app.router.add_put("/api/guidelines/{id}", update_guideline)
+    app.router.add_delete("/api/guidelines/{id}", delete_guideline)
+
+    app.router.add_get("/api/sessions/{id}/guidelines", get_session_guidelines)
+    app.router.add_put("/api/sessions/{id}/guidelines", set_session_guidelines)
+
+    # Session Advisor
+    app.router.add_get("/api/sessions/{id}/recommend-guidelines", recommend_session_guidelines)
+    app.router.add_get("/api/guidelines/effectiveness", get_guideline_effectiveness)
+    app.router.add_post("/api/sessions/{id}/analyze", analyze_session_endpoint)
+    app.router.add_post("/api/sessions/{id}/dismiss-recommendation", dismiss_guideline_recommendation)
+
+    app.router.add_get("/api/mcp-servers", list_mcp_servers)
+    app.router.add_post("/api/mcp-servers", create_mcp_server)
+    app.router.add_post("/api/mcp-servers/parse-docs", parse_mcp_docs)
+    app.router.add_put("/api/mcp-servers/{id}", update_mcp_server)
+    app.router.add_delete("/api/mcp-servers/{id}", delete_mcp_server)
+    app.router.add_get("/api/sessions/{id}/mcp-servers", get_session_mcp_servers)
+    app.router.add_put("/api/sessions/{id}/mcp-servers", set_session_mcp_servers)
+
+    app.router.add_put("/api/sessions/{id}", update_session)
+    app.router.add_put("/api/sessions/{id}/rename", rename_session)
+    app.router.add_post("/api/sessions/merge", merge_sessions)
+    app.router.add_post("/api/sessions/{id}/clone", clone_session)
+    app.router.add_get("/api/sessions/{id}/export", export_session)
+    app.router.add_post("/api/sessions/{id}/distill", distill_session)
+    app.router.add_get("/api/sessions/{id}/scratchpad", get_session_scratchpad)
+    app.router.add_put("/api/sessions/{id}/scratchpad", update_session_scratchpad)
+    app.router.add_get("/api/sessions/{id}/queue", get_session_queue)
+    app.router.add_post("/api/sessions/{id}/queue", queue_task_for_session)
+    app.router.add_post("/api/sessions/{id}/assign-task", assign_task_to_session)
+    app.router.add_get("/api/search", search_messages)
+
+    app.router.add_get("/api/history/projects", list_history_projects)
+    app.router.add_post("/api/history/import", import_history)
+
+    app.router.add_get("/api/templates", list_templates)
+    app.router.add_post("/api/templates", create_template)
+    app.router.add_delete("/api/templates/{id}", delete_template)
+    app.router.add_post("/api/templates/{id}/apply", apply_template)
+
+    app.router.add_get("/api/grid-templates", list_grid_templates)
+    app.router.add_post("/api/grid-templates", create_grid_template)
+    app.router.add_put("/api/grid-templates/{id}", update_grid_template)
+    app.router.add_delete("/api/grid-templates/{id}", delete_grid_template)
+
+    # Tab groups
+    app.router.add_get("/api/tab-groups", list_tab_groups)
+    app.router.add_post("/api/tab-groups", create_tab_group)
+    app.router.add_put("/api/tab-groups/{id}", update_tab_group)
+    app.router.add_delete("/api/tab-groups/{id}", delete_tab_group)
+
+    # Tasks
+    app.router.add_get("/api/tasks", list_tasks)
+    app.router.add_post("/api/tasks", create_task)
+    app.router.add_get("/api/tasks/similar", find_similar_tasks)  # before {id} to avoid match
+    app.router.add_get("/api/tasks/{id}", get_task)
+    app.router.add_put("/api/tasks/{id}", update_task)
+    app.router.add_delete("/api/tasks/{id}", delete_task)
+    app.router.add_get("/api/tasks/{id}/events", list_task_events)
+    app.router.add_post("/api/tasks/{id}/iterate", iterate_task)
+
+    # Output captures
+    app.router.add_get("/api/sessions/{id}/captures", list_session_captures)
+    app.router.add_get("/api/sessions/{id}/output", get_session_output)
+    app.router.add_post("/api/sessions/{id}/input", send_session_input)
+    app.router.add_post("/api/sessions/{id}/switch-cli", switch_session_cli)
+    app.router.add_post("/api/sessions/{id}/switch-model", switch_model)
+    app.router.add_post("/api/broadcast-input", broadcast_input)
+
+    # Commander — Research DB
+    # NOTE: order matters. Static path segments (`/jobs`, `/search`) MUST be
+    # registered before the `/{id}` placeholder routes, otherwise aiohttp's
+    # first-match dispatch sends e.g. `/api/research/jobs` into the {id}
+    # handler with id="jobs" and the request 404s. Same for /search.
+    app.router.add_get("/api/research", list_research)
+    app.router.add_post("/api/research", create_research)
+    # Deep-research jobs (subprocess runner) — kept on a distinct sub-path so
+    # they don't collide with the DB CRUD routes above.
+    app.router.add_post("/api/research/jobs", start_research)
+    app.router.add_get("/api/research/jobs", list_research_jobs)
+    app.router.add_delete("/api/research/jobs/{job_id}", stop_research_job)
+    app.router.add_get("/api/research/search", search_research)
+    app.router.add_get("/api/research/{id}", get_research_with_sources)
+    app.router.add_put("/api/research/{id}", update_research)
+    app.router.add_delete("/api/research/{id}", delete_research)
+    app.router.add_post("/api/research/{id}/sources", add_research_source)
+
+    app.router.add_get("/api/workspaces/{id}/agents-md", get_agents_md)
+    app.router.add_put("/api/workspaces/{id}/agents-md", save_agents_md)
+    app.router.add_get("/api/workspaces/{id}/overview", get_workspace_overview)
+
+    # Memory sync — static sub-paths before {id} placeholders
+    app.router.add_get("/api/workspaces/{id}/memory/diff", get_workspace_memory_diff)
+    app.router.add_get("/api/workspaces/{id}/memory/settings", get_workspace_memory_settings)
+    app.router.add_put("/api/workspaces/{id}/memory/settings", update_workspace_memory_settings)
+    app.router.add_get("/api/workspaces/{id}/memory/auto", get_workspace_auto_memory)
+    app.router.add_post("/api/workspaces/{id}/memory/sync", sync_workspace_memory)
+    app.router.add_post("/api/workspaces/{id}/memory/resolve", resolve_workspace_memory)
+    app.router.add_get("/api/workspaces/{id}/memory", get_workspace_memory)
+    app.router.add_put("/api/workspaces/{id}/memory", update_workspace_memory)
+
+    # Memory entries (Commander-owned auto-memory)
+    # Static sub-paths first, then {id} placeholder
+    app.router.add_get("/api/memory/search", search_memory_entries)
+    app.router.add_post("/api/memory/import", import_memory_from_cli)
+    app.router.add_get("/api/memory/prompt", export_memory_prompt)
+    app.router.add_get("/api/memory", list_memory_entries)
+    app.router.add_post("/api/memory", create_memory_entry)
+    app.router.add_put("/api/memory/{id}", update_memory_entry)
+    app.router.add_delete("/api/memory/{id}", delete_memory_entry)
+
+    app.router.add_post("/api/workspaces/{id}/commander", create_commander)
+    app.router.add_get("/api/workspaces/{id}/commander", get_commander)
+    app.router.add_post("/api/workspaces/{id}/tester", create_tester)
+    app.router.add_get("/api/workspaces/{id}/tester", get_tester)
+    app.router.add_post("/api/workspaces/{id}/documentor", create_documentor)
+    app.router.add_get("/api/workspaces/{id}/documentor", get_documentor)
+    app.router.add_get("/api/workspaces/{id}/docs", get_docs_status)
+    app.router.add_post("/api/workspaces/{id}/docs/build", trigger_docs_build)
+
+    app.router.add_get("/api/workspaces/{id}/test-queue", list_test_queue)
+    app.router.add_post("/api/workspaces/{id}/test-queue", enqueue_test)
+    app.router.add_put("/api/test-queue/{id}", update_test_queue_entry)
+    app.router.add_delete("/api/test-queue/{id}", remove_from_test_queue)
+
+    # Git operations (code review)
+    app.router.add_get("/api/workspaces/{id}/git/status", get_workspace_git_status)
+    app.router.add_get("/api/workspaces/{id}/git/diff", get_workspace_git_diff)
+    app.router.add_get("/api/workspaces/{id}/git/log", get_workspace_git_log)
+    app.router.add_post("/api/open-in-ide", open_in_ide)
+
+    # Session tree + subagents
+    app.router.add_get("/api/sessions/{id}/tree", get_session_tree)
+    app.router.add_get("/api/sessions/{id}/subagents", get_session_subagents)
+    app.router.add_get("/api/sessions/{id}/subagents/{agent_id}/transcript", get_subagent_transcript)
+
+    app.router.add_get("/api/sessions/{id}/turns", lambda r: web.json_response(
+        get_session_turns(r.match_info["id"])
+    ))
+    app.router.add_get("/api/preview-proxy", preview_proxy)
+    app.router.add_get("/api/screenshot", take_screenshot)
+    app.router.add_post("/api/install-screenshot-tools", install_screenshot_tools)
+    app.router.add_post("/api/paste-image", paste_image)
+    app.router.add_get("/api/pastes/{filename}", serve_paste)
+
+    app.router.add_post("/api/tasks/{id}/attachments", upload_attachment)
+    app.router.add_get("/api/tasks/{id}/attachments", list_attachments)
+    app.router.add_get("/api/attachments/{task_id}/{filename}", serve_attachment)
+
+    # Accounts
+    app.router.add_get("/api/accounts", list_accounts)
+    app.router.add_post("/api/accounts", create_account)
+    app.router.add_post("/api/accounts/open-next", open_next_account)
+    app.router.add_put("/api/accounts/{id}", update_account)
+    app.router.add_delete("/api/accounts/{id}", delete_account)
+    app.router.add_post("/api/accounts/{id}/test", test_account)
+    app.router.add_post("/api/accounts/{id}/snapshot", snapshot_account)
+    app.router.add_post("/api/accounts/{id}/open-browser", open_account_browser)
+    app.router.add_post("/api/sessions/{id}/restart-with-account", restart_with_account)
+    app.router.add_post("/api/sessions/{id}/pop-out", pop_out_session)
+
+    app.router.add_get("/api/cli-info", get_cli_info)
+    app.router.add_get("/api/cli-info/features", get_cli_feature_matrix)
+
+    # App settings + experimental feature flags.
+    # NOTE: order matters — static paths before {key} placeholders.
+    app.router.add_get("/api/output-styles", list_output_styles)
+    app.router.add_get("/api/settings/experimental", list_experimental_features)
+    app.router.add_get("/api/settings", list_app_settings)
+    app.router.add_get("/api/settings/{key}", get_app_setting)
+    app.router.add_put("/api/settings/{key}", put_app_setting)
+
+    # Safety Gate — tool call safety engine
+    app.router.add_post("/api/safety/evaluate", evaluate_safety)
+    app.router.add_post("/api/safety/approved", report_safety_approved)
+    app.router.add_get("/api/safety/status", get_safety_status)
+    app.router.add_get("/api/safety/rules", list_safety_rules)
+    app.router.add_post("/api/safety/rules", create_safety_rule)
+    app.router.add_post("/api/safety/rules/seed", seed_safety_rules)
+    app.router.add_put("/api/safety/rules/{id}", update_safety_rule)
+    app.router.add_delete("/api/safety/rules/{id}", delete_safety_rule)
+    app.router.add_get("/api/safety/decisions", get_safety_decisions)
+    app.router.add_get("/api/safety/proposals", get_safety_proposals)
+    app.router.add_post("/api/safety/proposals/{id}/accept", accept_safety_proposal)
+    app.router.add_post("/api/safety/proposals/{id}/dismiss", dismiss_safety_proposal)
+
+    # Commander event bus. Order: static paths before {id} placeholders.
+    app.router.add_get("/api/events/catalog", get_event_catalog)
+    app.router.add_post("/api/events/emit", emit_event_handler)
+    app.router.add_get("/api/events/subscriptions", list_event_subscriptions)
+    app.router.add_post("/api/events/subscriptions", create_event_subscription)
+    app.router.add_put("/api/events/subscriptions/{id}", update_event_subscription)
+    app.router.add_delete("/api/events/subscriptions/{id}", delete_event_subscription)
+    app.router.add_get("/api/events", list_events)
+
+    # Prompt cascades
+    app.router.add_get("/api/cascades", list_cascades)
+    app.router.add_post("/api/cascades", create_cascade)
+    app.router.add_put("/api/cascades/{id}", update_cascade)
+    app.router.add_delete("/api/cascades/{id}", delete_cascade)
+    app.router.add_post("/api/cascades/{id}/use", use_cascade)
+
+    # Cascade runs (server-side execution)
+    app.router.add_get("/api/cascade-runs", list_cascade_runs)
+    app.router.add_post("/api/cascade-runs", create_cascade_run)
+    app.router.add_get("/api/cascade-runs/{id}", get_cascade_run)
+    app.router.add_put("/api/cascade-runs/{id}", update_cascade_run)
+    app.router.add_delete("/api/cascade-runs/{id}", delete_cascade_run)
+
+    # Pipeline Engine (configurable graph pipelines)
+    app.router.add_get("/api/pipelines", list_pipeline_definitions)
+    app.router.add_post("/api/pipelines", create_pipeline_definition)
+    app.router.add_get("/api/pipelines/{id}", get_pipeline_definition)
+    app.router.add_put("/api/pipelines/{id}", update_pipeline_definition)
+    app.router.add_delete("/api/pipelines/{id}", delete_pipeline_definition)
+    app.router.add_get("/api/pipeline-runs", list_pipeline_runs)
+    app.router.add_post("/api/pipeline-runs", start_pipeline_run)
+    app.router.add_post("/api/pipeline-runs/ralph", start_ralph_pipeline)
+    app.router.add_get("/api/pipeline-runs/{id}", get_pipeline_run)
+    app.router.add_put("/api/pipeline-runs/{id}", update_pipeline_run)
+
+    # Broadcast groups
+    app.router.add_get("/api/broadcast-groups", list_broadcast_groups)
+    app.router.add_post("/api/broadcast-groups", create_broadcast_group)
+    app.router.add_put("/api/broadcast-groups/{id}", update_broadcast_group)
+    app.router.add_delete("/api/broadcast-groups/{id}", delete_broadcast_group)
+
+    # Plugin marketplace
+    # NOTE: order matters — static path segments before {id} placeholders so
+    # /api/plugins/registries doesn't get dispatched into the plugin handler.
+    app.router.add_get("/api/plugins/registries", list_plugin_registries)
+    app.router.add_post("/api/plugins/registries", add_plugin_registry)
+    app.router.add_post("/api/plugins/registries/sync", sync_all_plugin_registries)
+    app.router.add_put("/api/plugins/registries/{id}", update_plugin_registry)
+    app.router.add_delete("/api/plugins/registries/{id}", delete_plugin_registry)
+    app.router.add_post("/api/plugins/registries/{id}/sync", sync_plugin_registry)
+    app.router.add_get("/api/plugins", list_plugins_handler)
+    app.router.add_get("/api/plugins/{id}", get_plugin_handler)
+    app.router.add_post("/api/plugins/{id}/install", install_plugin_handler)
+    app.router.add_delete("/api/plugins/{id}", uninstall_plugin_handler)
+    app.router.add_get("/api/sessions/{id}/plugin-components", get_session_plugin_components)
+    app.router.add_put("/api/sessions/{id}/plugin-components", set_session_plugin_components)
+
+    # Agent Skills
+    app.router.add_get("/api/skills", list_agent_skills)
+    app.router.add_get("/api/skills/installed", list_installed_skills_handler)
+    app.router.add_post("/api/skills/install", install_agent_skill)
+    app.router.add_post("/api/skills/uninstall", uninstall_agent_skill)
+    app.router.add_post("/api/skills/sync", sync_agent_skill)
+    app.router.add_get("/api/skills/{path:.*}", get_agent_skill)
+
+    # Plan file
+    app.router.add_get("/api/plan-files", list_plan_files)
+    app.router.add_get("/api/plan-file", get_plan_file)
+    app.router.add_put("/api/plan-file", put_plan_file)
+
+    # W2W: Peer messages
+    app.router.add_get("/api/workspaces/{id}/peer-messages", list_peer_messages)
+    app.router.add_post("/api/workspaces/{id}/peer-messages", create_peer_message)
+    app.router.add_put("/api/peer-messages/{id}/read", mark_peer_message_read)
+
+    # W2W: Session digests
+    app.router.add_get("/api/sessions/{id}/digest", get_session_digest)
+    app.router.add_put("/api/sessions/{id}/digest", update_session_digest)
+
+    # W2W: Workspace knowledge
+    app.router.add_get("/api/knowledge", list_all_knowledge)
+    app.router.add_get("/api/workspaces/{id}/knowledge", list_workspace_knowledge)
+    app.router.add_post("/api/workspaces/{id}/knowledge", create_knowledge_entry)
+    app.router.add_get("/api/workspaces/{id}/knowledge/prompt", get_knowledge_prompt)
+    app.router.add_put("/api/knowledge/{id}", update_knowledge_entry)
+    app.router.add_delete("/api/knowledge/{id}", delete_knowledge_entry)
+
+    # W2W: File activity
+    app.router.add_get("/api/workspaces/{id}/file-activity", list_recent_file_activity)
+    app.router.add_get("/api/workspaces/{id}/file-activity/file", get_file_activity)
+
+    # W2W: Semantic search + coordination
+    app.router.add_get("/api/sessions/similar", find_similar_sessions)
+    app.router.add_post("/api/workspaces/{id}/coordination/overlap", check_coordination_overlap)
+    app.router.add_get("/api/workspaces/{id}/memory-search", unified_memory_search)
+
+    # W2W: Export knowledge to native config files
+    app.router.add_post("/api/workspaces/{id}/knowledge/export", export_knowledge_to_config)
+
+    # CLI lifecycle hooks (replaces ANSI-based state detection)
+    from hooks import handle_hook_event
+    app.router.add_post("/api/hooks/event", handle_hook_event)
+    app.router.add_post("/api/hooks/discover", handle_hook_discover)
+    app.router.add_post("/api/hooks/pipeline-result", handle_pipeline_result)
+
+    # ── Static frontend serving (production mode) ──────────────────
+    # When a built frontend exists, serve it directly from the backend.
+    # In dev mode the Vite dev server handles the frontend separately
+    # and this block is skipped (frontend/dist/ won't exist).
+    from resource_path import project_root as _project_root
+    _dist = _project_root() / "frontend" / "dist"
+    if _dist.is_dir():
+        _index = _dist / "index.html"
+
+        async def _spa_fallback(request: web.Request) -> web.Response:
+            path = request.match_info.get("_path", "")
+            if path:
+                candidate = (_dist / path).resolve()
+                if candidate.is_file() and str(candidate).startswith(
+                    str(_dist.resolve())
+                ):
+                    return web.FileResponse(candidate)
+            return web.FileResponse(_index)
+
+        app.router.add_static("/assets", _dist / "assets")
+        app.router.add_get("/{_path:.*}", _spa_fallback)
+
+    return app
+
+
+if __name__ == "__main__":
+    web.run_app(create_app(), host=HOST, port=PORT)

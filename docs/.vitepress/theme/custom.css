@@ -1,0 +1,20 @@
+:root {
+  --vp-c-brand-1: #6366f1;
+  --vp-c-brand-2: #818cf8;
+  --vp-c-brand-3: #a5b4fc;
+  --vp-c-brand-soft: rgba(99, 102, 241, 0.14);
+}
+
+.dark {
+  --vp-c-bg: #0f1117;
+  --vp-c-bg-soft: #1a1b26;
+  --vp-c-bg-mute: #24273a;
+}
+
+html, body {
+  overscroll-behavior: none;
+}
+
+.VPSidebar, .VPSidebarNav, .VPDoc {
+  overscroll-behavior: contain;
+}

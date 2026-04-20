@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00f0ff"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#d946ef"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="200" fill="#04040c"/>
+
+  <!-- Depth Mark: Nested V outlines receding toward vanishing point -->
+  <g transform="translate(100,100)">
+    <g transform="translate(-80,-80)">
+
+      <!-- Layer 0 (outermost) — scale 1.0, opacity 0.06 -->
+      <path d="M0,0 L32,0 L80,108.8 L128,0 L160,0 L80,160 Z" fill="none"
+            stroke="url(#g)" stroke-width="2" opacity="0.06"/>
+
+      <!-- Layer 1 — scale 0.865, opacity 0.22 -->
+      <g transform="translate(10.8,0) scale(0.865)" transform-origin="80 160">
+        <path d="M0,0 L32,0 L80,108.8 L128,0 L160,0 L80,160 Z" fill="none"
+              stroke="url(#g)" stroke-width="2" opacity="0.22"/>
+      </g>
+
+      <!-- Layer 2 — scale 0.73, opacity 0.38 -->
+      <g transform="translate(21.6,0) scale(0.73)" transform-origin="80 160">
+        <path d="M0,0 L32,0 L80,108.8 L128,0 L160,0 L80,160 Z" fill="none"
+              stroke="url(#g)" stroke-width="2" opacity="0.38"/>
+      </g>
+
+      <!-- Layer 3 — scale 0.595, opacity 0.54 -->
+      <g transform="translate(32.4,0) scale(0.595)" transform-origin="80 160">
+        <path d="M0,0 L32,0 L80,108.8 L128,0 L160,0 L80,160 Z" fill="none"
+              stroke="url(#g)" stroke-width="2" opacity="0.54"/>
+      </g>
+
+      <!-- Layer 4 — scale 0.46, opacity 0.70 -->
+      <g transform="translate(43.2,0) scale(0.46)" transform-origin="80 160">
+        <path d="M0,0 L32,0 L80,108.8 L128,0 L160,0 L80,160 Z" fill="none"
+              stroke="url(#g)" stroke-width="2" opacity="0.70"/>
+      </g>
+
+      <!-- Layer 5 (innermost) — scale 0.325, opacity 0.86 -->
+      <g transform="translate(54,0) scale(0.325)" transform-origin="80 160">
+        <path d="M0,0 L32,0 L80,108.8 L128,0 L160,0 L80,160 Z" fill="none"
+              stroke="url(#g)" stroke-width="2.5" opacity="0.86"/>
+      </g>
+
+      <!-- Vanishing-point glow -->
+      <circle cx="80" cy="134" r="3" fill="#00f0ff" opacity="0.9">
+        <animate attributeName="opacity" values="0.9;0.4;0.9" dur="4s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="3;5;3" dur="4s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="80" cy="134" r="8" fill="#00f0ff" opacity="0.12">
+        <animate attributeName="opacity" values="0.12;0.25;0.12" dur="4s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="8;14;8" dur="4s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="80" cy="134" r="18" fill="#8b5cf6" opacity="0.06">
+        <animate attributeName="opacity" values="0.06;0.12;0.06" dur="4s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="18;24;18" dur="4s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+  </g>
+</svg>

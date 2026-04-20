@@ -1,0 +1,262 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  /* ─── Backgrounds: solid panels, no transparency ─── */
+  --color-bg-primary: #09090b;
+  --color-bg-secondary: #111113;
+  --color-bg-tertiary: #18181b;
+  --color-bg-hover: #1f1f23;
+  --color-bg-elevated: #141416;
+  --color-bg-inset: #0c0c0e;
+
+  /* ─── Borders: crisp, visible structure ─── */
+  --color-border-primary: #27272a;
+  --color-border-secondary: #1c1c1f;
+  --color-border-accent: #3f3f46;
+
+  /* ─── Text: clear hierarchy ─── */
+  --color-text-primary: #e4e4e7;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
+  --color-text-faint: #52525b;
+
+  /* ─── Accents: indigo primary ─── */
+  --color-accent-primary: #6366f1;
+  --color-accent-hover: #818cf8;
+  --color-accent-muted: #4f46e5;
+  --color-accent-subtle: rgba(99, 102, 241, 0.12);
+}
+
+/* ─── Scrollbars ─── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #27272a #09090b;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
+/* Hide scrollbar on tab strip — scroll arrows handle navigation */
+.tab-scroll-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ─── Base ─── */
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.011em;
+}
+
+/* ─── Interactive elements always get pointer cursor ─── */
+button,
+[role="button"],
+select,
+a,
+label[for],
+input[type="checkbox"],
+input[type="radio"],
+summary {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+/* ─── Code ─── */
+pre {
+  background: #111113 !important;
+  border: 1px solid #27272a;
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+code {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', 'JetBrains Mono', Menlo, monospace;
+  font-size: 12px;
+}
+
+/* ─── Prose (markdown rendering) ─── */
+.prose {
+  color: #e4e4e7;
+  max-width: none;
+}
+
+.prose code {
+  color: #c4b5fd;
+  background: #18181b;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.prose code::before,
+.prose code::after {
+  content: none;
+}
+
+.prose pre code {
+  background: none;
+  padding: 0;
+  color: #e4e4e7;
+}
+
+.prose a {
+  color: #818cf8;
+}
+
+.prose strong {
+  color: #f4f4f5;
+}
+
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  color: #f4f4f5;
+}
+
+.prose ul, .prose ol {
+  color: #e4e4e7;
+}
+
+.prose blockquote {
+  color: #a1a1aa;
+  border-left-color: #27272a;
+}
+
+.prose hr {
+  border-color: #27272a;
+}
+
+.prose table th {
+  color: #f4f4f5;
+}
+
+.prose table td {
+  color: #e4e4e7;
+}
+
+.prose table th, .prose table td {
+  border-color: #27272a;
+}
+
+/* ─── Animations ─── */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slide-in-top {
+  from { transform: translateY(-8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scale-in {
+  from { transform: scale(0.98); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes subtle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.animate-in {
+  animation: fade-in 0.12s ease-out;
+}
+
+.slide-in-from-right {
+  animation: slide-in-right 0.2s ease-out;
+}
+
+.slide-in-from-top {
+  animation: slide-in-top 0.12s ease-out;
+}
+
+.scale-in {
+  animation: scale-in 0.15s ease-out;
+}
+
+.animate-subtle-pulse {
+  animation: subtle-pulse 2.5s ease-in-out infinite;
+}
+
+/* ─── IDE focus glow ─── */
+.ide-focus-ring:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3);
+}
+
+/* ─── Chrome focus mode (⌘↑ from terminal escapes here) ─── */
+[data-chrome-button]:focus,
+[data-chrome-button]:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(99, 102, 241, 0.85);
+  border-radius: 4px;
+}
+
+/* ─── Standard close button ─── */
+.ide-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--color-text-faint);
+  transition: all 0.15s;
+}
+
+.ide-close-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+
+/* ─── IDE panel ─── */
+.ide-panel {
+  background: #111113;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.3),
+    0 2px 4px -2px rgba(0, 0, 0, 0.2),
+    0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+/* ─── Line clamp ─── */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

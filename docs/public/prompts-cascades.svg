@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#475569"/>
+    </marker>
+    <marker id="arrowC" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#00d4ff"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="320" rx="340" ry="180" fill="#00d4ff" opacity="0.012"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Prompt Engineering &amp; Cascades</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Prompt Library • Cascades • @-Tokens • Guidelines • Output Styles • Composer</text>
+
+  <!-- ═══ Prompt Library (left) ═══ -->
+  <rect x="40" y="80" width="280" height="260" rx="10" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1.5"/>
+  <text x="180" y="104" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="13" font-weight="bold">Prompt Library (Cmd+/)</text>
+  <text x="180" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Reusable prompt templates with usage tracking</text>
+
+  <!-- Prompt entries -->
+  <rect x="56" y="134" width="248" height="38" rx="4" fill="#0f1117" stroke="#00d4ff" stroke-width="0.6"/>
+  <text x="66" y="150" fill="#67e8f9" font-family="monospace" font-size="8" font-weight="bold">Code Review</text>
+  <text x="270" y="150" text-anchor="end" fill="#475569" font-family="monospace" font-size="7">47 uses</text>
+  <text x="66" y="164" fill="#64748b" font-family="monospace" font-size="7">Review for bugs, perf, and security...</text>
+
+  <rect x="56" y="178" width="248" height="38" rx="4" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="66" y="194" fill="#a5b4fc" font-family="monospace" font-size="8" font-weight="bold">Test Generator</text>
+  <text x="270" y="194" text-anchor="end" fill="#475569" font-family="monospace" font-size="7">31 uses</text>
+  <text x="66" y="208" fill="#64748b" font-family="monospace" font-size="7">Generate comprehensive tests for...</text>
+
+  <rect x="56" y="222" width="248" height="38" rx="4" fill="#0f1117" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="66" y="238" fill="#f0abfc" font-family="monospace" font-size="8" font-weight="bold">Refactor to Clean</text>
+  <text x="270" y="238" text-anchor="end" fill="#475569" font-family="monospace" font-size="7">18 uses</text>
+  <text x="66" y="252" fill="#64748b" font-family="monospace" font-size="7">Refactor for readability, SOLID...</text>
+
+  <rect x="56" y="266" width="248" height="38" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="66" y="282" fill="#fbbf24" font-family="monospace" font-size="8" font-weight="bold">API Design</text>
+  <text x="270" y="282" text-anchor="end" fill="#475569" font-family="monospace" font-size="7">12 uses</text>
+  <text x="66" y="296" fill="#64748b" font-family="monospace" font-size="7">Design REST endpoints following...</text>
+
+  <text x="180" y="328" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Categories • Quick Actions (Cmd+Shift+Q) • Search</text>
+
+  <!-- ═══ Cascade System (center) ═══ -->
+  <rect x="340" y="80" width="280" height="260" rx="10" fill="#1e1f2e" stroke="#d946ef" stroke-width="1.5" filter="url(#glow)"/>
+  <text x="480" y="104" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="13" font-weight="bold">Cascades</text>
+  <text x="480" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Sequential prompt chains with variables &amp; loops</text>
+
+  <!-- Cascade steps -->
+  <rect x="360" y="136" width="240" height="30" rx="4" fill="#0f1117" stroke="#d946ef" stroke-width="0.8"/>
+  <text x="374" y="148" fill="#f0abfc" font-family="monospace" font-size="7" font-weight="bold">Step 1</text>
+  <text x="414" y="148" fill="#94a3b8" font-family="monospace" font-size="7">Analyze {codebase} structure</text>
+  <text x="374" y="160" fill="#64748b" font-family="monospace" font-size="6">auto-approve: true</text>
+
+  <line x1="480" y1="166" x2="480" y2="178" stroke="#d946ef" stroke-width="1" stroke-dasharray="3 2" opacity="0.5"/>
+
+  <rect x="360" y="178" width="240" height="30" rx="4" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.8"/>
+  <text x="374" y="190" fill="#a5b4fc" font-family="monospace" font-size="7" font-weight="bold">Step 2</text>
+  <text x="414" y="190" fill="#94a3b8" font-family="monospace" font-size="7">Generate tests for {module}</text>
+  <text x="374" y="202" fill="#64748b" font-family="monospace" font-size="6">permission: plan</text>
+
+  <line x1="480" y1="208" x2="480" y2="220" stroke="#8b5cf6" stroke-width="1" stroke-dasharray="3 2" opacity="0.5"/>
+
+  <rect x="360" y="220" width="240" height="30" rx="4" fill="#0f1117" stroke="#00d4ff" stroke-width="0.8"/>
+  <text x="374" y="232" fill="#67e8f9" font-family="monospace" font-size="7" font-weight="bold">Step 3</text>
+  <text x="414" y="232" fill="#94a3b8" font-family="monospace" font-size="7">Run tests and fix failures</text>
+  <text x="374" y="244" fill="#64748b" font-family="monospace" font-size="6">permission: trusted | loop: 3x</text>
+
+  <line x1="480" y1="250" x2="480" y2="262" stroke="#00d4ff" stroke-width="1" stroke-dasharray="3 2" opacity="0.5"/>
+
+  <rect x="360" y="262" width="240" height="30" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="374" y="274" fill="#4ade80" font-family="monospace" font-size="7" font-weight="bold">Step 4</text>
+  <text x="414" y="274" fill="#94a3b8" font-family="monospace" font-size="7">Commit with {message}</text>
+  <text x="374" y="286" fill="#64748b" font-family="monospace" font-size="6">auto-approve: false</text>
+
+  <!-- Variable dialog -->
+  <rect x="360" y="300" width="240" height="28" rx="4" fill="#f59e0b" opacity="0.08" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="480" y="318" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">{codebase}, {module}, {message} → prompted</text>
+
+  <!-- ═══ @-Tokens (right) ═══ -->
+  <rect x="640" y="80" width="280" height="260" rx="10" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="780" y="104" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="13" font-weight="bold">@-Token System</text>
+  <text x="780" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Inline expansion with real-time preview</text>
+
+  <!-- Token examples -->
+  <rect x="656" y="136" width="248" height="26" rx="4" fill="#0f1117" stroke="#00d4ff" stroke-width="0.6"/>
+  <text x="666" y="153" fill="#67e8f9" font-family="monospace" font-size="8">@prompt:CodeReview</text>
+  <text x="870" y="153" text-anchor="end" fill="#475569" font-family="monospace" font-size="7">→ expand</text>
+
+  <rect x="656" y="168" width="248" height="26" rx="4" fill="#0f1117" stroke="#d946ef" stroke-width="0.6"/>
+  <text x="666" y="185" fill="#f0abfc" font-family="monospace" font-size="8">@research:Transformers</text>
+  <text x="870" y="185" text-anchor="end" fill="#475569" font-family="monospace" font-size="7">→ search</text>
+
+  <rect x="656" y="200" width="248" height="26" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="666" y="217" fill="#4ade80" font-family="monospace" font-size="8">@ralph:Fix all test failures</text>
+  <text x="870" y="217" text-anchor="end" fill="#475569" font-family="monospace" font-size="7">→ RALPH</text>
+
+  <!-- Token chips preview -->
+  <rect x="656" y="240" width="248" height="40" rx="4" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <text x="780" y="256" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="8">Real-time token chip preview</text>
+  <rect x="670" y="264" width="80" height="12" rx="2" fill="#00d4ff" opacity="0.15"/>
+  <text x="710" y="273" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="6">@prompt:Review</text>
+  <rect x="760" y="264" width="70" height="12" rx="2" fill="#f59e0b" opacity="0.15"/>
+  <text x="795" y="273" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="6">expanding...</text>
+
+  <!-- Badge preview -->
+  <text x="780" y="306" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">TerminalTokenBadge — floating detection</text>
+  <text x="780" y="320" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">TokenChips — color-coded inline chips</text>
+  <text x="780" y="334" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Fuzzy prompt lookup as you type</text>
+
+  <!-- ═══ Guidelines (bottom-left) ═══ -->
+  <rect x="40" y="362" width="280" height="130" rx="10" fill="#1e1f2e" stroke="#4ade80" stroke-width="1.2"/>
+  <text x="180" y="386" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="12" font-weight="bold">Guidelines (Cmd+G)</text>
+  <text x="180" y="402" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Reusable system prompt fragments</text>
+
+  <rect x="56" y="414" width="248" height="20" rx="3" fill="#0f1117" stroke="#4ade80" stroke-width="0.4"/>
+  <text x="66" y="428" fill="#4ade80" font-family="monospace" font-size="7">TypeScript Best Practices</text>
+  <text x="282" y="428" text-anchor="end" fill="#475569" font-family="monospace" font-size="6">attached</text>
+
+  <rect x="56" y="438" width="248" height="20" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.4"/>
+  <text x="66" y="452" fill="#94a3b8" font-family="monospace" font-size="7">Security Guidelines</text>
+
+  <rect x="56" y="462" width="248" height="20" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.4"/>
+  <text x="66" y="476" fill="#94a3b8" font-family="monospace" font-size="7">Research Methodology (SKILL.md)</text>
+
+  <!-- ═══ Output Styles (bottom-center) ═══ -->
+  <rect x="340" y="362" width="280" height="130" rx="10" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="480" y="386" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="12" font-weight="bold">Output Styles</text>
+  <text x="480" y="402" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Token-saving response modes</text>
+
+  <rect x="356" y="414" width="110" height="26" rx="4" fill="#0f1117" stroke="#67e8f9" stroke-width="0.6"/>
+  <text x="411" y="431" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="8">lite</text>
+
+  <rect x="476" y="414" width="60" height="26" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="506" y="431" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="8">caveman</text>
+
+  <rect x="546" y="414" width="60" height="26" rx="4" fill="#0f1117" stroke="#fbbf24" stroke-width="0.6"/>
+  <text x="576" y="431" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">ultra</text>
+
+  <rect x="356" y="446" width="248" height="26" rx="4" fill="#0f1117" stroke="#f0abfc" stroke-width="0.6"/>
+  <text x="480" y="463" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="8">dense form</text>
+
+  <text x="480" y="484" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Cascading: session → workspace → global</text>
+
+  <!-- ═══ Composer (bottom-right) ═══ -->
+  <rect x="640" y="362" width="280" height="130" rx="10" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1.2"/>
+  <text x="780" y="386" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="12" font-weight="bold">Composer (Cmd+E)</text>
+  <text x="780" y="402" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Structured multi-line input</text>
+
+  <rect x="656" y="414" width="248" height="60" rx="4" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+  <text x="666" y="430" fill="#94a3b8" font-family="monospace" font-size="7">- Bullet points</text>
+  <text x="666" y="444" fill="#94a3b8" font-family="monospace" font-size="7">&gt; Block quotes</text>
+  <text x="666" y="458" fill="#94a3b8" font-family="monospace" font-size="7">## Markdown headers</text>
+  <text x="666" y="472" fill="#94a3b8" font-family="monospace" font-size="7">  Indentation preserved</text>
+
+  <text x="780" y="484" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Cmd+Enter to submit</text>
+
+  <!-- ═══ Bottom summary ═══ -->
+  <rect x="40" y="510" width="880" height="70" rx="8" fill="#1e1f2e" stroke="#d946ef" stroke-width="1" filter="url(#glow)"/>
+  <text x="480" y="534" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="12" font-weight="bold">Prompt-First Workflow</text>
+  <text x="480" y="552" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Build a prompt once → reuse it forever → chain into cascades → share via templates</text>
+  <text x="480" y="568" text-anchor="middle" fill="#475569" font-family="monospace" font-size="8">Quick Actions (persistent row) • Command Palette (Cmd+K) • Broadcast (Cmd+Shift+Enter)</text>
+
+  <!-- Footer -->
+  <text x="480" y="604" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">PromptPalette • CascadeBar • TokenChips • GuidelinePanel • Composer • output_styles.py</text>
+  <text x="480" y="632" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

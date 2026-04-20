@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00f0ff"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#d946ef"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="200" fill="#04040c"/>
+
+  <!-- Convergence Mark: Three overlapping V shapes (120×120, centered) -->
+  <g transform="translate(100,95)">
+    <g transform="translate(-60,-55)">
+
+      <!-- cv-a: cyan · rotate(-7°) around apex �� shift left 7% -->
+      <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z"
+            fill="#00f0ff" opacity="0.78" style="mix-blend-mode:screen"
+            transform="translate(-8.4,0) rotate(-7,60,120)"/>
+
+      <!-- cv-b: violet · centered -->
+      <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z"
+            fill="#8b5cf6" opacity="0.78" style="mix-blend-mode:screen"/>
+
+      <!-- cv-c: magenta · rotate(+7°) around apex · shift right -->
+      <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z"
+            fill="#d946ef" opacity="0.78" style="mix-blend-mode:screen"
+            transform="translate(8.4,0) rotate(7,60,120)"/>
+
+      <!-- Apex glow -->
+      <circle cx="60" cy="120" r="8" fill="#00f0ff" opacity="0.08">
+        <animate attributeName="opacity" values="0.08;0.15;0.08" dur="3s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="8;12;8" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="60" cy="120" r="4" fill="#8b5cf6" opacity="0.12">
+        <animate attributeName="opacity" values="0.12;0.22;0.12" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="60" cy="120" r="2.5" fill="#fff" opacity="0.9">
+        <animate attributeName="opacity" values="0.9;0.45;0.9" dur="3s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="2.5;3.8;2.5" dur="3s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IVE — Humanity's Last IDE</title>
+<meta name="description" content="Control an army of AI agents from one screen. Real terminals, visual pipelines, autonomous coding. All local.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root {
+  --cyan: #00f0ff;
+  --violet: #8b5cf6;
+  --magenta: #d946ef;
+  --bg: #04040c;
+  --bg2: #080814;
+  --text: #e2e8f0;
+  --dim: #64748b;
+  --mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--cyan); text-decoration: none; }
+
+/* ===== ANIMATIONS ===== */
+@keyframes float1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(30px,-20px); } }
+@keyframes float2 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-25px,15px); } }
+@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.8; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+@keyframes borderGlow {
+  0%,100% { border-color: rgba(0,240,255,0.15); }
+  33% { border-color: rgba(139,92,246,0.2); }
+  66% { border-color: rgba(217,70,239,0.15); }
+}
+@keyframes scrollBounce {
+  0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.7; }
+  50% { transform: translateX(-50%) translateY(12px); opacity: 1; }
+}
+@keyframes scanline {
+  0% { top: -4px; }
+  100% { top: 100%; }
+}
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(0,240,255,0.05); }
+  50% { box-shadow: 0 0 40px rgba(139,92,246,0.12); }
+}
+@keyframes countUp { from { opacity: 0; transform: scale(0.5); } to { opacity: 1; transform: scale(1); } }
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.reveal { opacity: 0; transform: translateY(32px); transition: opacity 0.7s ease, transform 0.7s ease; }
+.reveal.visible { opacity: 1; transform: translateY(0); }
+.reveal-delay-1 { transition-delay: 0.1s; }
+.reveal-delay-2 { transition-delay: 0.2s; }
+.reveal-delay-3 { transition-delay: 0.3s; }
+.reveal-delay-4 { transition-delay: 0.4s; }
+
+/* ===== LAYOUT ===== */
+.container { max-width: 1140px; margin: 0 auto; padding: 0 28px; }
+.section { padding: 120px 0; position: relative; }
+.section-tag {
+  font-size: 11px; font-weight: 800; letter-spacing: 4px; text-transform: uppercase;
+  display: inline-block; padding: 6px 16px; border-radius: 20px; margin-bottom: 20px;
+}
+.tag-cyan { color: var(--cyan); background: rgba(0,240,255,0.08); border: 1px solid rgba(0,240,255,0.15); }
+.tag-violet { color: var(--violet); background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.15); }
+.tag-magenta { color: var(--magenta); background: rgba(217,70,239,0.08); border: 1px solid rgba(217,70,239,0.15); }
+.tag-red { color: #ef4444; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.15); }
+.divider {
+  height: 1px; border: none;
+  background: linear-gradient(90deg, transparent, rgba(139,92,246,0.2) 50%, transparent);
+}
+
+/* ===== HERO (full-viewport sticky video) ===== */
+.hero-wrapper {
+  position: relative; height: 200vh; /* scroll room for the tilt-away */
+}
+.hero {
+  position: sticky; top: 0; width: 100vw; height: 100vh;
+  overflow: visible; z-index: 2;
+}
+.hero-video {
+  width: 100%; height: 100%; position: relative;
+  transform-origin: center center;
+  will-change: transform, opacity;
+}
+.hero-video video {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+/* Subtle vignette overlay */
+.hero-video::before {
+  content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(4,4,12,0.4) 100%);
+}
+.hero-video-fade {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 250px; z-index: 4;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+/* Scroll indicator */
+.scroll-indicator {
+  position: absolute; bottom: 36px; left: 50%; z-index: 10;
+  animation: scrollBounce 2s ease-in-out infinite;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.scroll-indicator span {
+  font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase;
+  color: rgba(255,255,255,0.5);
+}
+.scroll-indicator svg {
+  width: 24px; height: 24px; stroke: rgba(255,255,255,0.6); fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* ===== HERO INTRO (below video) ===== */
+.hero-intro {
+  text-align: center; position: relative;
+  padding: 100px 24px 120px; overflow: hidden;
+  background: var(--bg);
+}
+.hero-orb {
+  position: absolute; border-radius: 50%; pointer-events: none; filter: blur(80px);
+}
+.hero-orb-1 {
+  width: 600px; height: 600px; top: -200px; left: -100px;
+  background: radial-gradient(circle, rgba(139,92,246,0.15), transparent 70%);
+  animation: float1 8s ease-in-out infinite;
+}
+.hero-orb-2 {
+  width: 500px; height: 500px; bottom: -150px; right: -100px;
+  background: radial-gradient(circle, rgba(0,240,255,0.1), transparent 70%);
+  animation: float2 10s ease-in-out infinite;
+}
+.hero-orb-3 {
+  width: 400px; height: 400px; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  background: radial-gradient(circle, rgba(217,70,239,0.06), transparent 70%);
+  animation: pulse 6s ease-in-out infinite;
+}
+.hero-intro-inner { position: relative; z-index: 1; }
+.hero-logo { margin-bottom: 20px; animation: fadeIn 1s ease; }
+.hero-logo svg {
+  width: 140px; height: 140px;
+  filter: drop-shadow(0 0 40px rgba(139,92,246,0.35)) drop-shadow(0 0 80px rgba(0,240,255,0.15));
+}
+.hero-tagline {
+  font-size: clamp(28px, 5vw, 52px); font-weight: 700; line-height: 1.2;
+  color: #fff; margin-bottom: 48px;
+  animation: slideUp 0.8s ease 0.2s both;
+}
+.hero-tagline span {
+  background: linear-gradient(90deg, var(--cyan), var(--violet), var(--magenta));
+  background-size: 200% auto;
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  animation: gradientShift 4s ease infinite;
+}
+.hero-cta-row {
+  display: flex; gap: 16px; justify-content: center; margin-top: 40px;
+  animation: slideUp 0.8s ease 0.55s both;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 14px 32px; border-radius: 10px; font-size: 15px; font-weight: 600;
+  border: none; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;
+}
+.btn:hover { transform: translateY(-2px); }
+.btn-primary {
+  background: linear-gradient(135deg, var(--cyan), var(--violet));
+  color: var(--bg); box-shadow: 0 4px 20px rgba(0,240,255,0.2);
+}
+.btn-primary:hover { box-shadow: 0 8px 32px rgba(0,240,255,0.35); color: var(--bg); }
+.btn-ghost {
+  background: rgba(255,255,255,0.04); color: var(--text);
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.btn-ghost:hover { border-color: rgba(255,255,255,0.2); color: #fff; }
+
+/* ===== FLOATING NAV ===== */
+.floating-nav {
+  position: fixed; top: 20px; right: 24px; z-index: 100;
+  animation: fadeIn 1s ease 1s both;
+}
+.nav-github {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: 10px;
+  background: rgba(255,255,255,0.06); backdrop-filter: blur(20px);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #e2e8f0; font-size: 13px; font-weight: 600;
+  transition: background 0.2s, border-color 0.3s, transform 0.2s;
+}
+.nav-github:hover {
+  background: rgba(255,255,255,0.12); border-color: rgba(139,92,246,0.4);
+  transform: translateY(-2px); color: #fff;
+}
+
+/* ===== STATEMENT ===== */
+.statement {
+  text-align: center; padding: 100px 24px;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 50%, var(--bg) 100%);
+}
+.statement h2 {
+  font-size: clamp(32px, 5vw, 64px); font-weight: 800; line-height: 1.1;
+  max-width: 800px; margin: 0 auto; color: #fff;
+}
+.statement p {
+  font-size: 18px; color: var(--dim); max-width: 550px; margin: 20px auto 0;
+  line-height: 1.7;
+}
+/* I've → IVE wordplay */
+.ive-joke {
+  font-size: clamp(40px, 7vw, 80px); font-weight: 900; line-height: 1.1;
+  margin-bottom: 20px; display: block;
+}
+.ive-old {
+  color: var(--dim); position: relative; display: inline;
+}
+.ive-old::after {
+  content: ''; position: absolute; left: -4px; right: -4px; top: 50%;
+  height: 4px; background: var(--dim);
+  transform: scaleX(0); transform-origin: left;
+  transition: transform 0.5s cubic-bezier(0.65, 0, 0.35, 1);
+}
+.statement.visible .ive-old::after { transform: scaleX(1); transition-delay: 0.3s; }
+.ive-new {
+  display: inline; opacity: 0; transform: translateY(8px);
+  transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  background: linear-gradient(135deg, var(--cyan), var(--violet), var(--magenta));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.statement.visible .ive-new { opacity: 1; transform: translateY(0); transition-delay: 0.7s; }
+.ive-rest { color: #fff; }
+
+/* ===== PILLARS ===== */
+.pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 60px; }
+.pillar {
+  padding: 40px 32px; border-radius: 16px; position: relative;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.06);
+  backdrop-filter: blur(10px);
+  transition: transform 0.3s, border-color 0.3s, box-shadow 0.3s;
+}
+.pillar:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4), 0 0 40px rgba(139,92,246,0.08);
+}
+.pillar::before {
+  content: ''; position: absolute; inset: -1px; border-radius: 16px; z-index: -1;
+  background: linear-gradient(135deg, transparent 40%, rgba(139,92,246,0.15) 50%, transparent 60%);
+  background-size: 200% 200%;
+  opacity: 0; transition: opacity 0.4s;
+}
+.pillar:hover::before { opacity: 1; animation: shimmer 2s linear infinite; }
+.pillar:nth-child(1):hover { border-color: rgba(0,240,255,0.25); }
+.pillar:nth-child(2):hover { border-color: rgba(139,92,246,0.25); }
+.pillar:nth-child(3):hover { border-color: rgba(217,70,239,0.25); }
+.pillar-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 20px; font-size: 22px;
+}
+.pillar:nth-child(1) .pillar-icon { background: rgba(0,240,255,0.1); color: var(--cyan); }
+.pillar:nth-child(2) .pillar-icon { background: rgba(139,92,246,0.1); color: var(--violet); }
+.pillar:nth-child(3) .pillar-icon { background: rgba(217,70,239,0.1); color: var(--magenta); }
+.pillar h3 { font-size: 20px; font-weight: 700; margin-bottom: 10px; }
+.pillar p { font-size: 14px; color: #94a3b8; line-height: 1.7; }
+
+/* ===== FEATURE SHOWCASE ===== */
+.showcase {
+  padding: 140px 0; position: relative; overflow: hidden;
+}
+.showcase:nth-child(even of .showcase) {
+  background: linear-gradient(180deg, var(--bg2), var(--bg));
+}
+.showcase-inner {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 80px; align-items: center;
+  max-width: 1140px; margin: 0 auto; padding: 0 28px;
+}
+.showcase.reverse .showcase-inner { direction: rtl; }
+.showcase.reverse .showcase-inner > * { direction: ltr; }
+.showcase-title {
+  font-size: clamp(36px, 5vw, 60px); font-weight: 900;
+  line-height: 1.05; color: #fff; margin: 16px 0 12px;
+}
+.showcase-sub {
+  font-size: 17px; color: var(--dim); line-height: 1.7;
+  max-width: 480px; margin-bottom: 40px;
+}
+.showcase-list { list-style: none; }
+.showcase-list li {
+  display: flex; gap: 16px; align-items: flex-start;
+  padding: 18px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+  opacity: 0; transform: translateX(-20px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.showcase-list li:last-child { border-bottom: none; }
+.showcase.visible .showcase-list li { opacity: 1; transform: translateX(0); }
+.showcase.visible .showcase-list li:nth-child(1) { transition-delay: 0.1s; }
+.showcase.visible .showcase-list li:nth-child(2) { transition-delay: 0.25s; }
+.showcase.visible .showcase-list li:nth-child(3) { transition-delay: 0.4s; }
+.showcase.visible .showcase-list li:nth-child(4) { transition-delay: 0.55s; }
+.list-marker {
+  width: 10px; height: 10px; border-radius: 50%;
+  flex-shrink: 0; margin-top: 7px; position: relative;
+}
+.list-marker::after {
+  content: ''; position: absolute; inset: -5px;
+  border-radius: 50%; border: 1.5px solid currentColor; opacity: 0;
+}
+.showcase.visible .list-marker::after {
+  animation: markerRing 2s ease-in-out infinite;
+}
+@keyframes markerRing {
+  0%,100% { opacity: 0; transform: scale(0.8); }
+  50% { opacity: 0.4; transform: scale(1.2); }
+}
+.showcase.visible .showcase-list li:nth-child(1) .list-marker::after { animation-delay: 0s; }
+.showcase.visible .showcase-list li:nth-child(2) .list-marker::after { animation-delay: 0.5s; }
+.showcase.visible .showcase-list li:nth-child(3) .list-marker::after { animation-delay: 1s; }
+.showcase.visible .showcase-list li:nth-child(4) .list-marker::after { animation-delay: 1.5s; }
+.list-content h4 { font-size: 16px; font-weight: 700; color: #f1f5f9; margin-bottom: 4px; }
+.list-content p { font-size: 14px; color: #94a3b8; line-height: 1.6; }
+.showcase-visual {
+  position: relative; width: 100%; max-width: 440px; margin: 0 auto;
+  opacity: 0; will-change: transform, opacity;
+  transition: opacity 0.8s ease;
+}
+.showcase.visible .showcase-visual { opacity: 1; }
+.showcase-text { will-change: transform; }
+.showcase-visual svg { width: 100%; height: auto; }
+
+/* Radar sweep for intelligence visual */
+@keyframes radarSweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.radar-sweep { transform-origin: 200px 200px; animation: radarSweep 4s linear infinite; }
+
+/* Terminal cursor blink */
+@keyframes termBlink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+.term-cursor { animation: termBlink 1s step-end infinite; }
+.term-cursor-2 { animation: termBlink 1.2s step-end infinite; animation-delay: 0.3s; }
+.term-cursor-3 { animation: termBlink 0.8s step-end infinite; animation-delay: 0.6s; }
+
+/* ===== STATS ===== */
+.stats {
+  padding: 80px 0;
+  background: linear-gradient(135deg, rgba(0,240,255,0.04), rgba(139,92,246,0.06), rgba(217,70,239,0.04));
+  border-top: 1px solid rgba(255,255,255,0.04);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; text-align: center; }
+.stat-val {
+  font-size: clamp(40px, 6vw, 64px); font-weight: 900; line-height: 1; margin-bottom: 8px;
+  opacity: 0; transform: scale(0.5);
+  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.stats-grid.visible .stat-val { opacity: 1; transform: scale(1); }
+.stats-grid.visible > div:nth-child(1) .stat-val { transition-delay: 0s; }
+.stats-grid.visible > div:nth-child(2) .stat-val { transition-delay: 0.15s; }
+.stats-grid.visible > div:nth-child(3) .stat-val { transition-delay: 0.3s; }
+.stats-grid.visible > div:nth-child(4) .stat-val { transition-delay: 0.45s; }
+.stat-label { font-size: 13px; font-weight: 600; color: var(--dim); letter-spacing: 2px; text-transform: uppercase; }
+
+/* ===== MORE FEATURES ===== */
+.more-grid {
+  display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+  margin-top: 40px;
+}
+.more-chip {
+  padding: 10px 20px; border-radius: 10px; font-size: 14px; font-weight: 600;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  color: #94a3b8; transition: border-color 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+.more-chip:hover {
+  border-color: rgba(139,92,246,0.3); color: var(--violet);
+  background: rgba(139,92,246,0.06); transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(139,92,246,0.1);
+}
+.more-grid .more-chip { transition: all 0.25s ease; }
+
+/* ===== CTA ===== */
+.cta {
+  text-align: center; padding: 80px 24px 120px;
+  position: relative; overflow: hidden;
+}
+.cta-orb {
+  position: absolute; width: 700px; height: 700px; border-radius: 50%;
+  top: 50%; left: 50%; transform: translate(-50%,-50%);
+  background: radial-gradient(circle, rgba(139,92,246,0.18) 0%, rgba(0,240,255,0.08) 40%, transparent 70%);
+  filter: blur(80px); pointer-events: none;
+  animation: cta-orb-pulse 4s ease-in-out infinite alternate;
+}
+@keyframes cta-orb-pulse {
+  0% { opacity: 0.7; transform: translate(-50%,-50%) scale(1); }
+  100% { opacity: 1; transform: translate(-50%,-50%) scale(1.15); }
+}
+.cta h2 {
+  font-size: clamp(40px, 7vw, 80px); font-weight: 900; line-height: 1.1;
+  position: relative; z-index: 1; margin-bottom: 20px;
+}
+.cta-strike {
+  color: var(--dim); position: relative; display: inline-block;
+}
+.cta-strike::after {
+  content: ''; position: absolute; left: -4px; right: -4px; top: 50%;
+  height: 4px; background: var(--dim);
+  transform: scaleX(0); transform-origin: left;
+  transition: transform 0.6s cubic-bezier(0.65, 0, 0.35, 1);
+}
+.cta.visible .cta-strike::after { transform: scaleX(1); transition-delay: 0.4s; }
+.cta-pop {
+  display: block; color: #fff; opacity: 0; transform: translateY(20px) scale(0.9);
+  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  background: linear-gradient(135deg, var(--cyan), var(--violet), var(--magenta));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  filter: brightness(1.2);
+}
+.cta.visible .cta-pop { opacity: 1; transform: translateY(0) scale(1); transition-delay: 0.8s; }
+.cta p { font-size: 18px; color: var(--dim); margin-bottom: 36px; position: relative; z-index: 1; }
+.cta .hero-cta-row { position: relative; z-index: 1; }
+.cta .btn-primary {
+  font-size: 17px; padding: 16px 36px;
+  box-shadow: 0 0 30px rgba(139,92,246,0.3), 0 0 60px rgba(139,92,246,0.1);
+}
+.cta .btn-primary:hover {
+  box-shadow: 0 0 40px rgba(139,92,246,0.5), 0 0 80px rgba(139,92,246,0.2);
+}
+.cta .btn-ghost {
+  font-size: 17px; padding: 16px 36px;
+}
+.cta-cmd {
+  margin-top: 40px; position: relative; z-index: 1;
+  display: inline-block; padding: 18px 32px; border-radius: 12px;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
+  font-family: var(--mono); font-size: 15px; color: var(--cyan);
+  letter-spacing: 0.5px; text-align: left;
+}
+.cta-cmd .cmd-line { display: block; white-space: nowrap; }
+.cta-cmd .cmd-line + .cmd-line { margin-top: 6px; }
+.cta-cmd .cmd-dollar { color: var(--dim); }
+.cta-cmd .cmd-flag { color: var(--violet); }
+.cta-cmd .cmd-url { color: #94a3b8; }
+.cta-cmd .cmd-run { color: #22c55e; }
+
+/* ===== FOOTER ===== */
+footer {
+  padding: 40px 0; text-align: center;
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+footer svg { width: 40px; height: 40px; margin: 0 auto 12px; opacity: 0.3; }
+footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 900px) {
+  .pillars { grid-template-columns: 1fr; }
+  .showcase-inner { grid-template-columns: 1fr; gap: 48px; }
+  .showcase.reverse .showcase-inner { direction: ltr; }
+  .showcase-visual { max-width: 360px; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 32px; }
+}
+@media (max-width: 600px) {
+  .hero-cta-row { flex-direction: column; align-items: center; }
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .section { padding: 80px 0; }
+}
+</style>
+</head>
+<body>
+
+<!-- ==================== FLOATING NAV ==================== -->
+<nav class="floating-nav">
+  <a href="https://github.com/" class="nav-github" target="_blank" rel="noopener">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+    <span>GitHub</span>
+  </a>
+</nav>
+
+<!-- ==================== HERO (full-viewport sticky video) ==================== -->
+<div class="hero-wrapper">
+<section class="hero">
+  <div class="hero-video">
+    <video autoplay loop muted playsinline>
+      <source src="ive-promo.mp4" type="video/mp4">
+    </video>
+    <div class="hero-video-fade"></div>
+  </div>
+  <div class="scroll-indicator">
+    <span>Scroll</span>
+    <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+  </div>
+</section>
+</div>
+
+<!-- ==================== HERO INTRO (logo + title below video) ==================== -->
+<section class="hero-intro">
+  <div class="hero-orb hero-orb-1"></div>
+  <div class="hero-orb hero-orb-2"></div>
+  <div class="hero-orb hero-orb-3"></div>
+
+  <div class="hero-intro-inner">
+    <div class="hero-logo">
+      <svg viewBox="-30 -12 180 165" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z" fill="#00f0ff" opacity="0.8" transform="translate(-8.4,0) rotate(-7,60,120)" filter="url(#glow)"/>
+        <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z" fill="#8b5cf6" opacity="0.85"/>
+        <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z" fill="#d946ef" opacity="0.8" transform="translate(8.4,0) rotate(7,60,120)" filter="url(#glow)"/>
+        <circle cx="60" cy="120" r="3" fill="#fff" opacity="0.9"/>
+      </svg>
+    </div>
+
+    <p class="hero-tagline"><span>Humanity's Last IDE</span></p>
+
+    <div class="hero-cta-row">
+      <a href="#features" class="btn btn-primary">See What It Does</a>
+      <a href="https://github.com/" class="btn btn-ghost" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+        Get Started
+      </a>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ==================== STATEMENT ==================== -->
+<section class="statement">
+  <span class="ive-joke"><span class="ive-old">I've</span> <span class="ive-new">IVE</span> <span class="ive-rest">done this for you.</span></span>
+  <h2 class="reveal" style="background:linear-gradient(135deg,#fff 20%,var(--cyan) 60%,var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Stop switching tabs.<br>Start commanding agents.</h2>
+  <p class="reveal">A local control center for AI coding agents. Real PTY terminals, visual pipelines, autonomous iteration loops &mdash; all from one screen. Zero cloud. Zero config.</p>
+</section>
+
+<hr class="divider">
+
+<!-- ==================== PILLARS ==================== -->
+<section class="section" id="features">
+  <div class="container">
+    <div style="text-align:center;">
+      <span class="section-tag tag-cyan reveal">The Foundation</span>
+      <h2 class="reveal" style="font-size:clamp(28px,4vw,42px);font-weight:800;color:#fff;margin-bottom:8px;">Built different from the ground up</h2>
+      <p class="reveal" style="font-size:17px;color:#64748b;max-width:520px;margin:0 auto;">Not a wrapper. Not a web UI. A real terminal orchestration engine.</p>
+    </div>
+    <div class="pillars">
+      <div class="pillar reveal reveal-delay-1">
+        <div class="pillar-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </div>
+        <h3>Real Terminals</h3>
+        <p>Every session is a real PTY via os.fork() + pty.openpty(). Full xterm.js with shift+tab, plan mode, slash commands. Not an emulator &mdash; the real thing.</p>
+      </div>
+      <div class="pillar reveal reveal-delay-2">
+        <div class="pillar-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <h3>Any Model. Any CLI.</h3>
+        <p>CLI-agnostic: Claude Code, Gemini CLI, more to come. Haiku, Sonnet, Opus, Gemini Pro, Flash &mdash; all unified. Switch models mid-session.</p>
+      </div>
+      <div class="pillar reveal reveal-delay-3">
+        <div class="pillar-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>100% Local</h3>
+        <p>Python backend, React frontend, SQLite database. Your code never leaves your machine. One command: ./start.sh</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ==================== ORCHESTRATION ==================== -->
+<section class="showcase reveal" id="orchestration">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag tag-violet">Orchestration</span>
+      <h2 class="showcase-title">One brain.<br>Infinite hands.</h2>
+      <p class="showcase-sub">Commander spawns agent armies. Pipelines wire them into workflows. RALPH iterates autonomously. The board dispatches tasks on its own.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Agent Army &amp; Commander</h4><p>Meta-agent with 35+ MCP tools. Spawn workers, assign tasks, monitor progress. Workers report back via their own scoped MCP server.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#00f0ff;color:#00f0ff"></div>
+          <div class="list-content"><h4>Visual Pipelines</h4><p>Drag-and-drop graph editor. Agent stages, conditions, delays. Trigger by board column, webhook, or pipeline completion.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#d946ef;color:#d946ef"></div>
+          <div class="list-content"><h4>RALPH Mode</h4><p>Execute &rarr; Verify &rarr; Fix. Up to 20 autonomous iterations. Type @ralph before any prompt.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#22c55e;color:#22c55e"></div>
+          <div class="list-content"><h4>Feature Board</h4><p>6-column Kanban with auto-dispatch. Drag a ticket &mdash; an agent picks it up automatically.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+        <!-- Grid lines -->
+        <line x1="200" y1="0" x2="200" y2="400" stroke="rgba(139,92,246,0.05)" stroke-dasharray="4 8"/>
+        <line x1="0" y1="200" x2="400" y2="200" stroke="rgba(139,92,246,0.05)" stroke-dasharray="4 8"/>
+        <circle cx="200" cy="200" r="140" fill="none" stroke="rgba(139,92,246,0.04)" stroke-dasharray="4 8"/>
+        <!-- Connection lines -->
+        <line x1="200" y1="200" x2="200" y2="60" stroke="rgba(139,92,246,0.15)" stroke-width="1.5"/>
+        <line x1="200" y1="200" x2="330" y2="130" stroke="rgba(6,182,212,0.15)" stroke-width="1.5"/>
+        <line x1="200" y1="200" x2="330" y2="280" stroke="rgba(34,197,94,0.15)" stroke-width="1.5"/>
+        <line x1="200" y1="200" x2="70" y2="280" stroke="rgba(245,158,11,0.15)" stroke-width="1.5"/>
+        <line x1="200" y1="200" x2="70" y2="130" stroke="rgba(217,70,239,0.15)" stroke-width="1.5"/>
+        <!-- Traveling dots -->
+        <circle r="3.5" fill="#8b5cf6"><animateMotion path="M200,200 L200,60" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2s" repeatCount="indefinite"/></circle>
+        <circle r="3.5" fill="#06b6d4"><animateMotion path="M200,200 L330,130" dur="2.4s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.4s" repeatCount="indefinite"/></circle>
+        <circle r="3.5" fill="#22c55e"><animateMotion path="M200,200 L330,280" dur="2.8s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.8s" repeatCount="indefinite"/></circle>
+        <circle r="3.5" fill="#f59e0b"><animateMotion path="M200,200 L70,280" dur="2.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.2s" repeatCount="indefinite"/></circle>
+        <circle r="3.5" fill="#d946ef"><animateMotion path="M200,200 L70,130" dur="2.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.6s" repeatCount="indefinite"/></circle>
+        <!-- Worker nodes -->
+        <circle cx="200" cy="60" r="20" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" repeatCount="indefinite"/></circle>
+        <text x="200" y="64" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="Inter,sans-serif">W-1</text>
+        <circle cx="330" cy="130" r="20" fill="rgba(6,182,212,0.12)" stroke="#06b6d4" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="0.5s" repeatCount="indefinite"/></circle>
+        <text x="330" y="134" text-anchor="middle" fill="#06b6d4" font-size="9" font-weight="700" font-family="Inter,sans-serif">W-2</text>
+        <circle cx="330" cy="280" r="20" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="1s" repeatCount="indefinite"/></circle>
+        <text x="330" y="284" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="700" font-family="Inter,sans-serif">TEST</text>
+        <circle cx="70" cy="280" r="20" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="1.5s" repeatCount="indefinite"/></circle>
+        <text x="70" y="284" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="700" font-family="Inter,sans-serif">W-3</text>
+        <circle cx="70" cy="130" r="20" fill="rgba(217,70,239,0.12)" stroke="#d946ef" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="2s" repeatCount="indefinite"/></circle>
+        <text x="70" y="134" text-anchor="middle" fill="#d946ef" font-size="9" font-weight="700" font-family="Inter,sans-serif">DOC</text>
+        <!-- Central hub -->
+        <circle cx="200" cy="200" r="40" fill="rgba(139,92,246,0.08)" stroke="rgba(139,92,246,0.2)" stroke-width="1"><animate attributeName="r" values="38;45;38" dur="4s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.6;0.3;0.6" dur="4s" repeatCount="indefinite"/></circle>
+        <circle cx="200" cy="200" r="26" fill="rgba(139,92,246,0.2)" stroke="#8b5cf6" stroke-width="2"/>
+        <circle cx="200" cy="200" r="10" fill="#8b5cf6"><animate attributeName="r" values="8;12;8" dur="2s" repeatCount="indefinite"/></circle>
+        <text x="200" y="230" text-anchor="middle" fill="rgba(139,92,246,0.7)" font-size="10" font-weight="800" font-family="Inter,sans-serif" letter-spacing="2">COMMANDER</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== INTELLIGENCE ==================== -->
+<section class="showcase reverse reveal" id="intelligence">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag tag-cyan">Intelligence</span>
+      <h2 class="showcase-title">Remember.<br>Research. Learn.</h2>
+      <p class="showcase-sub">Deep research across the open web. Shared memory that syncs across every agent. 8,000+ skills in a community catalog.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#3b82f6;color:#3b82f6"></div>
+          <div class="list-content"><h4>Deep Research</h4><p>Self-hosted engine. DuckDuckGo, arXiv, Semantic Scholar, GitHub &mdash; all at once. No API keys. Results stored in a searchable DB.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Memory Sync</h4><p>Hub-and-spoke with three-way git merge. Four memory types: user, feedback, project, reference. What one agent learns, every agent remembers.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#00f0ff;color:#00f0ff"></div>
+          <div class="list-content"><h4>8,000+ Agent Skills</h4><p>Community catalog browsable offline. One-click install to any session. SKILL.md frontmatter, project or user scope.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#22c55e;color:#22c55e"></div>
+          <div class="list-content"><h4>Session Distill</h4><p>LLM-summarize entire conversations into concise briefs. Distilled transcripts for quick context transfer between agents.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+        <!-- Radar rings -->
+        <circle cx="200" cy="200" r="160" fill="none" stroke="rgba(0,240,255,0.06)" stroke-width="1"/>
+        <circle cx="200" cy="200" r="115" fill="none" stroke="rgba(0,240,255,0.08)" stroke-width="1"/>
+        <circle cx="200" cy="200" r="70" fill="none" stroke="rgba(0,240,255,0.12)" stroke-width="1"/>
+        <line x1="200" y1="30" x2="200" y2="370" stroke="rgba(0,240,255,0.03)" stroke-width="1"/>
+        <line x1="30" y1="200" x2="370" y2="200" stroke="rgba(0,240,255,0.03)" stroke-width="1"/>
+        <g class="radar-sweep">
+          <line x1="200" y1="200" x2="200" y2="40" stroke="rgba(0,240,255,0.35)" stroke-width="1.5"/>
+          <path d="M200,200 L200,40 A160,160,0,0,1,310,80 Z" fill="rgba(0,240,255,0.03)"/>
+        </g>
+        <circle cx="255" cy="115" r="4" fill="#3b82f6"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="0.5s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="0.5s" repeatCount="indefinite"/></circle>
+        <text x="255" y="103" text-anchor="middle" fill="rgba(59,130,246,0.5)" font-size="8" font-family="Inter,sans-serif">arXiv</text>
+        <circle cx="135" cy="270" r="4" fill="#22c55e"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="1.5s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="1.5s" repeatCount="indefinite"/></circle>
+        <text x="135" y="290" text-anchor="middle" fill="rgba(34,197,94,0.5)" font-size="8" font-family="Inter,sans-serif">GitHub</text>
+        <circle cx="310" cy="230" r="4" fill="#f59e0b"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="2.5s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="2.5s" repeatCount="indefinite"/></circle>
+        <text x="310" y="248" text-anchor="middle" fill="rgba(245,158,11,0.5)" font-size="8" font-family="Inter,sans-serif">Brave</text>
+        <circle cx="160" cy="140" r="4" fill="#8b5cf6"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="3.2s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="3.2s" repeatCount="indefinite"/></circle>
+        <text x="160" y="128" text-anchor="middle" fill="rgba(139,92,246,0.5)" font-size="8" font-family="Inter,sans-serif">Scholar</text>
+        <circle cx="275" cy="300" r="4" fill="#06b6d4"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="0.8s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="0.8s" repeatCount="indefinite"/></circle>
+        <text x="275" y="318" text-anchor="middle" fill="rgba(6,182,212,0.5)" font-size="8" font-family="Inter,sans-serif">DDG</text>
+        <circle cx="200" cy="200" r="12" fill="rgba(0,240,255,0.15)" stroke="#00f0ff" stroke-width="1.5"/>
+        <circle cx="200" cy="200" r="5" fill="#00f0ff"><animate attributeName="r" values="4;7;4" dur="2s" repeatCount="indefinite"/></circle>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== COLLABORATION ==================== -->
+<section class="showcase reveal" id="collaboration">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag" style="color:#f97316;background:rgba(249,115,22,0.08);border:1px solid rgba(249,115,22,0.15);">Collaboration</span>
+      <h2 class="showcase-title">Multiple agents.<br>Zero conflicts.</h2>
+      <p class="showcase-sub">Agents coordinate automatically. File locks prevent overwrites. Events flow through a central bus. Every action is tracked.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#f97316;color:#f97316"></div>
+          <div class="list-content"><h4>Agent Coordination</h4><p>Myelin-powered conflict detection. Multiple agents editing one codebase? IVE detects file locks and auto-reroutes.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#00f0ff;color:#00f0ff"></div>
+          <div class="list-content"><h4>Central Event Bus</h4><p>30+ event types. All state changes persist &rarr; notify subscribers &rarr; broadcast WebSocket &rarr; deliver webhooks. Full audit trail.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Hook-Based Detection</h4><p>Structured JSON events from CLI hooks. Session lifecycle, tool execution, subagent spawning, compaction &mdash; all tracked in real time.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#22c55e;color:#22c55e"></div>
+          <div class="list-content"><h4>Sub-Agent Tree</h4><p>Hierarchical view of every spawned sub-agent. Transcripts, tool calls, I/O, execution timeline. Full visibility into agent families.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+        <!-- Three agents sharing a file -->
+        <!-- File icon center -->
+        <rect x="170" y="160" width="60" height="80" rx="4" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.12)"/>
+        <polygon points="210,160 230,180 210,180" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.08)"/>
+        <rect x="180" y="192" width="30" height="2.5" rx="1" fill="rgba(255,255,255,0.08)"/>
+        <rect x="180" y="200" width="40" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
+        <rect x="180" y="208" width="25" height="2.5" rx="1" fill="rgba(255,255,255,0.05)"/>
+        <text x="200" y="230" text-anchor="middle" fill="rgba(255,255,255,0.2)" font-size="8" font-family="monospace">server.py</text>
+        <!-- Agent 1 (top) -->
+        <circle cx="200" cy="60" r="22" fill="rgba(139,92,246,0.1)" stroke="#8b5cf6" stroke-width="1.5"><animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/></circle>
+        <text x="200" y="64" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="Inter,sans-serif">A-1</text>
+        <line x1="200" y1="82" x2="200" y2="158" stroke="rgba(139,92,246,0.15)" stroke-width="1.5"/>
+        <circle r="3" fill="#8b5cf6"><animateMotion path="M200,82 L200,158" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/></circle>
+        <!-- Agent 2 (bottom-left) -->
+        <circle cx="80" cy="320" r="22" fill="rgba(0,240,255,0.1)" stroke="#00f0ff" stroke-width="1.5"><animate attributeName="opacity" values="0.6;1;0.6" dur="3s" begin="1s" repeatCount="indefinite"/></circle>
+        <text x="80" y="324" text-anchor="middle" fill="#00f0ff" font-size="9" font-weight="700" font-family="Inter,sans-serif">A-2</text>
+        <line x1="95" y1="302" x2="180" y2="240" stroke="rgba(0,240,255,0.15)" stroke-width="1.5"/>
+        <circle r="3" fill="#00f0ff"><animateMotion path="M95,302 L180,240" dur="2.4s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2.4s" repeatCount="indefinite"/></circle>
+        <!-- Agent 3 (bottom-right) -->
+        <circle cx="320" cy="320" r="22" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"><animate attributeName="opacity" values="0.6;1;0.6" dur="3s" begin="2s" repeatCount="indefinite"/></circle>
+        <text x="320" y="324" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="700" font-family="Inter,sans-serif">A-3</text>
+        <line x1="305" y1="302" x2="220" y2="240" stroke="rgba(245,158,11,0.15)" stroke-width="1.5"/>
+        <circle r="3" fill="#f59e0b"><animateMotion path="M305,302 L220,240" dur="2.8s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2.8s" repeatCount="indefinite"/></circle>
+        <!-- Lock icon on file -->
+        <g opacity="0"><animate attributeName="opacity" values="0;0;0.8;0.8;0.8;0" dur="5s" repeatCount="indefinite"/>
+          <rect x="185" y="250" width="30" height="20" rx="3" fill="rgba(239,68,68,0.1)" stroke="rgba(239,68,68,0.4)"/>
+          <path d="M195,255 L195,250 A5,5,0,0,1,205,250 L205,255" fill="none" stroke="rgba(239,68,68,0.5)" stroke-width="1.5"/>
+          <circle cx="200" cy="262" r="2" fill="#ef4444"/>
+        </g>
+        <!-- Conflict resolved indicator -->
+        <g opacity="0"><animate attributeName="opacity" values="0;0;0;0;0.7;0.7" dur="5s" repeatCount="indefinite"/>
+          <rect x="168" y="250" width="64" height="20" rx="4" fill="rgba(34,197,94,0.1)" stroke="rgba(34,197,94,0.3)"/>
+          <text x="200" y="264" text-anchor="middle" fill="#22c55e" font-size="7" font-weight="700" font-family="Inter,sans-serif" letter-spacing="1">RESOLVED</text>
+        </g>
+        <!-- Event bus line at bottom -->
+        <line x1="40" y1="380" x2="360" y2="380" stroke="rgba(0,240,255,0.08)" stroke-width="1.5"/>
+        <circle r="3" fill="#00f0ff" opacity="0.4"><animateMotion path="M40,380 L360,380" dur="3s" repeatCount="indefinite"/></circle>
+        <circle r="3" fill="#8b5cf6" opacity="0.4"><animateMotion path="M360,380 L40,380" dur="4s" repeatCount="indefinite"/></circle>
+        <text x="200" y="395" text-anchor="middle" fill="rgba(0,240,255,0.3)" font-size="7" font-weight="700" font-family="Inter,sans-serif" letter-spacing="2">EVENT BUS</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== WORKFLOWS & PROMPTS ==================== -->
+<section class="showcase reveal" id="workflows">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag tag-magenta">Workflows &amp; Prompts</span>
+      <h2 class="showcase-title">Compose once.<br>Chain forever.</h2>
+      <p class="showcase-sub">Build reusable prompts, chain them into cascades with variables and loops, control output verbosity. Your prompt is the program.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#d946ef;color:#d946ef"></div>
+          <div class="list-content"><h4>Smart Prompt Library</h4><p>Browse, create, categorize prompt templates. Vague-prompt detection suggests better alternatives. Quick-action shortcuts with usage tracking.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#00f0ff;color:#00f0ff"></div>
+          <div class="list-content"><h4>Cascades</h4><p>Sequential prompt chains with {variable} substitution, loop support, and auto-approval. One trigger, five steps.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#f59e0b;color:#f59e0b"></div>
+          <div class="list-content"><h4>@Token Magic</h4><p>@ralph starts autonomous loops. @research triggers deep dives. @prompt:Name inlines templates. All expand before sending.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Output Styles</h4><p>Token-saving modes: lite, caveman, ultra, dense. Cascade per session, workspace, or global. Slash your token spend.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 420" xmlns="http://www.w3.org/2000/svg">
+        <!-- Cascade flow: 3 prompt blocks chained vertically -->
+        <!-- Block 1 -->
+        <rect x="80" y="20" width="240" height="70" rx="10" fill="rgba(217,70,239,0.06)" stroke="rgba(217,70,239,0.2)" stroke-width="1.5">
+          <animate attributeName="stroke-opacity" values="0.2;0.5;0.2" dur="3s" repeatCount="indefinite"/></rect>
+        <text x="100" y="48" fill="rgba(255,255,255,0.5)" font-size="10" font-family="monospace">Research</text>
+        <text x="170" y="48" fill="#00f0ff" font-size="10" font-weight="700" font-family="monospace">{topic}</text>
+        <text x="100" y="68" fill="rgba(255,255,255,0.25)" font-size="9" font-family="monospace">and summarize findings</text>
+        <circle cx="296" cy="50" r="5" fill="rgba(217,70,239,0.3)"><animate attributeName="r" values="4;6;4" dur="2s" repeatCount="indefinite"/></circle>
+        <!-- Arrow 1→2 -->
+        <line x1="200" y1="90" x2="200" y2="130" stroke="rgba(255,255,255,0.1)" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <circle r="3" fill="#d946ef"><animateMotion path="M200,90 L200,130" dur="1.5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="1.5s" repeatCount="indefinite"/></circle>
+        <polygon points="196,128 200,136 204,128" fill="rgba(255,255,255,0.15)"/>
+        <!-- Block 2 -->
+        <rect x="80" y="140" width="240" height="70" rx="10" fill="rgba(0,240,255,0.05)" stroke="rgba(0,240,255,0.2)" stroke-width="1.5">
+          <animate attributeName="stroke-opacity" values="0.2;0.5;0.2" dur="3s" begin="0.5s" repeatCount="indefinite"/></rect>
+        <text x="100" y="168" fill="rgba(255,255,255,0.5)" font-size="10" font-family="monospace">Implement</text>
+        <text x="186" y="168" fill="#00f0ff" font-size="10" font-weight="700" font-family="monospace">{result}</text>
+        <text x="100" y="188" fill="rgba(255,255,255,0.25)" font-size="9" font-family="monospace">with tests and docs</text>
+        <circle cx="296" cy="170" r="5" fill="rgba(0,240,255,0.3)"><animate attributeName="r" values="4;6;4" dur="2s" begin="0.5s" repeatCount="indefinite"/></circle>
+        <!-- Arrow 2→3 -->
+        <line x1="200" y1="210" x2="200" y2="250" stroke="rgba(255,255,255,0.1)" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <circle r="3" fill="#00f0ff"><animateMotion path="M200,210 L200,250" dur="1.5s" begin="0.5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="1.5s" begin="0.5s" repeatCount="indefinite"/></circle>
+        <polygon points="196,248 200,256 204,248" fill="rgba(255,255,255,0.15)"/>
+        <!-- Block 3 -->
+        <rect x="80" y="260" width="240" height="70" rx="10" fill="rgba(139,92,246,0.06)" stroke="rgba(139,92,246,0.2)" stroke-width="1.5">
+          <animate attributeName="stroke-opacity" values="0.2;0.5;0.2" dur="3s" begin="1s" repeatCount="indefinite"/></rect>
+        <text x="100" y="288" fill="rgba(255,255,255,0.5)" font-size="10" font-family="monospace">Review &amp; verify</text>
+        <text x="100" y="308" fill="rgba(255,255,255,0.25)" font-size="9" font-family="monospace">run tests, check coverage</text>
+        <circle cx="296" cy="290" r="5" fill="rgba(139,92,246,0.3)"><animate attributeName="r" values="4;6;4" dur="2s" begin="1s" repeatCount="indefinite"/></circle>
+        <!-- Loop arc -->
+        <path d="M320,300 C370,300 370,50 320,50" fill="none" stroke="rgba(245,158,11,0.2)" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <polygon points="318,46 322,38 326,46" fill="rgba(245,158,11,0.3)"/>
+        <text x="365" y="175" fill="rgba(245,158,11,0.4)" font-size="9" font-weight="700" font-family="Inter,sans-serif" transform="rotate(90,365,175)">LOOP</text>
+        <circle r="3" fill="#f59e0b"><animateMotion path="M320,300 C370,300 370,50 320,50" dur="3s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="3s" repeatCount="indefinite"/></circle>
+        <!-- @token badges -->
+        <rect x="80" y="370" width="68" height="22" rx="11" fill="rgba(239,68,68,0.1)" stroke="rgba(239,68,68,0.2)"/>
+        <text x="114" y="385" text-anchor="middle" fill="#ef4444" font-size="9" font-weight="700" font-family="monospace">@ralph</text>
+        <rect x="160" y="370" width="88" height="22" rx="11" fill="rgba(59,130,246,0.1)" stroke="rgba(59,130,246,0.2)"/>
+        <text x="204" y="385" text-anchor="middle" fill="#3b82f6" font-size="9" font-weight="700" font-family="monospace">@research</text>
+        <rect x="260" y="370" width="80" height="22" rx="11" fill="rgba(139,92,246,0.1)" stroke="rgba(139,92,246,0.2)"/>
+        <text x="300" y="385" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="monospace">@prompt</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== SESSION MASTERY ==================== -->
+<section class="showcase reverse reveal" id="sessions">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag tag-cyan">Session Mastery</span>
+      <h2 class="showcase-title">tmux wishes<br>it could do this.</h2>
+      <p class="showcase-sub">Visual grid layouts, session merging, broadcast groups, multi-line composer. Manage 20 terminals without losing your mind.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#00f0ff;color:#00f0ff"></div>
+          <div class="list-content"><h4>Grid Layouts &amp; Templates</h4><p>Visual CSS Grid builder. Drag cells, save templates, switch between tabs/split/grid. Custom arrangements per workspace.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Session Merging</h4><p>Combine conversations from multiple sessions into one. Cherry-pick turns, preserve context, merge related work.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#22c55e;color:#22c55e"></div>
+          <div class="list-content"><h4>Broadcast Groups</h4><p>Group sessions together. Send one message to all of them. Perfect for parallel agents working on related tasks.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#d946ef;color:#d946ef"></div>
+          <div class="list-content"><h4>Composer &amp; Force Send</h4><p>Multi-line structured input with markdown. Shift+Enter to interrupt and force-send. Rich input for complex prompts.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+        <!-- Grid background lines -->
+        <line x1="200" y1="10" x2="200" y2="310" stroke="rgba(0,240,255,0.04)" stroke-width="1"/>
+        <line x1="10" y1="160" x2="390" y2="160" stroke="rgba(0,240,255,0.04)" stroke-width="1"/>
+        <!-- Terminal TL -->
+        <g transform="translate(15,15)">
+          <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(0,240,255,0.12)" stroke-width="1.5"/>
+          <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
+          <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-1</text>
+          <rect x="12" y="30" width="70" height="2.5" rx="1" fill="rgba(0,240,255,0.25)"/>
+          <rect x="12" y="38" width="110" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
+          <rect x="12" y="46" width="50" height="2.5" rx="1" fill="rgba(139,92,246,0.15)"/>
+          <rect x="12" y="58" width="7" height="10" rx="1" fill="rgba(0,240,255,0.5)" class="term-cursor"/>
+        </g>
+        <!-- Terminal TR -->
+        <g transform="translate(210,15)">
+          <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(0,240,255,0.12)" stroke-width="1.5"/>
+          <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
+          <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-2</text>
+          <rect x="12" y="30" width="90" height="2.5" rx="1" fill="rgba(217,70,239,0.2)"/>
+          <rect x="12" y="38" width="130" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
+          <rect x="12" y="46" width="60" height="2.5" rx="1" fill="rgba(0,240,255,0.12)"/>
+          <rect x="12" y="58" width="7" height="10" rx="1" fill="rgba(139,92,246,0.5)" class="term-cursor-2"/>
+        </g>
+        <!-- Terminal BL (wider) -->
+        <g transform="translate(15,170)">
+          <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(139,92,246,0.12)" stroke-width="1.5"/>
+          <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
+          <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-3</text>
+          <rect x="12" y="30" width="100" height="2.5" rx="1" fill="rgba(0,240,255,0.2)"/>
+          <rect x="12" y="38" width="140" height="2.5" rx="1" fill="rgba(255,255,255,0.08)"/>
+          <rect x="12" y="46" width="80" height="2.5" rx="1" fill="rgba(217,70,239,0.15)"/>
+          <rect x="12" y="54" width="55" height="2.5" rx="1" fill="rgba(139,92,246,0.1)"/>
+          <rect x="12" y="66" width="7" height="10" rx="1" fill="rgba(217,70,239,0.5)" class="term-cursor-3"/>
+        </g>
+        <!-- Terminal BR -->
+        <g transform="translate(210,170)">
+          <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(139,92,246,0.12)" stroke-width="1.5"/>
+          <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
+          <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-4</text>
+          <rect x="12" y="30" width="60" height="2.5" rx="1" fill="rgba(34,197,94,0.2)"/>
+          <rect x="12" y="38" width="100" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
+          <rect x="12" y="58" width="7" height="10" rx="1" fill="rgba(34,197,94,0.5)" class="term-cursor"/>
+        </g>
+        <!-- Broadcast indicator (lightning bolt between top two) -->
+        <g opacity="0.7">
+          <line x1="192" y1="60" x2="208" y2="60" stroke="rgba(245,158,11,0.3)" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <polygon points="197,53 200,47 203,53 200.5,53 203,63 200,63 197,63 199.5,53" fill="#f59e0b" opacity="0.5"><animate attributeName="opacity" values="0.3;0.7;0.3" dur="2s" repeatCount="indefinite"/></polygon>
+          <text x="200" y="42" text-anchor="middle" fill="rgba(245,158,11,0.4)" font-size="7" font-weight="700" font-family="Inter,sans-serif">BROADCAST</text>
+        </g>
+        <!-- Merge indicator (arrows from BL+BR converging) -->
+        <g opacity="0.6">
+          <line x1="150" y1="310" x2="200" y2="340" stroke="rgba(139,92,246,0.25)" stroke-width="1.5"/>
+          <line x1="250" y1="310" x2="200" y2="340" stroke="rgba(139,92,246,0.25)" stroke-width="1.5"/>
+          <circle cx="200" cy="340" r="8" fill="rgba(139,92,246,0.1)" stroke="#8b5cf6" stroke-width="1.5"/>
+          <text x="200" y="344" text-anchor="middle" fill="#8b5cf6" font-size="7" font-weight="700" font-family="Inter,sans-serif">M</text>
+          <text x="200" y="362" text-anchor="middle" fill="rgba(139,92,246,0.4)" font-size="8" font-weight="700" font-family="Inter,sans-serif">MERGE</text>
+          <circle r="3" fill="#8b5cf6"><animateMotion path="M150,310 L200,340" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/></circle>
+          <circle r="3" fill="#8b5cf6"><animateMotion path="M250,310 L200,340" dur="2s" begin="0.5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2s" begin="0.5s" repeatCount="indefinite"/></circle>
+        </g>
+        <!-- Grid template label -->
+        <rect x="115" y="380" width="170" height="18" rx="9" fill="rgba(0,240,255,0.06)" stroke="rgba(0,240,255,0.15)"/>
+        <text x="200" y="393" text-anchor="middle" fill="rgba(0,240,255,0.5)" font-size="8" font-weight="700" font-family="Inter,sans-serif" letter-spacing="1">2x2 GRID TEMPLATE</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== DEVELOPER TOOLS ==================== -->
+<section class="showcase reveal" id="devtools">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag tag-magenta">Developer Tools</span>
+      <h2 class="showcase-title">See everything.<br>Annotate anything.</h2>
+      <p class="showcase-sub">Git diff annotations, voice-annotated browser screenshots, live previews, code review with AI feedback. 40+ keyboard shortcuts.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#d946ef;color:#d946ef"></div>
+          <div class="list-content"><h4>Code Review &amp; Diff Annotations</h4><p>Git diff viewer with file tree, inline annotations, and one-click &ldquo;Send to Claude&rdquo; for AI feedback. VS Code, Cursor, Zed integration.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#00f0ff;color:#00f0ff"></div>
+          <div class="list-content"><h4>Screenshot &amp; Voice Annotator</h4><p>Capture any URL, annotate with rectangles, arrows, text. Voice input via Web Speech API. Send annotated screenshots directly to sessions.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Mission Control</h4><p>Dashboard grid of every active session. Model, status, effort at a glance. Run 8+ agents without losing track.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#22c55e;color:#22c55e"></div>
+          <div class="list-content"><h4>Live Preview</h4><p>In-app browser preview with URL input and screenshot capture. See your changes without switching windows.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+        <!-- Browser-like window -->
+        <rect x="30" y="20" width="340" height="240" rx="10" fill="rgba(255,255,255,0.02)" stroke="rgba(217,70,239,0.15)" stroke-width="1.5"/>
+        <rect x="30" y="20" width="340" height="28" rx="10" fill="rgba(255,255,255,0.04)"/><rect x="30" y="47" width="340" height="1" fill="rgba(255,255,255,0.06)"/>
+        <circle cx="48" cy="34" r="4" fill="rgba(239,68,68,0.5)"/><circle cx="62" cy="34" r="4" fill="rgba(245,158,11,0.5)"/><circle cx="76" cy="34" r="4" fill="rgba(34,197,94,0.5)"/>
+        <!-- URL bar -->
+        <rect x="92" y="26" width="200" height="16" rx="4" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.06)"/>
+        <text x="105" y="38" fill="rgba(255,255,255,0.2)" font-size="8" font-family="monospace">localhost:5173</text>
+        <!-- Content: diff lines -->
+        <rect x="50" y="60" width="12" height="3" rx="1" fill="rgba(34,197,94,0.4)"/>
+        <rect x="68" y="60" width="140" height="3" rx="1" fill="rgba(34,197,94,0.15)"/>
+        <rect x="50" y="70" width="12" height="3" rx="1" fill="rgba(34,197,94,0.4)"/>
+        <rect x="68" y="70" width="200" height="3" rx="1" fill="rgba(34,197,94,0.15)"/>
+        <rect x="50" y="80" width="12" height="3" rx="1" fill="rgba(239,68,68,0.4)"/>
+        <rect x="68" y="80" width="160" height="3" rx="1" fill="rgba(239,68,68,0.15)"/>
+        <rect x="50" y="90" width="12" height="3" rx="1" fill="rgba(255,255,255,0.1)"/>
+        <rect x="68" y="90" width="120" height="3" rx="1" fill="rgba(255,255,255,0.04)"/>
+        <rect x="50" y="100" width="12" height="3" rx="1" fill="rgba(34,197,94,0.4)"/>
+        <rect x="68" y="100" width="180" height="3" rx="1" fill="rgba(34,197,94,0.15)"/>
+        <text x="50" y="61" fill="rgba(34,197,94,0.3)" font-size="7" font-family="monospace">+</text>
+        <text x="50" y="71" fill="rgba(34,197,94,0.3)" font-size="7" font-family="monospace">+</text>
+        <text x="50" y="81" fill="rgba(239,68,68,0.3)" font-size="7" font-family="monospace">-</text>
+        <!-- Annotation rectangle -->
+        <rect x="60" y="55" width="220" height="55" rx="3" fill="none" stroke="#d946ef" stroke-width="1.5" stroke-dasharray="4 3" opacity="0">
+          <animate attributeName="opacity" values="0;0;0.7;0.7;0" dur="4s" repeatCount="indefinite"/>
+        </rect>
+        <!-- Annotation arrow -->
+        <line x1="290" y1="82" x2="330" y2="130" stroke="#d946ef" stroke-width="1.5" opacity="0">
+          <animate attributeName="opacity" values="0;0;0.6;0.6;0" dur="4s" repeatCount="indefinite"/>
+        </line>
+        <!-- Annotation text bubble -->
+        <g opacity="0"><animate attributeName="opacity" values="0;0;0;0.8;0" dur="4s" repeatCount="indefinite"/>
+          <rect x="280" y="130" width="80" height="28" rx="6" fill="rgba(217,70,239,0.12)" stroke="rgba(217,70,239,0.3)"/>
+          <text x="320" y="148" text-anchor="middle" fill="#d946ef" font-size="8" font-weight="600" font-family="Inter,sans-serif">Fix this logic</text>
+        </g>
+        <!-- More content lines -->
+        <rect x="50" y="125" width="260" height="2.5" rx="1" fill="rgba(255,255,255,0.03)"/>
+        <rect x="50" y="135" width="200" height="2.5" rx="1" fill="rgba(255,255,255,0.03)"/>
+        <rect x="50" y="145" width="230" height="2.5" rx="1" fill="rgba(139,92,246,0.08)"/>
+        <rect x="50" y="155" width="180" height="2.5" rx="1" fill="rgba(255,255,255,0.03)"/>
+        <!-- Voice wave indicator -->
+        <g transform="translate(50, 190)">
+          <rect width="90" height="24" rx="12" fill="rgba(0,240,255,0.06)" stroke="rgba(0,240,255,0.15)"/>
+          <circle cx="16" cy="12" r="5" fill="rgba(239,68,68,0.5)"><animate attributeName="r" values="4;6;4" dur="1.5s" repeatCount="indefinite"/></circle>
+          <!-- Sound wave bars -->
+          <rect x="28" y="6" width="2" height="12" rx="1" fill="rgba(0,240,255,0.4)"><animate attributeName="height" values="6;14;6" dur="0.6s" repeatCount="indefinite"/><animate attributeName="y" values="9;5;9" dur="0.6s" repeatCount="indefinite"/></rect>
+          <rect x="34" y="4" width="2" height="16" rx="1" fill="rgba(0,240,255,0.3)"><animate attributeName="height" values="10;4;10" dur="0.5s" repeatCount="indefinite"/><animate attributeName="y" values="7;10;7" dur="0.5s" repeatCount="indefinite"/></rect>
+          <rect x="40" y="6" width="2" height="12" rx="1" fill="rgba(0,240,255,0.4)"><animate attributeName="height" values="4;12;4" dur="0.7s" repeatCount="indefinite"/><animate attributeName="y" values="10;6;10" dur="0.7s" repeatCount="indefinite"/></rect>
+          <rect x="46" y="5" width="2" height="14" rx="1" fill="rgba(0,240,255,0.3)"><animate attributeName="height" values="8;3;8" dur="0.55s" repeatCount="indefinite"/><animate attributeName="y" values="8;11;8" dur="0.55s" repeatCount="indefinite"/></rect>
+          <rect x="52" y="7" width="2" height="10" rx="1" fill="rgba(0,240,255,0.4)"><animate attributeName="height" values="6;12;6" dur="0.65s" repeatCount="indefinite"/><animate attributeName="y" values="9;6;9" dur="0.65s" repeatCount="indefinite"/></rect>
+          <text x="62" y="16" fill="rgba(0,240,255,0.4)" font-size="7" font-weight="600" font-family="Inter,sans-serif">REC</text>
+        </g>
+        <!-- Terminal output annotation below -->
+        <g transform="translate(30, 280)">
+          <rect width="340" height="100" rx="8" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.06)"/>
+          <rect width="340" height="18" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="17" width="340" height="1" fill="rgba(255,255,255,0.05)"/>
+          <text x="12" y="13" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">Output Annotator</text>
+          <!-- Colored ownership segments -->
+          <rect x="10" y="26" width="3" height="28" rx="1" fill="rgba(0,240,255,0.3)"/>
+          <text x="20" y="34" fill="rgba(255,255,255,0.15)" font-size="7" font-family="monospace">user input</text>
+          <rect x="10" y="58" width="3" height="28" rx="1" fill="rgba(139,92,246,0.3)"/>
+          <text x="20" y="66" fill="rgba(255,255,255,0.15)" font-size="7" font-family="monospace">claude response</text>
+          <!-- Annotation on output -->
+          <rect x="160" y="55" width="160" height="22" rx="5" fill="rgba(139,92,246,0.08)" stroke="rgba(139,92,246,0.2)" opacity="0">
+            <animate attributeName="opacity" values="0;0;0.8;0.8;0" dur="5s" begin="2s" repeatCount="indefinite"/>
+          </rect>
+          <text x="240" y="70" text-anchor="middle" fill="#8b5cf6" font-size="7" font-weight="600" font-family="Inter,sans-serif" opacity="0">
+            highlighted by user
+            <animate attributeName="opacity" values="0;0;0.6;0.6;0" dur="5s" begin="2s" repeatCount="indefinite"/>
+          </text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== SECURITY ==================== -->
+<section class="showcase reverse reveal" id="security">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag tag-red">Security</span>
+      <h2 class="showcase-title">Ship fast.<br>Stay safe.</h2>
+      <p class="showcase-sub">Supply chain scanning, isolated worktrees, sandboxed accounts. Security at every layer &mdash; not bolted on.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#ef4444;color:#ef4444"></div>
+          <div class="list-content"><h4>Supply Chain Shield</h4><p>AVCP intercepts pip/npm install and GitHub Actions. 9-step deep scan per package. Blocks malware before it lands.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Isolated Worktrees</h4><p>Each agent gets its own git worktree. No merge conflicts from concurrent development.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#00f0ff;color:#00f0ff"></div>
+          <div class="list-content"><h4>Multi-Account Sandboxing</h4><p>Per-account isolated HOME directories. Cycle accounts on rate limits. OAuth snapshots keep sessions alive.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#d946ef;color:#d946ef"></div>
+          <div class="list-content"><h4>Event Bus &amp; Audit Trail</h4><p>30+ event types. SQLite persistence, WebSocket broadcast, webhook delivery. Full audit trail.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 420" xmlns="http://www.w3.org/2000/svg">
+        <!-- Shield outline -->
+        <path d="M200,35 L325,100 L325,225 C325,310 200,380 200,380 C200,380 75,310 75,225 L75,100 Z" fill="rgba(239,68,68,0.03)" stroke="rgba(239,68,68,0.15)" stroke-width="1.5"/>
+        <path d="M200,65 L300,115 L300,215 C300,285 200,345 200,345 C200,345 100,285 100,215 L100,115 Z" fill="none" stroke="rgba(239,68,68,0.06)" stroke-width="1" stroke-dasharray="4 4"/>
+        <!-- Scan line -->
+        <rect x="75" y="0" width="250" height="3" rx="1.5" fill="rgba(239,68,68,0.4)">
+          <animate attributeName="y" values="35;380;35" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0;0.7;0.7;0" dur="3s" repeatCount="indefinite"/>
+        </rect>
+        <!-- Package: npm (safe) -->
+        <rect x="145" y="140" width="48" height="34" rx="5" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.1)"/>
+        <text x="169" y="162" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-size="10" font-weight="600" font-family="monospace">npm</text>
+        <circle cx="205" cy="157" r="9" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" dur="3s" begin="0.8s" repeatCount="indefinite"/></circle>
+        <path d="M200,157 L204,161 L212,153" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" dur="3s" begin="0.8s" repeatCount="indefinite"/></path>
+        <!-- Package: pip (safe) -->
+        <rect x="225" y="200" width="48" height="34" rx="5" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.1)"/>
+        <text x="249" y="222" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-size="10" font-weight="600" font-family="monospace">pip</text>
+        <circle cx="285" cy="217" r="9" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;0;1;1;0" dur="3s" begin="0.3s" repeatCount="indefinite"/></circle>
+        <path d="M280,217 L284,221 L292,213" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;0;1;1;0" dur="3s" begin="0.3s" repeatCount="indefinite"/></path>
+        <!-- Package: malware (blocked) -->
+        <rect x="130" y="260" width="68" height="34" rx="5" fill="rgba(239,68,68,0.04)" stroke="rgba(239,68,68,0.15)"/>
+        <text x="164" y="282" text-anchor="middle" fill="rgba(239,68,68,0.5)" font-size="10" font-weight="600" font-family="monospace">malware</text>
+        <g opacity="0"><animate attributeName="opacity" values="0;0;0;0;1;1" dur="3s" repeatCount="indefinite"/>
+          <circle cx="210" cy="277" r="9" fill="none" stroke="#ef4444" stroke-width="1.5"/>
+          <line x1="206" y1="273" x2="214" y2="281" stroke="#ef4444" stroke-width="1.5"/><line x1="214" y1="273" x2="206" y2="281" stroke="#ef4444" stroke-width="1.5"/>
+          <rect x="225" y="269" width="60" height="18" rx="4" fill="rgba(239,68,68,0.15)" stroke="rgba(239,68,68,0.3)"/>
+          <text x="255" y="282" text-anchor="middle" fill="#ef4444" font-size="8" font-weight="800" font-family="Inter,sans-serif" letter-spacing="1">BLOCKED</text>
+        </g>
+        <!-- Shield glow -->
+        <circle cx="200" cy="210" r="130" fill="none" stroke="rgba(239,68,68,0.04)" stroke-width="1"><animate attributeName="r" values="120;145;120" dur="4s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.2;0.05;0.2" dur="4s" repeatCount="indefinite"/></circle>
+        <!-- Status -->
+        <text x="200" y="330" text-anchor="middle" fill="rgba(34,197,94,0.5)" font-size="10" font-weight="800" font-family="Inter,sans-serif" letter-spacing="3" opacity="0">PROTECTED<animate attributeName="opacity" values="0;0;0;0;0.6;0.6" dur="3s" repeatCount="indefinite"/></text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ==================== STATS ==================== -->
+<section class="stats">
+  <div class="container">
+    <div style="text-align:center;margin-bottom:40px;">
+      <h2 class="reveal" style="font-size:clamp(28px,4vw,42px);font-weight:800;color:#fff;margin-bottom:8px;">Everything is automatable.</h2>
+      <p class="reveal" style="font-size:17px;color:#64748b;max-width:560px;margin:0 auto;">140+ API routes, 35+ MCP tools, 30+ event types. Every action your agents take is programmable, observable, and auditable. CLI-agnostic &mdash; Claude Code, Gemini CLI, and more to come.</p>
+    </div>
+    <div class="stats-grid reveal">
+      <div>
+        <div class="stat-val" style="color:var(--cyan)">140+</div>
+        <div class="stat-label">API Routes</div>
+      </div>
+      <div>
+        <div class="stat-val" style="color:var(--violet)">40+</div>
+        <div class="stat-label">Shortcuts</div>
+      </div>
+      <div>
+        <div class="stat-val" style="color:var(--magenta)">35+</div>
+        <div class="stat-label">MCP Tools</div>
+      </div>
+      <div>
+        <div class="stat-val" style="background:linear-gradient(135deg,#e2e8f0,#64748b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Zero</div>
+        <div class="stat-label">Cloud Dependencies</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ==================== EXTENSIBLE ==================== -->
+<section class="section">
+  <div class="container" style="text-align:center;">
+    <span class="section-tag tag-violet reveal">Extensible</span>
+    <h2 class="reveal" style="font-size:clamp(28px,4vw,42px);font-weight:800;color:#fff;margin-bottom:8px;">Plugin Marketplace. MCP Servers. More to come.</h2>
+    <p class="reveal" style="font-size:17px;color:#64748b;max-width:580px;margin:0 auto;">Install plugins from registries, attach MCP servers per session, import skills from the community. IVE is built to be extended &mdash; if it's not here yet, it will be.</p>
+    <div class="more-grid reveal" style="margin-top:48px;">
+      <span class="more-chip" style="border-color:rgba(139,92,246,0.2);color:var(--violet);">Plugin Marketplace</span>
+      <span class="more-chip" style="border-color:rgba(0,240,255,0.2);color:var(--cyan);">MCP Servers</span>
+      <span class="more-chip" style="border-color:rgba(217,70,239,0.2);color:var(--magenta);">Session Templates</span>
+      <span class="more-chip" style="border-color:rgba(0,240,255,0.2);color:var(--cyan);">System Guidelines</span>
+      <span class="more-chip" style="border-color:rgba(139,92,246,0.2);color:var(--violet);">Scratchpad</span>
+      <span class="more-chip" style="border-color:rgba(217,70,239,0.2);color:var(--magenta);">Inbox &amp; Notifications</span>
+      <span class="more-chip" style="border-color:rgba(0,240,255,0.2);color:var(--cyan);">Plan Viewer</span>
+      <span class="more-chip" style="border-color:rgba(139,92,246,0.2);color:var(--violet);">Config Viewer</span>
+      <span class="more-chip" style="border-color:rgba(217,70,239,0.2);color:var(--magenta);">Command Palette</span>
+      <span class="more-chip" style="border-color:rgba(0,240,255,0.2);color:var(--cyan);">Context Compaction</span>
+      <span class="more-chip" style="border-color:rgba(139,92,246,0.2);color:var(--violet);">Model Switching</span>
+      <span class="more-chip" style="border-color:rgba(217,70,239,0.2);color:var(--magenta);">Sound Alerts</span>
+      <span class="more-chip" style="border-color:rgba(0,240,255,0.2);color:var(--cyan);">Session Cloning</span>
+      <span class="more-chip" style="border-color:rgba(139,92,246,0.2);color:var(--violet);">History Import</span>
+      <span class="more-chip" style="border-color:rgba(217,70,239,0.2);color:var(--magenta);">Vague Prompt Detection</span>
+      <span class="more-chip" style="border-color:rgba(0,240,255,0.2);color:var(--cyan);">Excalidraw Diagrams</span>
+      <span class="more-chip" style="border-color:rgba(139,92,246,0.2);color:var(--violet);">Account Management</span>
+      <span class="more-chip" style="border-color:rgba(217,70,239,0.2);color:var(--magenta);">Usage &amp; Quota Alerts</span>
+      <span class="more-chip" style="border-color:rgba(0,240,255,0.2);color:var(--cyan);">State Management</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== CTA ==================== -->
+<section class="cta" id="get-started" style="margin-top:-60px;">
+  <div class="cta-orb"></div>
+  <h2><span class="cta-strike">Stop switching tabs.</span><span class="cta-pop">Start commanding agents.</span></h2>
+  <p class="reveal" style="font-size:20px;color:#94a3b8;">One command to install. Zero config. Runs entirely on your machine.</p>
+  <div class="hero-cta-row reveal">
+    <a href="https://github.com/" class="btn btn-primary" target="_blank" rel="noopener">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+      View on GitHub
+    </a>
+    <a href="#" class="btn btn-ghost">Read the Docs</a>
+  </div>
+  <div class="cta-cmd reveal">
+    <span class="cmd-line"><span class="cmd-dollar">$</span> git clone <span class="cmd-url">https://github.com/user/ive</span> <span class="cmd-flag">&amp;&amp;</span> cd ive</span>
+    <span class="cmd-line"><span class="cmd-dollar">$</span> <span class="cmd-run">./start.sh</span></span>
+  </div>
+</section>
+
+<!-- ==================== FOOTER ==================== -->
+<footer>
+  <svg viewBox="-30 -12 180 165" xmlns="http://www.w3.org/2000/svg">
+    <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z" fill="#00f0ff" opacity="0.3" transform="translate(-8.4,0) rotate(-7,60,120)"/>
+    <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z" fill="#8b5cf6" opacity="0.3"/>
+    <path d="M0,0 L24,0 L60,81.6 L96,0 L120,0 L60,120 Z" fill="#d946ef" opacity="0.3" transform="translate(8.4,0) rotate(7,60,120)"/>
+  </svg>
+  <p>IVE &mdash; Integrated Vibecoding Environment</p>
+</footer>
+
+<script>
+// Reveal observer (handles both .reveal elements and .showcase sections)
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.08, rootMargin: '0px 0px -30px 0px' });
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+
+// Showcase sections need their own observer for the list stagger + visual pop
+const showcaseObs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+}, { threshold: 0.15 });
+document.querySelectorAll('.showcase').forEach(el => showcaseObs.observe(el));
+
+// Strikethrough animations (statement + CTA)
+const strikeObs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); strikeObs.unobserve(e.target); } });
+}, { threshold: 0.3 });
+document.querySelectorAll('.cta, .statement').forEach(el => strikeObs.observe(el));
+
+// Scroll-driven parallax on showcase visuals
+const showcaseVisuals = document.querySelectorAll('.showcase-visual');
+const showcaseTexts = document.querySelectorAll('.showcase-text');
+let parallaxTicking = false;
+window.addEventListener('scroll', () => {
+  if (!parallaxTicking) {
+    requestAnimationFrame(() => {
+      const vh = window.innerHeight;
+      showcaseVisuals.forEach((vis, i) => {
+        const rect = vis.getBoundingClientRect();
+        const center = rect.top + rect.height / 2;
+        const offset = (center - vh / 2) / vh; // -0.5 to 0.5
+        const ty = offset * -30;
+        const rx = offset * 4;
+        vis.style.transform = 'translateY(' + ty + 'px) perspective(800px) rotateY(' + (i % 2 === 0 ? rx : -rx) + 'deg) scale(' + (vis.closest('.showcase.visible') ? 1 : 0.9) + ')';
+      });
+      showcaseTexts.forEach((txt) => {
+        const rect = txt.getBoundingClientRect();
+        const center = rect.top + rect.height / 2;
+        const offset = (center - vh / 2) / vh;
+        txt.style.transform = 'translateY(' + (offset * -15) + 'px)';
+      });
+      parallaxTicking = false;
+    });
+    parallaxTicking = true;
+  }
+}, { passive: true });
+
+// Stats counter observer
+const statsGrid = document.querySelector('.stats-grid');
+if (statsGrid) {
+  const statsObs = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); statsObs.unobserve(e.target); } });
+  }, { threshold: 0.3 });
+  statsObs.observe(statsGrid);
+}
+
+// Scroll-driven sticky video tilt
+const hv = document.querySelector('.hero-video');
+const heroWrapper = document.querySelector('.hero-wrapper');
+const scrollInd = document.querySelector('.scroll-indicator');
+let ticking = false;
+
+window.addEventListener('scroll', () => {
+  if (!ticking) {
+    requestAnimationFrame(() => {
+      const scrollY = window.scrollY;
+      const wrapH = heroWrapper ? heroWrapper.offsetHeight : window.innerHeight;
+      const viewH = window.innerHeight;
+      // How far through the extra scroll room (200vh - 100vh = 100vh of scroll)
+      const scrollRoom = wrapH - viewH;
+      const p = Math.min(Math.max(scrollY / scrollRoom, 0), 1);
+
+      // Dramatic tilt: starts flat, rotates to 45deg, scales down, fades
+      const rx = p * 45;
+      const sc = 1 - p * 0.25;
+      const op = 1 - p * p; // ease-out fade
+      const ty = p * -60; // lift up slightly as it tilts
+
+      hv.style.transform = 'perspective(900px) rotateX(' + rx + 'deg) scale(' + sc + ') translateY(' + ty + 'px)';
+      hv.style.opacity = op;
+
+      // Fade out scroll indicator quickly
+      if (scrollInd) {
+        scrollInd.style.opacity = Math.max(1 - scrollY / 100, 0);
+      }
+
+      ticking = false;
+    });
+    ticking = true;
+  }
+}, { passive: true });
+
+// Auto-play video on iOS (requires user gesture fallback)
+const vid = document.querySelector('.hero-video video');
+if (vid) {
+  vid.play().catch(() => {
+    // On iOS, autoplay may be blocked — try to play on first touch
+    document.addEventListener('touchstart', () => vid.play(), { once: true });
+    document.addEventListener('click', () => vid.play(), { once: true });
+  });
+}
+</script>
+</body>
+</html>

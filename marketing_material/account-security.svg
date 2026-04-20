@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowLg">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowCyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#00d4ff"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#f59e0b"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#ef4444"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#4ade80"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="300" rx="300" ry="180" fill="#ef4444" opacity="0.012"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Account Management &amp; Security</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Multi-Account Cycling • OAuth Sandboxing • Supply Chain Protection</text>
+
+  <!-- ═══ Account Manager (left) ═══ -->
+  <rect x="40" y="80" width="280" height="280" rx="10" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1.5"/>
+  <text x="180" y="104" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="13" font-weight="bold">Account Manager</text>
+  <text x="180" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Multiple API accounts with cooldown tracking</text>
+
+  <!-- Account cards -->
+  <rect x="56" y="134" width="248" height="44" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.8"/>
+  <circle cx="72" cy="156" r="8" fill="#4ade80" opacity="0.2" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="76" y="160" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7">1</text>
+  <text x="90" y="152" fill="#4ade80" font-family="monospace" font-size="9" font-weight="bold">Primary (Active)</text>
+  <text x="90" y="166" fill="#64748b" font-family="monospace" font-size="7">Opus • 87% quota remaining</text>
+  <rect x="248" y="146" width="46" height="14" rx="3" fill="#4ade80" opacity="0.15"/>
+  <text x="271" y="156" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="6">ACTIVE</text>
+
+  <rect x="56" y="184" width="248" height="44" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.8"/>
+  <circle cx="72" cy="206" r="8" fill="#f59e0b" opacity="0.2" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="76" y="210" text-anchor="middle" fill="#f59e0b" font-family="monospace" font-size="7">2</text>
+  <text x="90" y="202" fill="#fbbf24" font-family="monospace" font-size="9" font-weight="bold">Secondary</text>
+  <text x="90" y="216" fill="#64748b" font-family="monospace" font-size="7">Sonnet • 42% quota • cooldown 3m</text>
+  <rect x="248" y="196" width="46" height="14" rx="3" fill="#f59e0b" opacity="0.15"/>
+  <text x="271" y="206" text-anchor="middle" fill="#f59e0b" font-family="monospace" font-size="6">COOL</text>
+
+  <rect x="56" y="234" width="248" height="44" rx="4" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.8"/>
+  <circle cx="72" cy="256" r="8" fill="#8b5cf6" opacity="0.2" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="76" y="260" text-anchor="middle" fill="#8b5cf6" font-family="monospace" font-size="7">3</text>
+  <text x="90" y="252" fill="#a5b4fc" font-family="monospace" font-size="9" font-weight="bold">Tertiary</text>
+  <text x="90" y="266" fill="#64748b" font-family="monospace" font-size="7">All models • 100% quota • ready</text>
+  <rect x="248" y="246" width="46" height="14" rx="3" fill="#8b5cf6" opacity="0.15"/>
+  <text x="271" y="256" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="6">READY</text>
+
+  <!-- Cycle button -->
+  <rect x="56" y="290" width="248" height="28" rx="6" fill="#00d4ff" opacity="0.12" stroke="#00d4ff" stroke-width="0.8"/>
+  <text x="180" y="308" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="9" font-weight="bold">Cycle to Next Account</text>
+
+  <text x="180" y="340" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Auto-cycle on quota_exceeded events</text>
+  <text x="180" y="352" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Test credentials before use</text>
+
+  <!-- ═══ OAuth Sandboxing (center) ═══ -->
+  <rect x="340" y="80" width="280" height="280" rx="10" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1.5" filter="url(#glow)"/>
+  <text x="480" y="104" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="13" font-weight="bold">OAuth Sandboxing</text>
+  <text x="480" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Isolated HOME per account — no credential leaks</text>
+
+  <!-- Sandbox architecture -->
+  <rect x="356" y="138" width="248" height="44" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="480" y="158" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="9" font-weight="bold">Account A Sandbox</text>
+  <text x="480" y="172" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">~/.ive/sandboxes/a/.claude/ (snapshotted)</text>
+
+  <rect x="356" y="190" width="248" height="44" rx="4" fill="#0f1117" stroke="#8b5cf6" stroke-width="0.8"/>
+  <text x="480" y="210" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="9" font-weight="bold">Account B Sandbox</text>
+  <text x="480" y="224" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">~/.ive/sandboxes/b/.claude/ (snapshotted)</text>
+
+  <rect x="356" y="242" width="248" height="44" rx="4" fill="#0f1117" stroke="#d946ef" stroke-width="0.8"/>
+  <text x="480" y="262" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="9" font-weight="bold">Account C Sandbox</text>
+  <text x="480" y="276" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">~/.ive/sandboxes/c/.claude/ (snapshotted)</text>
+
+  <!-- Isolation indicator -->
+  <rect x="356" y="296" width="248" height="34" rx="4" fill="#4ade80" opacity="0.06" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="480" y="310" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="8" font-weight="bold">Complete Isolation</text>
+  <text x="480" y="322" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Separate HOME, symlinked dotfiles</text>
+
+  <text x="480" y="352" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">account_sandbox.py — snapshot + restore</text>
+
+  <!-- ═══ AVCP Scanner (right) ═══ -->
+  <rect x="640" y="80" width="280" height="280" rx="10" fill="#1e1f2e" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="780" y="104" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="13" font-weight="bold">AVCP Scanner</text>
+  <text x="780" y="120" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Supply Chain Security — Zero Dependencies</text>
+
+  <!-- 9-step scan -->
+  <text x="656" y="142" fill="#f87171" font-family="monospace" font-size="8" font-weight="bold">9-Step Deep Scan Pipeline:</text>
+
+  <text x="660" y="160" fill="#94a3b8" font-family="monospace" font-size="7">1. Registry metadata validation</text>
+  <text x="660" y="176" fill="#94a3b8" font-family="monospace" font-size="7">2. Download count analysis</text>
+  <text x="660" y="192" fill="#94a3b8" font-family="monospace" font-size="7">3. Author reputation check</text>
+  <text x="660" y="208" fill="#94a3b8" font-family="monospace" font-size="7">4. Typosquatting detection</text>
+  <text x="660" y="224" fill="#94a3b8" font-family="monospace" font-size="7">5. Install script inspection</text>
+  <text x="660" y="240" fill="#94a3b8" font-family="monospace" font-size="7">6. Dependency tree analysis</text>
+  <text x="660" y="256" fill="#94a3b8" font-family="monospace" font-size="7">7. Source code review</text>
+  <text x="660" y="272" fill="#94a3b8" font-family="monospace" font-size="7">8. Binary/obfuscation scan</text>
+  <text x="660" y="288" fill="#94a3b8" font-family="monospace" font-size="7">9. Network behavior analysis</text>
+
+  <!-- Ecosystem support -->
+  <rect x="656" y="300" width="248" height="34" rx="4" fill="#0f1117" stroke="#ef4444" stroke-width="0.6"/>
+  <text x="780" y="314" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="8" font-weight="bold">npm • pip • GitHub Actions • MCP</text>
+  <text x="780" y="326" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">Multi-ecosystem coverage</text>
+
+  <text x="780" y="352" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">anti-vibe-code-pwner/ — v0.3.0</text>
+
+  <!-- ═══ Hook Security Layer (bottom) ═══ -->
+  <rect x="40" y="390" width="880" height="110" rx="10" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.5" filter="url(#glow)"/>
+  <text x="480" y="414" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="14" font-weight="bold">Hook-Based Security Layer</text>
+  <text x="480" y="430" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">PreToolUse hooks intercept package installs before execution</text>
+
+  <!-- Flow -->
+  <rect x="60" y="448" width="150" height="36" rx="6" fill="#0f1117" stroke="#a5b4fc" stroke-width="0.8"/>
+  <text x="135" y="464" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="9">Agent: npm install X</text>
+  <text x="135" y="476" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">PreToolUse: Bash</text>
+
+  <line x1="210" y1="466" x2="248" y2="466" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowAmber)"/>
+
+  <rect x="250" y="448" width="150" height="36" rx="6" fill="#0f1117" stroke="#f59e0b" stroke-width="0.8"/>
+  <text x="325" y="464" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="9">AVCP Interceptor</text>
+  <text x="325" y="476" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">hook_installer.py</text>
+
+  <line x1="400" y1="466" x2="438" y2="466" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowAmber)"/>
+
+  <rect x="440" y="448" width="150" height="36" rx="6" fill="#0f1117" stroke="#ef4444" stroke-width="0.8"/>
+  <text x="515" y="464" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="9">9-Step Deep Scan</text>
+  <text x="515" y="476" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">avcp scanner</text>
+
+  <!-- Decision fork -->
+  <line x1="590" y1="452" x2="648" y2="452" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <line x1="590" y1="478" x2="648" y2="478" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrowRed)"/>
+
+  <rect x="650" y="440" width="120" height="22" rx="4" fill="#4ade80" opacity="0.1" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="710" y="454" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="8">SAFE — Allow</text>
+
+  <rect x="650" y="468" width="120" height="22" rx="4" fill="#ef4444" opacity="0.1" stroke="#ef4444" stroke-width="0.6"/>
+  <text x="710" y="482" text-anchor="middle" fill="#ef4444" font-family="monospace" font-size="8">RISK — Block</text>
+
+  <!-- Result output -->
+  <rect x="790" y="448" width="120" height="36" rx="6" fill="#0f1117" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="850" y="464" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="9">Install proceeds</text>
+  <text x="850" y="476" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="7">or agent warned</text>
+
+  <line x1="770" y1="451" x2="788" y2="460" stroke="#4ade80" stroke-width="1" opacity="0.5"/>
+  <line x1="770" y1="479" x2="788" y2="472" stroke="#ef4444" stroke-width="1" opacity="0.5"/>
+
+  <!-- ═══ Memory Sync Security ═══ -->
+  <rect x="40" y="520" width="420" height="60" rx="8" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="250" y="544" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="11" font-weight="bold">Hub-and-Spoke Memory Sync</text>
+  <text x="250" y="560" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Three-way git merge conflict resolution — never provider-to-provider</text>
+
+  <rect x="500" y="520" width="420" height="60" rx="8" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1"/>
+  <text x="710" y="544" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="11" font-weight="bold">Session-Scoped ENV</text>
+  <text x="710" y="560" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">COMMANDER_SESSION_ID gating — per-session hook isolation</text>
+
+  <!-- Footer -->
+  <text x="480" y="604" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">account_sandbox.py • hook_installer.py • anti-vibe-code-pwner/ • memory_sync.py</text>
+  <text x="480" y="632" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

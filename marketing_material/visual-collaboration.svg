@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="300" rx="350" ry="180" fill="#d946ef" opacity="0.015"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Visual Collaboration Suite</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Annotate • Screenshot • Live Preview • Browser • Voice Feedback</text>
+
+  <!-- ═══ Image Annotator (top-left) ═══ -->
+  <rect x="40" y="80" width="430" height="250" rx="10" fill="#1e1f2e" stroke="#d946ef" stroke-width="1.5"/>
+  <text x="255" y="104" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="13" font-weight="bold">Image Annotator</text>
+  <text x="255" y="118" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Canvas drawing tools — send annotated images to sessions</text>
+
+  <!-- Simulated annotated screenshot -->
+  <rect x="56" y="130" width="398" height="180" rx="6" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+
+  <!-- Mock UI elements in screenshot -->
+  <rect x="66" y="140" width="378" height="20" rx="3" fill="#1e1f2e"/>
+  <circle cx="78" cy="150" r="4" fill="#ef4444" opacity="0.5"/>
+  <circle cx="90" cy="150" r="4" fill="#f59e0b" opacity="0.5"/>
+  <circle cx="102" cy="150" r="4" fill="#4ade80" opacity="0.5"/>
+  <text x="255" y="154" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">localhost:5173</text>
+
+  <rect x="66" y="166" width="120" height="80" rx="3" fill="#1a1b26" stroke="#334155" stroke-width="0.3"/>
+  <text x="126" y="182" text-anchor="middle" fill="#475569" font-family="monospace" font-size="6">Sidebar</text>
+
+  <rect x="196" y="166" width="248" height="80" rx="3" fill="#1a1b26" stroke="#334155" stroke-width="0.3"/>
+  <text x="320" y="200" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Main Content Area</text>
+
+  <!-- Annotation: Red rectangle highlight -->
+  <rect x="190" y="162" width="260" height="90" rx="2" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="6 3"/>
+
+  <!-- Annotation: Arrow -->
+  <line x1="300" y1="255" x2="300" y2="286" stroke="#ef4444" stroke-width="2" marker-end="url(#arrowRed)"/>
+  <defs>
+    <marker id="arrowRed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#ef4444"/>
+    </marker>
+  </defs>
+
+  <!-- Annotation: Text label -->
+  <rect x="230" y="288" width="140" height="16" rx="2" fill="#ef4444" opacity="0.15"/>
+  <text x="300" y="300" text-anchor="middle" fill="#ef4444" font-family="monospace" font-size="8" font-weight="bold">Fix this layout!</text>
+
+  <!-- Tool palette -->
+  <rect x="60" y="264" width="100" height="20" rx="3" fill="#0f1117" stroke="#475569" stroke-width="0.5"/>
+  <text x="70" y="278" fill="#ef4444" font-family="monospace" font-size="8">Rect</text>
+  <text x="93" y="278" fill="#67e8f9" font-family="monospace" font-size="8">Arrow</text>
+  <text x="124" y="278" fill="#fbbf24" font-family="monospace" font-size="8">Text</text>
+
+  <!-- Send to session button -->
+  <rect x="360" y="264" width="90" height="20" rx="3" fill="#8b5cf6" opacity="0.3" stroke="#8b5cf6" stroke-width="0.5"/>
+  <text x="405" y="278" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="8">Send to AI</text>
+
+  <!-- ═══ Terminal Annotator (top-right) ═══ -->
+  <rect x="490" y="80" width="430" height="250" rx="10" fill="#1e1f2e" stroke="#00d4ff" stroke-width="1.5"/>
+  <text x="705" y="104" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="13" font-weight="bold">Terminal Annotator</text>
+  <text x="705" y="118" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Segment-level annotation by ownership — Claude vs User</text>
+
+  <!-- Simulated annotated terminal -->
+  <rect x="506" y="130" width="398" height="180" rx="6" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+
+  <!-- User segment (blue highlight) -->
+  <rect x="506" y="130" width="4" height="40" fill="#00d4ff" opacity="0.4"/>
+  <text x="520" y="148" fill="#67e8f9" font-family="monospace" font-size="8">$ Fix the login button alignment</text>
+  <text x="880" y="148" text-anchor="end" fill="#00d4ff" font-family="monospace" font-size="6" opacity="0.5">USER</text>
+
+  <!-- Claude segment (violet highlight) -->
+  <rect x="506" y="172" width="4" height="100" fill="#8b5cf6" opacity="0.4"/>
+  <text x="520" y="188" fill="#a5b4fc" font-family="monospace" font-size="8">I'll fix the button alignment by</text>
+  <text x="520" y="204" fill="#a5b4fc" font-family="monospace" font-size="8">adjusting the flex container.</text>
+  <text x="880" y="188" text-anchor="end" fill="#8b5cf6" font-family="monospace" font-size="6" opacity="0.5">CLAUDE</text>
+  <text x="520" y="224" fill="#64748b" font-family="monospace" font-size="8">Tool: Edit (LoginButton.tsx)</text>
+  <text x="520" y="240" fill="#4ade80" font-family="monospace" font-size="8">+  display: flex;</text>
+  <text x="520" y="256" fill="#4ade80" font-family="monospace" font-size="8">+  align-items: center;</text>
+
+  <!-- Annotation bubble -->
+  <rect x="700" y="268" width="196" height="30" rx="4" fill="#f59e0b" opacity="0.15" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="798" y="287" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="7">Annotate: "Should use gap instead"</text>
+
+  <!-- ═══ Screenshot Capture (bottom-left) ═══ -->
+  <rect x="40" y="350" width="280" height="140" rx="10" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="180" y="374" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="12" font-weight="bold">Screenshot Capture</text>
+  <text x="180" y="390" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Playwright-powered page screenshots</text>
+
+  <!-- Screenshot flow -->
+  <rect x="56" y="402" width="100" height="24" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="106" y="418" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">Enter URL</text>
+
+  <text x="168" y="418" fill="#475569" font-family="monospace" font-size="10">→</text>
+
+  <rect x="182" y="402" width="60" height="24" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="212" y="418" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">Snap</text>
+
+  <text x="254" y="418" fill="#475569" font-family="monospace" font-size="10">→</text>
+
+  <rect x="268" y="402" width="44" height="24" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="290" y="418" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="8">Send</text>
+
+  <text x="180" y="450" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Cmd+P — Preview Palette</text>
+  <text x="180" y="464" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Cmd+Shift+A — Annotate Terminal</text>
+  <text x="180" y="478" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Clipboard paste support</text>
+
+  <!-- ═══ Live Preview (bottom-center) ═══ -->
+  <rect x="340" y="350" width="280" height="140" rx="10" fill="#1e1f2e" stroke="#4ade80" stroke-width="1.5"/>
+  <text x="480" y="374" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="12" font-weight="bold">Live Browser Preview</text>
+  <text x="480" y="390" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Playwright Chromium — real browser in-app</text>
+
+  <!-- Mini browser -->
+  <rect x="356" y="402" width="248" height="72" rx="4" fill="#0a0a14" stroke="#334155" stroke-width="0.5"/>
+  <rect x="356" y="402" width="248" height="16" rx="4" fill="#1a1b26"/>
+  <rect x="356" y="414" width="248" height="4" fill="#1a1b26"/>
+  <rect x="366" y="406" width="160" height="8" rx="2" fill="#0f1117" stroke="#475569" stroke-width="0.3"/>
+  <text x="446" y="413" text-anchor="middle" fill="#475569" font-family="monospace" font-size="5">http://localhost:3000</text>
+
+  <text x="480" y="436" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Canvas stream + mouse/keyboard forwarding</text>
+  <text x="480" y="448" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Click, scroll, type — full interaction</text>
+  <text x="480" y="460" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7">Hold Cmd+R: voice annotate + screenshot</text>
+
+  <!-- Screenshot button -->
+  <rect x="530" y="406" width="60" height="8" rx="2" fill="#4ade80" opacity="0.3"/>
+  <text x="560" y="413" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="5">Screenshot</text>
+
+  <text x="480" y="478" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Notes panel: save voice notes → create/attach tasks</text>
+
+  <!-- ═══ Voice Mode (bottom-right) ═══ -->
+  <rect x="640" y="350" width="280" height="140" rx="10" fill="#1e1f2e" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="780" y="374" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="12" font-weight="bold">Voice Mode</text>
+  <text x="780" y="390" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Web Speech API — talk to your agents</text>
+
+  <!-- Microphone visualization -->
+  <circle cx="780" cy="430" r="22" fill="#ef4444" opacity="0.08" stroke="#ef4444" stroke-width="1"/>
+  <circle cx="780" cy="430" r="14" fill="#ef4444" opacity="0.12"/>
+  <rect x="776" y="418" width="8" height="16" rx="4" fill="#ef4444" opacity="0.8"/>
+  <line x1="780" y1="438" x2="780" y2="444" stroke="#ef4444" stroke-width="1.2" opacity="0.6"/>
+  <path d="M772,436 Q780,448 788,436" stroke="#ef4444" stroke-width="1" fill="none" opacity="0.4"/>
+
+  <!-- Voice features -->
+  <text x="780" y="466" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Quick Feature creation by voice</text>
+  <text x="780" y="478" text-anchor="middle" fill="#475569" font-family="monospace" font-size="7">Dictate prompts and feedback</text>
+
+  <!-- ═══ Pasted Images Strip (new section) ═══ -->
+  <rect x="40" y="506" width="880" height="56" rx="8" fill="#1e1f2e" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="60" y="526" fill="#fbbf24" font-family="monospace" font-size="10" font-weight="bold">Pasted Images Strip</text>
+  <text x="260" y="526" fill="#64748b" font-family="monospace" font-size="8">Paste from clipboard → thumbnails appear below terminal → click to annotate</text>
+
+  <!-- Mini thumbnail strip -->
+  <rect x="60" y="536" width="36" height="20" rx="3" fill="#0a0a14" stroke="#f59e0b" stroke-width="0.6"/>
+  <text x="78" y="550" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="5">img1</text>
+  <rect x="100" y="536" width="36" height="20" rx="3" fill="#0a0a14" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="118" y="550" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="5">img2</text>
+  <rect x="140" y="536" width="36" height="20" rx="3" fill="#0a0a14" stroke="#4ade80" stroke-width="0.6"/>
+  <text x="158" y="550" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="5">img3</text>
+  <circle cx="184" cy="540" r="4" fill="#ef4444" opacity="0.3" stroke="#ef4444" stroke-width="0.4"/>
+  <text x="184" y="543" text-anchor="middle" fill="#ef4444" font-family="monospace" font-size="5">x</text>
+  <text x="210" y="550" fill="#475569" font-family="monospace" font-size="6">← remove / click to annotate / clear all</text>
+  <text x="680" y="550" fill="#475569" font-family="monospace" font-size="7">Paths auto-typed into terminal for agent access</text>
+
+  <!-- ═══ Feature summary strip ═══ -->
+  <rect x="40" y="570" width="880" height="36" rx="8" fill="#1e1f2e" stroke="#8b5cf6" stroke-width="1" filter="url(#glow)"/>
+  <text x="480" y="592" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Paste image → See thumbnail → Click to annotate → Send to agent → Watch it fix → Preview result</text>
+
+  <!-- Footer -->
+  <text x="480" y="618" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">ImageAnnotator • TerminalAnnotator • ScreenshotAnnotator • LivePreview • VoiceInput • PasteStrip</text>
+  <text x="480" y="632" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

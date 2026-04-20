@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00f0ff"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#d946ef"/>
+    </linearGradient>
+    <linearGradient id="gh" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00f0ff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#8b5cf6" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#d946ef" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="400" fill="#04040c"/>
+
+  <!-- Ambient glow -->
+  <ellipse cx="400" cy="150" rx="200" ry="120" fill="#8b5cf6" opacity="0.06">
+    <animate attributeName="opacity" values="0.06;0.1;0.06" dur="7s" repeatCount="indefinite"/>
+    <animate attributeName="rx" values="200;220;200" dur="7s" repeatCount="indefinite"/>
+    <animate attributeName="ry" values="120;135;120" dur="7s" repeatCount="indefinite"/>
+  </ellipse>
+  <ellipse cx="400" cy="150" rx="120" ry="70" fill="#00f0ff" opacity="0.035">
+    <animate attributeName="opacity" values="0.035;0.06;0.035" dur="7s" begin="-3s" repeatCount="indefinite"/>
+  </ellipse>
+
+  <!-- ═══ ORBITAL MARK ═══ -->
+  <g transform="translate(400,150)">
+
+    <!-- Ring 1 (cyan) + orbiting dot -->
+    <g>
+      <animateTransform attributeName="transform" type="rotate"
+        from="22 0 0" to="382 0 0" dur="22s" repeatCount="indefinite"/>
+      <ellipse rx="125" ry="48" fill="none" stroke="#00f0ff" stroke-opacity="0.2" stroke-width="1.2"/>
+      <!-- dot at θ≈-25° : 125cos(-25)=113.3, 48sin(-25)=-20.3 -->
+      <circle cx="113" cy="-20" r="4" fill="#00f0ff" opacity="0.9">
+        <animate attributeName="opacity" values="0.9;0.3;0.9" dur="2.5s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="4;2;4" dur="2.5s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+
+    <!-- Ring 2 (violet) + orbiting dots -->
+    <g>
+      <animateTransform attributeName="transform" type="rotate"
+        from="-14 0 0" to="-374 0 0" dur="30s" repeatCount="indefinite"/>
+      <ellipse rx="108" ry="42" fill="none" stroke="#8b5cf6" stroke-opacity="0.15" stroke-width="1.2"/>
+      <!-- dot at θ≈155° : 108cos(155)=-97.9, 42sin(155)=17.7 -->
+      <circle cx="-98" cy="18" r="4" fill="#8b5cf6" opacity="0.85">
+        <animate attributeName="opacity" values="0.85;0.25;0.85" dur="2.5s" begin="-0.8s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="4;2;4" dur="2.5s" begin="-0.8s" repeatCount="indefinite"/>
+      </circle>
+      <!-- dot at θ≈-25° : 108cos(-25)=97.9, 42sin(-25)=-17.7 -->
+      <circle cx="98" cy="-18" r="3.5" fill="#d946ef" opacity="0.85">
+        <animate attributeName="opacity" values="0.85;0.25;0.85" dur="2.5s" begin="-1.7s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="3.5;1.8;3.5" dur="2.5s" begin="-1.7s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+
+    <!-- CONVERGENCE CORE -->
+    <g transform="translate(-44,-44)">
+      <!-- 88×88 square V: polygon(0%0%, 20%0%, 50%68%, 80%0%, 100%0%, 50%100%) -->
+      <!-- cv-a: cyan · rotate(-7°) around apex (44,88) · shift left 7% -->
+      <path d="M0,0 L17.6,0 L44,59.8 L70.4,0 L88,0 L44,88 Z"
+            fill="#00f0ff" opacity="0.78" style="mix-blend-mode:screen"
+            transform="translate(-6.2,0) rotate(-7,44,88)"/>
+      <!-- cv-b: violet · centered -->
+      <path d="M0,0 L17.6,0 L44,59.8 L70.4,0 L88,0 L44,88 Z"
+            fill="#8b5cf6" opacity="0.78" style="mix-blend-mode:screen"/>
+      <!-- cv-c: magenta · rotate(+7°) around apex · shift right -->
+      <path d="M0,0 L17.6,0 L44,59.8 L70.4,0 L88,0 L44,88 Z"
+            fill="#d946ef" opacity="0.78" style="mix-blend-mode:screen"
+            transform="translate(6.2,0) rotate(7,44,88)"/>
+
+      <!-- Apex glow layers -->
+      <circle cx="44" cy="88" r="14" fill="#00f0ff" opacity="0.06">
+        <animate attributeName="opacity" values="0.06;0.12;0.06" dur="3s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="14;18;14" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="44" cy="88" r="7" fill="#8b5cf6" opacity="0.1">
+        <animate attributeName="opacity" values="0.1;0.18;0.1" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="44" cy="88" r="2.8" fill="#fff" opacity="0.9">
+        <animate attributeName="opacity" values="0.9;0.45;0.9" dur="3s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="2.8;4;2.8" dur="3s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+
+  </g>
+
+  <!-- ═══ TYPOGRAPHY ═══ -->
+
+  <!-- IVE wordmark -->
+  <text x="400" y="292" text-anchor="middle"
+        font-family="'SF Mono','Fira Code','JetBrains Mono','Cascadia Code',Menlo,Consolas,monospace"
+        font-size="52" font-weight="800" letter-spacing="12"
+        fill="url(#g)">IVE</text>
+
+  <!-- Subtitle -->
+  <text x="400" y="320" text-anchor="middle"
+        font-family="'SF Mono','Fira Code','JetBrains Mono','Cascadia Code',Menlo,Consolas,monospace"
+        font-size="12" font-weight="400" letter-spacing="2.8"
+        fill="#6a6a8a">INTEGRATED VIBECODING ENVIRONMENT</text>
+
+  <!-- Divider -->
+  <line x1="330" y1="342" x2="470" y2="342" stroke="url(#gh)" stroke-width="1"/>
+
+  <!-- Tagline -->
+  <text x="400" y="368" text-anchor="middle"
+        font-family="'SF Mono','Fira Code','JetBrains Mono','Cascadia Code',Menlo,Consolas,monospace"
+        font-size="15" font-weight="600" letter-spacing="2.5"
+        fill="#00f0ff" opacity="0.85">HUMANITY'S LAST IDE</text>
+
+</svg>

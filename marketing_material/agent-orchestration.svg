@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#1a1b26"/>
+    </linearGradient>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowSm">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowCyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#00d4ff"/>
+    </marker>
+    <marker id="arrowViolet" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#8b5cf6"/>
+    </marker>
+    <marker id="arrowRose" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#d946ef"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#f59e0b"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#4ade80"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="640" fill="url(#bg)" rx="12"/>
+  <ellipse cx="480" cy="200" rx="250" ry="120" fill="#8b5cf6" opacity="0.025"/>
+
+  <!-- Title -->
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="'SF Mono',monospace" font-size="22" font-weight="bold">Agent Orchestration</text>
+  <text x="480" y="60" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">Commander • Tester • Documentor — Hierarchical Multi-Agent Control</text>
+
+  <!-- ═══ COMMANDER (top center) ═══ -->
+  <rect x="340" y="80" width="280" height="90" rx="10" fill="#1e1f2e" stroke="#00d4ff" stroke-width="2" filter="url(#glow)"/>
+  <text x="480" y="108" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="15" font-weight="bold">COMMANDER</text>
+  <text x="480" y="126" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Orchestrator Session — Spawns &amp; Manages Workers</text>
+  <text x="480" y="142" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="8">MCP Server: sessions, tasks, research, escalation</text>
+  <rect x="365" y="150" width="50" height="14" rx="3" fill="#0f1117" stroke="#00d4ff" stroke-width="0.6"/>
+  <text x="390" y="160" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="7">hub</text>
+
+  <!-- ═══ Worker Sessions (below commander) ═══ -->
+  <!-- Arrows from commander to workers -->
+  <line x1="380" y1="170" x2="180" y2="230" stroke="#00d4ff" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.6" marker-end="url(#arrowCyan)"/>
+  <line x1="430" y1="170" x2="380" y2="230" stroke="#00d4ff" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.6" marker-end="url(#arrowCyan)"/>
+  <line x1="530" y1="170" x2="580" y2="230" stroke="#00d4ff" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.6" marker-end="url(#arrowCyan)"/>
+  <line x1="580" y1="170" x2="780" y2="230" stroke="#00d4ff" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.6" marker-end="url(#arrowCyan)"/>
+
+  <!-- Worker 1 -->
+  <rect x="100" y="230" width="160" height="60" rx="6" fill="#1e1f2e" stroke="#a5b4fc" stroke-width="1"/>
+  <text x="180" y="254" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="10" font-weight="bold">Worker A</text>
+  <text x="180" y="270" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Claude Code — Opus</text>
+  <text x="180" y="282" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7">feature/auth-flow</text>
+
+  <!-- Worker 2 -->
+  <rect x="300" y="230" width="160" height="60" rx="6" fill="#1e1f2e" stroke="#a5b4fc" stroke-width="1"/>
+  <text x="380" y="254" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="10" font-weight="bold">Worker B</text>
+  <text x="380" y="270" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Claude Code — Sonnet</text>
+  <text x="380" y="282" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7">fix/api-validation</text>
+
+  <!-- Worker 3 -->
+  <rect x="500" y="230" width="160" height="60" rx="6" fill="#1e1f2e" stroke="#f0abfc" stroke-width="1"/>
+  <text x="580" y="254" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="10" font-weight="bold">Worker C</text>
+  <text x="580" y="270" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Gemini CLI — Flash</text>
+  <text x="580" y="282" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7">refactor/utils</text>
+
+  <!-- Worker 4 -->
+  <rect x="700" y="230" width="160" height="60" rx="6" fill="#1e1f2e" stroke="#a5b4fc" stroke-width="1"/>
+  <text x="780" y="254" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="10" font-weight="bold">Worker D</text>
+  <text x="780" y="270" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Claude Code — Haiku</text>
+  <text x="780" y="282" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="7">docs/api-reference</text>
+
+  <!-- ═══ TESTER (bottom left) ═══ -->
+  <rect x="60" y="360" width="260" height="120" rx="10" fill="#1e1f2e" stroke="#f59e0b" stroke-width="2" filter="url(#glowSm)"/>
+  <text x="190" y="388" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="14" font-weight="bold">TESTER</text>
+  <text x="190" y="404" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Automated Test Runner</text>
+
+  <!-- Test queue items -->
+  <rect x="80" y="414" width="220" height="18" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <circle cx="92" cy="423" r="3" fill="#4ade80"/>
+  <text x="100" y="427" fill="#94a3b8" font-family="monospace" font-size="8">auth-flow tests — PASSED</text>
+
+  <rect x="80" y="436" width="220" height="18" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <circle cx="92" cy="445" r="3" fill="#f59e0b"/>
+  <text x="100" y="449" fill="#94a3b8" font-family="monospace" font-size="8">api-validation tests — RUNNING</text>
+
+  <rect x="80" y="458" width="220" height="18" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <circle cx="92" cy="467" r="3" fill="#64748b"/>
+  <text x="100" y="471" fill="#94a3b8" font-family="monospace" font-size="8">utils refactor tests — QUEUED</text>
+
+  <!-- Arrow from commander to tester -->
+  <path d="M380,170 L190,355" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="5 3" opacity="0.4" fill="none" marker-end="url(#arrowAmber)"/>
+
+  <!-- ═══ DOCUMENTOR (bottom right) ═══ -->
+  <rect x="640" y="360" width="260" height="120" rx="10" fill="#1e1f2e" stroke="#d946ef" stroke-width="2" filter="url(#glowSm)"/>
+  <text x="770" y="388" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="14" font-weight="bold">DOCUMENTOR</text>
+  <text x="770" y="404" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Autonomous Documentation Agent</text>
+
+  <!-- Doc capabilities -->
+  <rect x="660" y="414" width="220" height="18" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <text x="670" y="427" fill="#f0abfc" font-family="monospace" font-size="8">Screenshots via Playwright</text>
+
+  <rect x="660" y="436" width="220" height="18" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <text x="670" y="449" fill="#f0abfc" font-family="monospace" font-size="8">GIF recording via ffmpeg</text>
+
+  <rect x="660" y="458" width="220" height="18" rx="3" fill="#0f1117" stroke="#334155" stroke-width="0.5"/>
+  <text x="670" y="471" fill="#f0abfc" font-family="monospace" font-size="8">VitePress docs site generation</text>
+
+  <!-- Arrow from commander to documentor -->
+  <path d="M580,170 L770,355" stroke="#d946ef" stroke-width="1.2" stroke-dasharray="5 3" opacity="0.4" fill="none" marker-end="url(#arrowRose)"/>
+
+  <!-- ═══ RALPH Mode (center bottom) ═══ -->
+  <rect x="340" y="370" width="280" height="100" rx="10" fill="#1e1f2e" stroke="#4ade80" stroke-width="2" filter="url(#glowSm)"/>
+  <text x="480" y="394" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="13" font-weight="bold">RALPH Mode</text>
+  <text x="480" y="410" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Autonomous Execute → Verify → Fix Loop</text>
+
+  <!-- RALPH cycle arrows -->
+  <rect x="360" y="424" width="80" height="30" rx="4" fill="#0f1117" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="400" y="443" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="9">Execute</text>
+
+  <line x1="440" y1="439" x2="458" y2="439" stroke="#475569" stroke-width="1.2" marker-end="url(#arrowGreen)"/>
+
+  <rect x="460" y="424" width="70" height="30" rx="4" fill="#0f1117" stroke="#f59e0b" stroke-width="0.8"/>
+  <text x="495" y="443" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="9">Verify</text>
+
+  <line x1="530" y1="439" x2="548" y2="439" stroke="#475569" stroke-width="1.2" marker-end="url(#arrowGreen)"/>
+
+  <rect x="550" y="424" width="56" height="30" rx="4" fill="#0f1117" stroke="#ef4444" stroke-width="0.8"/>
+  <text x="578" y="443" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="9">Fix</text>
+
+  <!-- Loop back arrow -->
+  <path d="M578,454 L578,464 L400,464 L400,454" stroke="#4ade80" stroke-width="1" stroke-dasharray="3 2" fill="none" opacity="0.5"/>
+  <text x="489" y="474" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="7" opacity="0.7">up to 20 iterations</text>
+
+  <!-- ═══ MCP Connection Lines ═══ -->
+  <rect x="60" y="510" width="840" height="54" rx="8" fill="#1a1b26" stroke="#334155" stroke-width="1"/>
+  <text x="480" y="530" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="10" font-weight="bold">MCP SERVER LAYER</text>
+  <text x="195" y="550" text-anchor="middle" fill="#67e8f9" font-family="monospace" font-size="8">mcp_server.py — Commander tools</text>
+  <text x="480" y="550" text-anchor="middle" fill="#a5b4fc" font-family="monospace" font-size="8">worker_mcp_server.py — Scoped tasks</text>
+  <text x="770" y="550" text-anchor="middle" fill="#f0abfc" font-family="monospace" font-size="8">documentor_mcp_server.py — Docs tools</text>
+
+  <!-- Footer -->
+  <text x="480" y="590" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">Hierarchical orchestration — any CLI, any model, real PTY sessions</text>
+  <text x="480" y="630" text-anchor="middle" fill="url(#brandGrad)" font-family="monospace" font-size="10" font-weight="bold">IVE — Integrated Vibecoding Environment</text>
+</svg>

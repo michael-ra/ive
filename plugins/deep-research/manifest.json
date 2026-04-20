@@ -1,0 +1,30 @@
+{
+  "name": "deep-research",
+  "version": "1.0.0",
+  "description": "Multi-angle iterative deep research with web search, content extraction, and Research DB integration. Uses CLI agents as the brain with search/extract tools as MCP.",
+  "author": "IVE",
+  "license": "MIT",
+  "categories": ["research", "search", "knowledge"],
+  "tags": ["deep-research", "web-search", "multi-engine", "iterative", "cross-domain"],
+  "source_format": "commander",
+  "security_tier": 1,
+  "components": [
+    {
+      "type": "guideline",
+      "name": "Deep Research Methodology",
+      "description": "Multi-angle iterative research methodology with cross-domain exploration and claim verification",
+      "activation": "always",
+      "file": "SKILL.md",
+      "skippable": true
+    }
+  ],
+  "mcp_server": {
+    "name": "deep-research",
+    "command": "python3",
+    "args": ["plugins/deep-research/mcp_server.py"],
+    "env": {
+      "COMMANDER_API_URL": "http://127.0.0.1:5111"
+    },
+    "description": "Search, extract, and gather tools for deep research — wraps Brave, DuckDuckGo, arXiv, Semantic Scholar, GitHub, and SearXNG"
+  }
+}
