@@ -488,12 +488,14 @@ const useStore = create((set, get) => ({
       sessions: { ...s.sessions, [session.id]: { ...session, status: 'idle' } },
       openTabs: s.openTabs.includes(session.id) ? s.openTabs : [...s.openTabs, session.id],
       activeSessionId: session.id,
+      showHome: false,
     })),
 
   openSession: (id) =>
     set((s) => ({
       openTabs: s.openTabs.includes(id) ? s.openTabs : [...s.openTabs, id],
       activeSessionId: id,
+      showHome: false,
     })),
 
   openSessionInBackground: (id) =>
@@ -523,7 +525,7 @@ const useStore = create((set, get) => ({
       }
     }),
 
-  setActiveSession: (id) => set({ activeSessionId: id }),
+  setActiveSession: (id) => set({ activeSessionId: id, showHome: false }),
 
   closeTab: (id) =>
     set((s) => {
@@ -557,6 +559,18 @@ const useStore = create((set, get) => ({
       return update
     }),
 
+  // ─── Archive & Summary ──────────────────────
+  setSessionArchived: (id, archived) =>
+    set((s) => {
+      if (!s.sessions[id]) return {}
+      return { sessions: { ...s.sessions, [id]: { ...s.sessions[id], archived: archived ? 1 : 0 } } }
+    }),
+  setSessionSummary: (id, summary) =>
+    set((s) => {
+      if (!s.sessions[id]) return {}
+      return { sessions: { ...s.sessions, [id]: { ...s.sessions[id], summary } } }
+    }),
+
   // ─── Tasks ───────────────────────────────────
   tasks: {},
   loadTasks: (tasks) => set((s) => {
@@ -587,6 +601,74 @@ const useStore = create((set, get) => ({
 
   setWs: (ws) => set({ ws }),
   setConnected: (connected) => set({ connected }),
+
+  // ─── Multiplayer Presence ──────────────────
+  peers: {},          // client_id -> { name, color, viewing_session }
+  myClientId: null,
+  myName: null,
+  myColor: null,
+
+  initIdentity: () => {
+    const ADJECTIVES = ['Cosmic', 'Swift', 'Neon', 'Lunar', 'Quiet', 'Bold', 'Vivid', 'Calm', 'Bright', 'Sharp', 'Mystic', 'Drift', 'Pixel', 'Glitch', 'Turbo']
+    const NOUNS = ['Fox', 'Owl', 'Wolf', 'Bear', 'Hawk', 'Lynx', 'Sage', 'Raven', 'Otter', 'Crane', 'Panda', 'Cobra', 'Spark', 'Atlas', 'Orbit']
+    const PEER_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#f97316', '#84cc16', '#ef4444', '#6366f1']
+    let clientId = localStorage.getItem('ive_client_id')
+    let name = localStorage.getItem('ive_client_name')
+    let color = localStorage.getItem('ive_client_color')
+    if (!clientId) {
+      clientId = crypto.randomUUID()
+      localStorage.setItem('ive_client_id', clientId)
+    }
+    if (!name) {
+      name = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)] + ' ' + NOUNS[Math.floor(Math.random() * NOUNS.length)]
+      localStorage.setItem('ive_client_name', name)
+    }
+    if (!color) {
+      color = PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)]
+      localStorage.setItem('ive_client_color', color)
+    }
+    set({ myClientId: clientId, myName: name, myColor: color })
+  },
+
+  setMyName: (name) => {
+    localStorage.setItem('ive_client_name', name)
+    set({ myName: name })
+    // Broadcast updated identity
+    const { ws, myClientId, myColor, activeSessionId } = get()
+    if (ws && ws.readyState === WebSocket.OPEN && myClientId) {
+      ws.send(JSON.stringify({ action: 'presence_update', client_id: myClientId, name, color: myColor, viewing_session: activeSessionId }))
+    }
+  },
+
+  setMyColor: (color) => {
+    localStorage.setItem('ive_client_color', color)
+    set({ myColor: color })
+    const { ws, myClientId, myName, activeSessionId } = get()
+    if (ws && ws.readyState === WebSocket.OPEN && myClientId) {
+      ws.send(JSON.stringify({ action: 'presence_update', client_id: myClientId, name: myName, color, viewing_session: activeSessionId }))
+    }
+  },
+
+  handlePresenceSnapshot: (peers) => {
+    const map = {}
+    for (const p of peers) {
+      map[p.client_id] = { name: p.name, color: p.color, viewing_session: p.viewing_session }
+    }
+    set({ peers: map })
+  },
+
+  handlePresenceJoin: (data) => set((s) => ({
+    peers: { ...s.peers, [data.client_id]: { name: data.name, color: data.color, viewing_session: null } },
+  })),
+
+  handlePresenceUpdate: (data) => set((s) => ({
+    peers: { ...s.peers, [data.client_id]: { name: data.name, color: data.color, viewing_session: data.viewing_session } },
+  })),
+
+  handlePresenceLeave: (data) => set((s) => {
+    const { [data.client_id]: _, ...rest } = s.peers
+    return { peers: rest }
+  }),
 
   stopSession: (sessionId) => {
     const { ws } = get()
@@ -707,6 +789,10 @@ const useStore = create((set, get) => ({
         })
 
         // Set local runner state from the backend response
+        const parsedSteps = typeof run.steps === 'string' ? JSON.parse(run.steps) : (run.steps || [])
+        const parsedOriginal = typeof run.original_steps === 'string' ? JSON.parse(run.original_steps || '[]') : (run.original_steps || [])
+        const parsedVars = typeof run.variables === 'string' ? JSON.parse(run.variables || '[]') : (run.variables || [])
+        const parsedVarVals = typeof run.variable_values === 'string' ? JSON.parse(run.variable_values || '{}') : (run.variable_values || {})
         set((s) => ({
           cascadeRunners: {
             ...s.cascadeRunners,
@@ -715,18 +801,19 @@ const useStore = create((set, get) => ({
               sessionId,
               cascadeId: cascade.id,
               name: cascade.name,
-              steps: JSON.parse(run.steps),
-              originalSteps: JSON.parse(run.original_steps || '[]'),
+              steps: parsedSteps,
+              originalSteps: parsedOriginal,
               currentStep: run.current_step,
-              totalSteps: JSON.parse(run.steps).length,
+              totalSteps: parsedSteps.length,
               loop: !!run.loop,
               loopReprompt: !!run.loop_reprompt,
+              autoApprovePlan: !!cascade.auto_approve,
               running: true,
               status: run.status,
               iteration: run.iteration,
               startedAt: Date.now(),
-              variables: JSON.parse(run.variables || '[]'),
-              variableValues: JSON.parse(run.variable_values || '{}'),
+              variables: parsedVars,
+              variableValues: parsedVarVals,
             },
           },
         }))
@@ -753,19 +840,17 @@ const useStore = create((set, get) => ({
     const eventType = event.type
 
     if (eventType === 'cascade_completed') {
+      // Capture runner info before deleting it from state
+      const runner = get().cascadeRunners[session_id]
+      const runnerName = runner?.name || 'Cascade'
       set((s) => {
         const next = { ...s.cascadeRunners }
-        const runner = next[session_id]
-        const name = runner?.name || 'Cascade'
-        const stepCount = runner?.totalSteps || total_steps
         delete next[session_id]
         return { cascadeRunners: next }
       })
-      // Find runner name for notification
-      const runner = get().cascadeRunners[session_id]
       get().addNotification({
         type: 'info',
-        message: `Cascade "${runner?.name || 'Cascade'}" completed (${total_steps} steps).`,
+        message: `Cascade "${runnerName}" completed (${total_steps} steps).`,
       })
       return
     }
