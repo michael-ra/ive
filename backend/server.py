@@ -37,6 +37,10 @@ pty_mgr = PTYManager()
 capture_proc = OutputCaptureProcessor()
 ws_clients: set[web.WebSocketResponse] = set()
 
+# ─── Multiplayer presence ────────────────────────────────────────────────
+# Maps client_id -> { ws, name, color, viewing_session }
+ws_peers: dict[str, dict] = {}
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -149,7 +153,8 @@ async def detect_gemini_session(session_id: str, workspace_path: str,
     try:
         data = json.loads(target_file.read_text())
         gemini_sid = data.get("sessionId", target_file.stem)
-    except Exception:
+    except Exception as e:
+        logger.debug("Gemini session file parse fallback: %s", e)
         gemini_sid = target_file.stem
 
     # Store the filename stem (used for --resume later)
@@ -454,7 +459,305 @@ async def handle_pty_exit(session_id: str, code: int):
         _fire_and_forget(analyze_session(session_id))
         clear_intent(session_id)
     except Exception:
-        pass  # advisor not critical
+        logger.debug("Session advisor cleanup skipped for %s", session_id[:8])
+    # Skill Suggester: cleanup session state
+    try:
+        from skill_suggester import clear_session as clear_skill_session
+        clear_skill_session(session_id)
+    except Exception:
+        logger.debug("Skill suggester cleanup skipped for %s", session_id[:8])
+    # Auto-distill: extract reusable artifact on clean exit
+    try:
+        _fire_and_forget(_maybe_auto_distill(session_id, code))
+    except Exception:
+        logger.debug("Auto-distill skipped for %s", session_id[:8])
+    # Auto-summary: generate short session summary on exit
+    try:
+        _fire_and_forget(_maybe_auto_summarize(session_id))
+    except Exception:
+        logger.debug("Auto-summary skipped for %s", session_id[:8])
+    # Cleanup module-level per-session state to prevent memory leaks
+    _gemini_ready.discard(session_id)
+    _trust_handled.pop(session_id, None)
+    _input_bufs.pop(session_id, None)
+    _session_turns.pop(session_id, None)
+    _input_esc.pop(session_id, None)
+    _session_workspace.pop(session_id, None)
+
+
+async def _maybe_auto_distill(session_id: str, exit_code: int):
+    """Auto-distill a session on clean exit if experimental flag is enabled.
+
+    Gate conditions:
+      - exit_code == 0 (clean exit)
+      - experimental_auto_distill == "on"
+      - 5+ conversation turns
+      - session_type is worker or default (not commander/tester/documentor)
+      - not a worktree/branch session
+    """
+    if exit_code != 0:
+        return
+
+    db = await get_db()
+    try:
+        # Check experimental flag
+        cur = await db.execute(
+            "SELECT value FROM app_settings WHERE key = 'experimental_auto_distill'"
+        )
+        row = await cur.fetchone()
+        if not row or row["value"] != "on":
+            return
+
+        # Get session info
+        cur = await db.execute(
+            """SELECT s.*, w.path AS workspace_path
+               FROM sessions s
+               LEFT JOIN workspaces w ON s.workspace_id = w.id
+               WHERE s.id = ?""",
+            (session_id,),
+        )
+        sess = await cur.fetchone()
+        if not sess:
+            return
+        sess = dict(sess)
+
+        # Gate: skip special session types
+        if sess.get("session_type") in ("commander", "tester", "documentor"):
+            return
+
+        # Gate: skip worktree/branch sessions
+        if sess.get("worktree"):
+            return
+
+        # Gate: check conversation length (need 5+ turns)
+        messages = []
+        native_sid = sess.get("native_session_id")
+        workspace_path = sess.get("workspace_path")
+        if native_sid and workspace_path:
+            jsonl_file = _get_project_dir(workspace_path) / f"{native_sid}.jsonl"
+            if jsonl_file.exists():
+                messages = read_session_messages(str(jsonl_file))
+
+        if not messages:
+            cur = await db.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            )
+            rows = await cur.fetchall()
+            messages = [dict(r) for r in rows]
+
+        if len(messages) < 5:
+            return
+
+        # Auto-detect best artifact type based on conversation content
+        conversation = _format_conversation_for_distill(messages)
+        if not conversation or len(conversation.strip()) < 100:
+            return
+
+        artifact_type = _detect_distill_type(conversation)
+        cli = sess.get("cli_type") or "claude"
+        session_name = sess.get("name") or session_id[:8]
+    finally:
+        await db.close()
+
+    # Build and launch distill job
+    prompt_template = _DISTILL_PROMPTS[artifact_type]
+    prompt = prompt_template.format(
+        conversation=conversation,
+        instructions="This is an automatic distill — extract the single most reusable artifact from the session.",
+    )
+
+    job_id = str(uuid.uuid4())
+    _background_jobs[job_id] = {
+        "type": "distill",
+        "status": "queued",
+        "session_id": session_id,
+        "artifact_type": artifact_type,
+    }
+
+    import asyncio as _asyncio
+    _asyncio.ensure_future(_run_background_llm_job(
+        job_id=job_id,
+        job_type="distill",
+        cli=cli,
+        model=None,  # use CLI default (cheapest)
+        prompt=prompt,
+        extra={
+            "session_id": session_id,
+            "session_name": session_name,
+            "artifact_type": artifact_type,
+            "auto": True,
+        },
+    ))
+    logger.info("Auto-distill started for session %s (type=%s)", session_id[:8], artifact_type)
+
+
+def _detect_distill_type(conversation: str) -> str:
+    """Heuristic to pick the best artifact type for auto-distill.
+
+    Analyzes conversation text with keyword counting — no LLM call needed.
+    """
+    text_lower = conversation.lower()
+
+    # Count correction indicators
+    corrections = sum(1 for phrase in [
+        "no, ", "not that", "actually,", "instead,", "wrong", "don't do",
+        "stop ", "that's not", "let me rephrase", "i meant",
+    ] if phrase in text_lower)
+
+    # Count multi-step workflow indicators
+    steps = sum(1 for phrase in [
+        "step 1", "step 2", "first,", "then,", "next,", "finally,",
+        "after that", "now let's", "phase 1", "phase 2",
+    ] if phrase in text_lower)
+
+    # Count convention/pattern indicators
+    patterns = sum(1 for phrase in [
+        "always ", "never ", "convention", "pattern", "style ",
+        "architecture", "structure", "naming", "format",
+    ] if phrase in text_lower)
+
+    if corrections >= 3:
+        return "guideline"  # corrections → extract rules to prevent recurrence
+    elif steps >= 4:
+        return "cascade"    # multi-step → extract as reusable cascade
+    elif patterns >= 3:
+        return "guideline"  # conventions → extract as guideline
+    else:
+        return "prompt"     # default → extract as reusable prompt template
+
+
+async def _maybe_auto_summarize(session_id: str):
+    """Generate a 1-2 sentence summary for a session on exit.
+
+    Gate: session must have 3+ conversation turns and no existing summary.
+    Digest-aware: uses task_summary/discoveries as seed context when available.
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT s.*, w.path AS workspace_path
+               FROM sessions s
+               LEFT JOIN workspaces w ON s.workspace_id = w.id
+               WHERE s.id = ?""",
+            (session_id,),
+        )
+        sess = await cur.fetchone()
+        if not sess:
+            return
+        sess = dict(sess)
+
+        # Skip if summary already exists
+        if sess.get("summary"):
+            return
+
+        # Fetch conversation messages (JSONL first, then DB)
+        messages = []
+        native_sid = sess.get("native_session_id")
+        workspace_path = sess.get("workspace_path")
+        if native_sid and workspace_path:
+            jsonl_file = _get_project_dir(workspace_path) / f"{native_sid}.jsonl"
+            if jsonl_file.exists():
+                messages = read_session_messages(str(jsonl_file))
+
+        if not messages:
+            cur2 = await db.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            )
+            rows = await cur2.fetchall()
+            messages = [dict(r) for r in rows]
+
+        if len(messages) < 3:
+            return
+
+        conversation = _format_conversation_for_distill(messages, max_chars=20_000)
+        if not conversation or len(conversation.strip()) < 50:
+            return
+
+        # Fetch session digest for extra context if available
+        digest_context = ""
+        try:
+            cur3 = await db.execute(
+                "SELECT task_summary, discoveries, decisions FROM session_digests WHERE session_id = ?",
+                (session_id,),
+            )
+            digest = await cur3.fetchone()
+            if digest:
+                parts = []
+                if digest["task_summary"]:
+                    parts.append(f"Task: {digest['task_summary']}")
+                if digest["discoveries"] and digest["discoveries"] != "[]":
+                    parts.append(f"Discoveries: {digest['discoveries']}")
+                if digest["decisions"] and digest["decisions"] != "[]":
+                    parts.append(f"Decisions: {digest['decisions']}")
+                if parts:
+                    digest_context = "\n\nWorker digest:\n" + "\n".join(parts)
+        except Exception:
+            pass
+
+        cli = sess.get("cli_type") or "claude"
+    finally:
+        await db.close()
+
+    # Generate summary via LLM
+    from llm_router import llm_call
+    try:
+        summary = await llm_call(
+            cli=cli,
+            prompt=(
+                "Summarize this coding session in 1-2 concise sentences. "
+                "Focus on what was accomplished or attempted. Be specific about the task, not generic.\n\n"
+                f"Session transcript:\n{conversation}{digest_context}"
+            ),
+            system="You are a concise summarizer. Return ONLY the 1-2 sentence summary, nothing else. No quotes, no prefix.",
+            timeout=30,
+        )
+        summary = summary.strip()
+        if not summary or len(summary) < 10:
+            return
+
+        db2 = await get_db()
+        try:
+            await db2.execute(
+                "UPDATE sessions SET summary = ? WHERE id = ?",
+                (summary, session_id),
+            )
+            await db2.commit()
+        finally:
+            await db2.close()
+
+        await broadcast({
+            "type": "session_summary",
+            "session_id": session_id,
+            "summary": summary,
+        })
+        logger.info("Auto-summary generated for session %s", session_id[:8])
+    except Exception as e:
+        logger.warning("Auto-summary failed for %s: %s", session_id[:8], e)
+
+
+async def _maybe_unarchive_on_input(session_id: str):
+    """Auto-unarchive a session when the user sends new input to it."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT archived FROM sessions WHERE id = ?", (session_id,)
+        )
+        row = await cur.fetchone()
+        if row and row["archived"]:
+            await db.execute(
+                "UPDATE sessions SET archived = 0 WHERE id = ?", (session_id,)
+            )
+            await db.commit()
+            await broadcast({
+                "type": "session_archived",
+                "session_id": session_id,
+                "archived": 0,
+            })
+            logger.info("Auto-unarchived session %s on new input", session_id[:8])
+    finally:
+        await db.close()
 
 
 # ─── Background task registry (prevents GC of fire-and-forget tasks) ──────
@@ -611,6 +914,166 @@ async def _open_original_as_tab(branch_session_id: str, original_native_id: str)
         await db.close()
 
 
+# ─── Gemini /branch — Commander-layer implementation ─────────────────────
+#
+# Gemini CLI has no native /branch.  We intercept the slash command in the
+# WebSocket input handler and implement branching ourselves: create a session
+# for the original conversation (resumable via --resume), then stop + restart
+# the current PTY fresh so it becomes the "branch."
+
+async def _maybe_handle_gemini_branch(session_id: str) -> bool:
+    """Intercept /branch for Gemini sessions (no native support).
+
+    Returns True if handled (caller should swallow the input).
+    """
+    buf = _input_bufs.get(session_id, "").strip()
+    if buf != "/branch":
+        return False
+
+    config = await get_session_config(session_id)
+    if not config or config.get("cli_type") != "gemini":
+        return False
+
+    native_sid = config.get("native_session_id")
+    if not native_sid:
+        pty_mgr.write(session_id,
+                      b"\r\n\x1b[33m[No conversation to branch \xe2\x80\x94 start chatting first]\x1b[0m\r\n")
+        return True
+
+    import uuid as _uuid
+    from hooks import _generate_branch_label
+
+    db = await get_db()
+    try:
+        # Guard: don't create duplicate
+        cur = await db.execute(
+            "SELECT id FROM sessions WHERE native_session_id = ? AND id != ?",
+            (native_sid, session_id),
+        )
+        if await cur.fetchone():
+            pty_mgr.write(session_id,
+                          b"\r\n\x1b[33m[Branch already exists for this conversation]\x1b[0m\r\n")
+            return True
+
+        new_id = str(_uuid.uuid4())
+        original_name = config["name"] or "Session"
+        branch_name = f"{original_name} (branch)"
+
+        # ── Branch group ──────────────────────────────────────────────
+        if config.get("branch_group"):
+            branch_group = config["branch_group"]
+            branch_label = config.get("branch_label", "")
+        else:
+            branch_group = str(_uuid.uuid4())
+            cur = await db.execute(
+                "SELECT DISTINCT branch_label FROM sessions "
+                "WHERE workspace_id = ? AND branch_label IS NOT NULL",
+                (config["workspace_id"],),
+            )
+            existing = {row["branch_label"] for row in await cur.fetchall()}
+            branch_label = _generate_branch_label(branch_group, existing)
+            # Tag the branch session (current)
+            await db.execute(
+                "UPDATE sessions SET branch_group = ?, branch_label = ?, name = ? WHERE id = ?",
+                (branch_group, branch_label, branch_name, session_id),
+            )
+
+        # ── Insert original session ───────────────────────────────────
+        await db.execute(
+            """INSERT INTO sessions
+               (id, workspace_id, name, model, permission_mode, effort,
+                budget_usd, system_prompt, allowed_tools, disallowed_tools,
+                add_dirs, cli_type, parent_session_id, native_session_id,
+                branch_group, branch_label)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (new_id, config["workspace_id"], original_name, config["model"],
+             config["permission_mode"], config["effort"],
+             config.get("budget_usd"), config.get("system_prompt"),
+             config.get("allowed_tools"), config.get("disallowed_tools"),
+             config.get("add_dirs"), "gemini",
+             session_id, native_sid,
+             branch_group, branch_label),
+        )
+
+        # ── Copy guidelines ───────────────────────────────────────────
+        cur = await db.execute(
+            """SELECT sg.guideline_id FROM session_guidelines sg
+               JOIN guidelines g ON g.id = sg.guideline_id
+               WHERE sg.session_id = ?""",
+            (session_id,),
+        )
+        for row in await cur.fetchall():
+            await db.execute(
+                "INSERT OR IGNORE INTO session_guidelines (session_id, guideline_id) VALUES (?, ?)",
+                (new_id, row["guideline_id"]),
+            )
+
+        # ── Copy MCP servers ─────────────────────────────────────────
+        cur = await db.execute(
+            """SELECT sm.mcp_server_id, sm.auto_approve_override FROM session_mcp_servers sm
+               JOIN mcp_servers m ON m.id = sm.mcp_server_id
+               WHERE sm.session_id = ?""",
+            (session_id,),
+        )
+        for row in await cur.fetchall():
+            await db.execute(
+                "INSERT OR IGNORE INTO session_mcp_servers "
+                "(session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, ?)",
+                (new_id, row["mcp_server_id"], row["auto_approve_override"]),
+            )
+
+        # Keep native_session_id on the branch so it resumes with full context
+        # (matches Claude's behavior: branch keeps conversation, original also preserved)
+        await db.commit()
+
+        # Fetch rows for broadcast
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (new_id,))
+        new_session = dict(await cur.fetchone())
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        updated_branch = dict(await cur.fetchone())
+    except Exception as e:
+        logger.exception("Gemini /branch failed: %s", e)
+        pty_mgr.write(session_id,
+                      b"\r\n\x1b[31m[Branch failed \xe2\x80\x94 see server log]\x1b[0m\r\n")
+        return True
+    finally:
+        await db.close()
+
+    # Write feedback to terminal
+    pty_mgr.write(session_id,
+                  f"\r\n\x1b[35m\u2442 Branched! Original conversation saved as "
+                  f"\"{original_name}\" tab.\x1b[0m\r\n".encode("utf-8"))
+
+    # Broadcast original session (opens as background tab + toast)
+    await broadcast({
+        "type": "session_created",
+        "session": new_session,
+        "auto_open": True,
+        "parent_session_id": session_id,
+        "updated_parent": updated_branch,
+    })
+    await broadcast({
+        "type": "session_renamed",
+        "session_id": session_id,
+        "name": branch_name,
+    })
+
+    # Stop PTY + auto-restart fresh (reuses switch_session_cli pattern)
+    await pty_mgr.stop_session(session_id)
+    from hooks import clear_native_id_cache
+    clear_native_id_cache(session_id)
+    await broadcast({
+        "type": "session_switched",
+        "session_id": session_id,
+        "cli_type": "gemini",
+        "model": config["model"],
+    })
+
+    logger.info("Gemini /branch: original %s, branch %s restarting fresh",
+                new_id[:8], session_id[:8])
+    return True
+
+
 # ─── Conversation turn tracking ───────────────────────────────────────────
 
 _input_bufs: dict[str, str] = {}
@@ -665,6 +1128,16 @@ def _track_input(session_id: str, raw: str):
                     ws_id = _session_workspace.get(session_id)
                     _fire_and_forget(update_intent(
                         session_id, line, source="user",
+                        workspace_id=ws_id, broadcast_fn=broadcast,
+                    ))
+                except Exception:
+                    pass
+                # Skill Suggester: push real-time suggestions
+                try:
+                    from skill_suggester import maybe_suggest_skills
+                    ws_id = _session_workspace.get(session_id)
+                    _fire_and_forget(maybe_suggest_skills(
+                        session_id, line,
                         workspace_id=ws_id, broadcast_fn=broadcast,
                     ))
                 except Exception:
@@ -998,14 +1471,26 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         # abstraction — every CLI (Claude, Gemini, future CLIs)
                         # gets the same memory entries regardless of whether
                         # the CLI has native auto-memory support.
+                        _mem_info = None
+                        _ws_id_mem = config.get("workspace_id", "")
+                        _mem_max = 4000
+                        try:
+                            from memory_sync import sync_manager as _sync_mgr
+                            _mem_settings = await _sync_mgr.get_settings(_ws_id_mem)
+                            _mem_max = _mem_settings.get("memory_max_chars", 4000)
+                        except Exception:
+                            pass
                         try:
                             from memory_manager import memory_manager
+                            _mem_entries = await memory_manager.list_entries(workspace_id=_ws_id_mem)
+                            _mem_count = len(_mem_entries) if _mem_entries else 0
                             mem_prompt = await memory_manager.export_for_prompt(
-                                workspace_id=workspace_id,
-                                max_chars=4000,
+                                workspace_id=_ws_id_mem,
+                                max_chars=_mem_max,
                             )
                             if mem_prompt:
                                 system_prompt_parts.append(mem_prompt)
+                                _mem_info = json.dumps({"count": _mem_count, "chars": len(mem_prompt)})
                         except Exception as mem_exc:
                             logger.debug("Memory injection skipped: %s", mem_exc)
 
@@ -1224,6 +1709,11 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                             "UPDATE sessions SET active_guideline_ids = ? WHERE id = ?",
                             (json.dumps(loaded_guideline_ids), session_id),
                         )
+                        # Write back memory injection metadata (mirrors active_guideline_ids)
+                        await db_gl.execute(
+                            "UPDATE sessions SET memory_injected_info = ? WHERE id = ?",
+                            (_mem_info, session_id),
+                        )
                         await db_gl.commit()
                     finally:
                         await db_gl.close()
@@ -1313,6 +1803,34 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     if style_prompt:
                         system_prompt_parts.append(style_prompt)
 
+                    # ── Auto Skill Suggestions: inject top-3 into system prompt ──
+                    try:
+                        _ask_db = await get_db()
+                        try:
+                            _ask_cur = await _ask_db.execute(
+                                "SELECT value FROM app_settings WHERE key = 'experimental_auto_skill_suggestions'"
+                            )
+                            _ask_row = await _ask_cur.fetchone()
+                        finally:
+                            await _ask_db.close()
+                        if _ask_row and _ask_row["value"] == "on":
+                            from skill_suggester import suggest_for_session
+                            # Build context from session name + purpose + existing system prompt
+                            _skill_ctx_parts = []
+                            if config.get("name"):
+                                _skill_ctx_parts.append(config["name"])
+                            if config.get("purpose"):
+                                _skill_ctx_parts.append(config["purpose"])
+                            if config.get("system_prompt"):
+                                _skill_ctx_parts.append(config["system_prompt"][:300])
+                            _skill_ctx = " ".join(_skill_ctx_parts)
+                            if _skill_ctx.strip():
+                                _skill_block = await suggest_for_session(_skill_ctx)
+                                if _skill_block:
+                                    system_prompt_parts.append(_skill_block)
+                    except Exception as _skill_err:
+                        logger.debug("Skill suggestion injection skipped: %s", _skill_err)
+
                     # ── Build CLI command via UnifiedSession ─────────────────
                     cli_type = config.get("cli_type", "claude")
                     session_obj = UnifiedSession(cli_type, config)
@@ -1333,6 +1851,42 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
                     # ── MCP servers: strategy-driven dispatch ──
                     if mcp_servers_for_session:
+                        # In frozen (compiled) mode, rewrite builtin MCP servers
+                        # to use compiled binaries instead of python3 + script.py
+                        from resource_path import is_frozen as _is_frozen
+                        if _is_frozen():
+                            from config import (MCP_SERVER_PATH as _MCP_PATH,
+                                                WORKER_MCP_SERVER_PATH as _WORKER_PATH,
+                                                DOCUMENTOR_MCP_SERVER_PATH as _DOC_PATH,
+                                                DEEP_RESEARCH_MCP_PATH as _RESEARCH_PATH)
+                            _FROZEN_MCP_MAP = {
+                                "builtin-commander": str(_MCP_PATH),
+                                "builtin-worker-board": str(_WORKER_PATH),
+                                "builtin-documentor": str(_DOC_PATH),
+                                "builtin-deep-research": str(_RESEARCH_PATH),
+                            }
+                            # Also match by .py script path for non-builtin IDs
+                            # Sorted longest-first so "worker_mcp_server.py" matches
+                            # before the shorter "mcp_server.py" substring.
+                            _FROZEN_PATH_MAP = [
+                                ("documentor_mcp_server.py", str(_DOC_PATH)),
+                                ("worker_mcp_server.py", str(_WORKER_PATH)),
+                                ("deep-research/mcp_server.py", str(_RESEARCH_PATH)),
+                                ("mcp_server.py", str(_MCP_PATH)),
+                            ]
+                            for srv in mcp_servers_for_session:
+                                if srv["id"] in _FROZEN_MCP_MAP:
+                                    srv["command"] = _FROZEN_MCP_MAP[srv["id"]]
+                                    srv["args"] = []
+                                else:
+                                    # Match by script path in args (longest first)
+                                    args_str = " ".join(str(a) for a in srv.get("args", []))
+                                    for script, binary in _FROZEN_PATH_MAP:
+                                        if script in args_str:
+                                            srv["command"] = binary
+                                            srv["args"] = []
+                                            break
+
                         auto_approved_names = []
                         for srv in mcp_servers_for_session:
                             resolved_env = {}
@@ -1581,6 +2135,17 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     session_id = data.get("session_id")
                     input_data = data.get("data", "")
                     if session_id and input_data:
+                        # ── Gemini /branch interception ──
+                        # Gemini has no native /branch — intercept on Enter
+                        # and handle it at the Commander layer.
+                        if "\r" in input_data or "\n" in input_data:
+                            try:
+                                if await _maybe_handle_gemini_branch(session_id):
+                                    _input_bufs[session_id] = ""
+                                    continue
+                            except Exception as _br_err:
+                                logger.warning("Gemini /branch interception failed: %s", _br_err)
+
                         # Check for @prompt: token expansion on Enter.
                         # Wrapped in try/except so any bug degrades to the
                         # normal passthrough — never blocks terminal input.
@@ -1594,6 +2159,11 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         else:
                             pty_mgr.write(session_id, input_data.encode("utf-8"))
                             _track_input(session_id, input_data)
+                        # Auto-unarchive: if user sends input to an archived session
+                        try:
+                            _fire_and_forget(_maybe_unarchive_on_input(session_id))
+                        except Exception:
+                            pass
                         # Detect /rename command → re-scan session for updated slug
                         if "/rename" in input_data:
                             cfg = await get_session_config(session_id)
@@ -1709,10 +2279,92 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         import preview_browser
                         await preview_browser.stop_preview(pid)
 
+                # ── Multiplayer presence ──────────────────────
+                elif action == "hello":
+                    client_id = data.get("client_id")
+                    name = data.get("name", "Anonymous")
+                    color = data.get("color", "#6366f1")
+                    if client_id:
+                        ws_peers.pop(client_id, None)
+                        ws_peers[client_id] = {
+                            "ws": ws,
+                            "name": name,
+                            "color": color,
+                            "viewing_session": None,
+                        }
+                        # Send snapshot of existing peers to the joiner
+                        snapshot = []
+                        for cid, info in ws_peers.items():
+                            if cid != client_id:
+                                snapshot.append({
+                                    "client_id": cid,
+                                    "name": info["name"],
+                                    "color": info["color"],
+                                    "viewing_session": info["viewing_session"],
+                                })
+                        await ws.send_json({
+                            "type": "presence_snapshot",
+                            "peers": snapshot,
+                        })
+                        # Broadcast join to everyone else
+                        join_msg = json.dumps({
+                            "type": "presence_join",
+                            "client_id": client_id,
+                            "name": name,
+                            "color": color,
+                        })
+                        for other_ws in ws_clients:
+                            if other_ws is not ws:
+                                try:
+                                    await other_ws.send_str(join_msg)
+                                except (ConnectionResetError, ConnectionError, RuntimeError):
+                                    pass
+
+                elif action == "presence_update":
+                    client_id = data.get("client_id")
+                    if client_id and client_id in ws_peers:
+                        if "viewing_session" in data:
+                            ws_peers[client_id]["viewing_session"] = data["viewing_session"]
+                        if "name" in data:
+                            ws_peers[client_id]["name"] = data["name"]
+                        if "color" in data:
+                            ws_peers[client_id]["color"] = data["color"]
+                        info = ws_peers[client_id]
+                        update_msg = json.dumps({
+                            "type": "presence_update",
+                            "client_id": client_id,
+                            "name": info["name"],
+                            "color": info["color"],
+                            "viewing_session": info["viewing_session"],
+                        })
+                        for other_ws in ws_clients:
+                            if other_ws is not ws:
+                                try:
+                                    await other_ws.send_str(update_msg)
+                                except (ConnectionResetError, ConnectionError, RuntimeError):
+                                    pass
+
             elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
                 break
     finally:
         ws_clients.discard(ws)
+        # Clean up peer presence and notify others
+        leaving_id = None
+        for cid, info in ws_peers.items():
+            if info["ws"] is ws:
+                leaving_id = cid
+                break
+        if leaving_id:
+            ws_peers.pop(leaving_id, None)
+            leave_msg = json.dumps({
+                "type": "presence_leave",
+                "client_id": leaving_id,
+            })
+            for other_ws in ws_clients:
+                try:
+                    await other_ws.send_str(leave_msg)
+                except (ConnectionResetError, ConnectionError, RuntimeError):
+                    pass
         logger.info(f"WebSocket disconnected ({len(ws_clients)} total)")
 
     return ws
@@ -2038,12 +2690,43 @@ async def create_session(request: web.Request) -> web.Response:
                         )
                         mcp_rows = await cur_mcp.fetchall()
                         if mcp_rows:
+                            # Frozen-mode MCP binary rewriting (same as start_pty)
+                            from resource_path import is_frozen as _auto_is_frozen
+                            _auto_frozen_map = {}
+                            _auto_frozen_paths = []
+                            if _auto_is_frozen():
+                                from config import (MCP_SERVER_PATH as _aMCP, WORKER_MCP_SERVER_PATH as _aWRK,
+                                                    DOCUMENTOR_MCP_SERVER_PATH as _aDOC, DEEP_RESEARCH_MCP_PATH as _aRES)
+                                _auto_frozen_map = {
+                                    "builtin-commander": str(_aMCP), "builtin-worker-board": str(_aWRK),
+                                    "builtin-documentor": str(_aDOC), "builtin-deep-research": str(_aRES),
+                                }
+                                _auto_frozen_paths = [
+                                    ("documentor_mcp_server.py", str(_aDOC)),
+                                    ("worker_mcp_server.py", str(_aWRK)),
+                                    ("deep-research/mcp_server.py", str(_aRES)),
+                                    ("mcp_server.py", str(_aMCP)),
+                                ]
+
                             mcp_json = {"mcpServers": {}}
                             auto_approved_names = []
                             for row_mcp in mcp_rows:
                                 srv = dict(row_mcp)
                                 srv_args = json.loads(srv["args"] or "[]")
                                 srv_env = json.loads(srv["env"] or "{}")
+
+                                # Rewrite to compiled binaries in frozen mode
+                                if srv["id"] in _auto_frozen_map:
+                                    srv["command"] = _auto_frozen_map[srv["id"]]
+                                    srv_args = []
+                                elif _auto_frozen_paths:
+                                    args_str = " ".join(str(a) for a in srv_args)
+                                    for script, binary in _auto_frozen_paths:
+                                        if script in args_str:
+                                            srv["command"] = binary
+                                            srv_args = []
+                                            break
+
                                 resolved_env = {}
                                 for ek, ev in srv_env.items():
                                     resolved_env[ek] = (
@@ -3033,6 +3716,103 @@ async def _run_background_llm_job(
         })
 
 
+async def summarize_session(request: web.Request) -> web.Response:
+    """Generate or regenerate a short session summary on demand."""
+    session_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT s.*, w.path AS workspace_path
+               FROM sessions s
+               LEFT JOIN workspaces w ON s.workspace_id = w.id
+               WHERE s.id = ?""",
+            (session_id,),
+        )
+        sess = await cur.fetchone()
+        if not sess:
+            return web.json_response({"error": "session not found"}, status=404)
+        sess = dict(sess)
+
+        # Fetch conversation messages (JSONL first, then DB, then terminal buffer)
+        messages = []
+        native_sid = sess.get("native_session_id")
+        workspace_path = sess.get("workspace_path")
+        if native_sid and workspace_path:
+            jsonl_file = _get_project_dir(workspace_path) / f"{native_sid}.jsonl"
+            if jsonl_file.exists():
+                messages = read_session_messages(str(jsonl_file))
+
+        if not messages:
+            cur2 = await db.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            )
+            rows = await cur2.fetchall()
+            messages = [dict(r) for r in rows]
+
+        if messages:
+            conversation = _format_conversation_for_distill(messages, max_chars=20_000)
+        else:
+            conversation = capture_proc.get_buffer(session_id, 200)
+
+        if not conversation or len(conversation.strip()) < 50:
+            return web.json_response({"error": "not enough content to summarize"}, status=400)
+
+        # Fetch session digest for extra context
+        digest_context = ""
+        try:
+            cur3 = await db.execute(
+                "SELECT task_summary, discoveries, decisions FROM session_digests WHERE session_id = ?",
+                (session_id,),
+            )
+            digest = await cur3.fetchone()
+            if digest:
+                parts = []
+                if digest["task_summary"]:
+                    parts.append(f"Task: {digest['task_summary']}")
+                if digest["discoveries"] and digest["discoveries"] != "[]":
+                    parts.append(f"Discoveries: {digest['discoveries']}")
+                if parts:
+                    digest_context = "\n\nWorker digest:\n" + "\n".join(parts)
+        except Exception:
+            pass
+
+        cli = sess.get("cli_type") or "claude"
+    finally:
+        await db.close()
+
+    from llm_router import llm_call
+    summary = await llm_call(
+        cli=cli,
+        prompt=(
+            "Summarize this coding session in 1-2 concise sentences. "
+            "Focus on what was accomplished or attempted. Be specific about the task, not generic.\n\n"
+            f"Session transcript:\n{conversation}{digest_context}"
+        ),
+        system="You are a concise summarizer. Return ONLY the 1-2 sentence summary, nothing else. No quotes, no prefix.",
+        timeout=30,
+    )
+    summary = summary.strip()
+
+    db2 = await get_db()
+    try:
+        await db2.execute(
+            "UPDATE sessions SET summary = ? WHERE id = ?",
+            (summary, session_id),
+        )
+        await db2.commit()
+    finally:
+        await db2.close()
+
+    await broadcast({
+        "type": "session_summary",
+        "session_id": session_id,
+        "summary": summary,
+    })
+
+    return web.json_response({"summary": summary})
+
+
 async def distill_session(request: web.Request) -> web.Response:
     """Launch a background job to extract a reusable artifact from a session."""
     session_id = request.match_info["id"]
@@ -3059,7 +3839,8 @@ async def distill_session(request: web.Request) -> web.Response:
     db = await get_db()
     try:
         cur2 = await db.execute(
-            """SELECT s.native_session_id, s.cli_type, w.path AS workspace_path
+            """SELECT s.native_session_id, s.cli_type, s.workspace_id,
+                      w.path AS workspace_path
                FROM sessions s
                LEFT JOIN workspaces w ON s.workspace_id = w.id
                WHERE s.id = ?""",
@@ -3068,19 +3849,25 @@ async def distill_session(request: web.Request) -> web.Response:
         sess_row = await cur2.fetchone()
 
         # 1) Try JSONL — full conversation history for live/exited sessions
+        ws_id = None
         if sess_row:
             native_sid = sess_row["native_session_id"]
             workspace_path = sess_row["workspace_path"]
+            ws_id = sess_row["workspace_id"]
             if native_sid and workspace_path:
                 jsonl_file = _get_project_dir(workspace_path) / f"{native_sid}.jsonl"
                 if jsonl_file.exists():
                     messages = read_session_messages(str(jsonl_file))
 
-            # If native_session_id wasn't detected yet, scan for most recent
-            if not messages and workspace_path:
+            # If native_session_id wasn't detected yet, scan for most recent.
+            # Only do this for live/recently-exited sessions where the hook
+            # hasn't populated native_session_id yet — NOT for sessions that
+            # never had a PTY (e.g. test/seeded sessions), because the scan
+            # would grab a random recent JSONL from the workspace.
+            if not messages and workspace_path and native_sid:
                 project_dir = _get_project_dir(workspace_path)
                 if project_dir.exists():
-                    cli_type = sess_row.get("cli_type") or "claude"
+                    cli_type = sess_row["cli_type"] or "claude"
                     glob_pat = get_profile(cli_type).session_file_pattern
                     candidates = sorted(
                         project_dir.glob(glob_pat),
@@ -3520,7 +4307,8 @@ async def update_session(request: web.Request) -> web.Response:
                    "system_prompt", "allowed_tools", "disallowed_tools",
                    "add_dirs", "agent", "worktree", "mcp_config", "scratchpad",
                    "account_id", "native_session_id", "native_slug", "auto_approve_mcp", "cli_type",
-                   "plan_model", "execute_model", "auto_approve_plan", "output_style", "tags")
+                   "plan_model", "execute_model", "auto_approve_plan", "output_style", "tags",
+                   "archived", "summary")
         fields, values = [], []
         for key in allowed:
             if key in body:
@@ -3537,6 +4325,19 @@ async def update_session(request: web.Request) -> web.Response:
             f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?", values
         )
         await db.commit()
+        # Broadcast archive/summary state changes to all connected clients
+        if "archived" in body:
+            await broadcast({
+                "type": "session_archived",
+                "session_id": session_id,
+                "archived": body["archived"],
+            })
+        if "summary" in body:
+            await broadcast({
+                "type": "session_summary",
+                "session_id": session_id,
+                "summary": body["summary"],
+            })
         cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = await cur.fetchone()
         return web.json_response(dict(row))
@@ -5136,10 +5937,14 @@ async def paste_image(request: web.Request) -> web.Response:
 async def serve_paste(request: web.Request) -> web.Response:
     from config import DATA_DIR
     filename = request.match_info["filename"]
-    filepath = DATA_DIR / "pastes" / filename
-    if not filepath.exists():
+    base_dir = (DATA_DIR / "pastes").resolve()
+    filepath = (base_dir / filename).resolve()
+    if not filepath.is_relative_to(base_dir):
+        return web.json_response({"error": "invalid path"}, status=400)
+    try:
+        return web.FileResponse(filepath)
+    except (FileNotFoundError, IsADirectoryError):
         return web.json_response({"error": "not found"}, status=404)
-    return web.FileResponse(filepath)
 
 
 # ─── REST: Attachments ────────────────────────────────────────────────
@@ -5188,11 +5993,14 @@ async def serve_attachment(request: web.Request) -> web.Response:
     task_id = request.match_info["task_id"]
     filename = request.match_info["filename"]
 
-    filepath = ATTACHMENTS_DIR / task_id / filename
-    if not filepath.exists():
+    base_dir = ATTACHMENTS_DIR.resolve()
+    filepath = (base_dir / task_id / filename).resolve()
+    if not filepath.is_relative_to(base_dir):
+        return web.json_response({"error": "invalid path"}, status=400)
+    try:
+        return web.FileResponse(filepath)
+    except (FileNotFoundError, IsADirectoryError):
         return web.json_response({"error": "not found"}, status=404)
-
-    return web.FileResponse(filepath)
 
 
 async def list_attachments(request: web.Request) -> web.Response:
@@ -5509,15 +6317,26 @@ async def open_in_ide(request: web.Request) -> web.Response:
     workspace_id = body.get("workspace_id")
     line = body.get("line")
 
-    if not file_path or not workspace_id:
+    if not file_path or not workspace_id or not isinstance(file_path, str):
         return web.json_response({"error": "file and workspace_id required"}, status=400)
+
+    # Validate line number
+    if line is not None:
+        try:
+            line = int(line)
+            if line < 1 or line > 1_000_000:
+                line = None
+        except (ValueError, TypeError):
+            line = None
 
     ws_path = await _get_workspace_path(workspace_id)
     if not ws_path:
         return web.json_response({"error": "workspace not found"}, status=404)
 
     import os
-    full_path = os.path.join(ws_path, file_path)
+    full_path = os.path.normpath(os.path.join(ws_path, file_path))
+    if not full_path.startswith(os.path.normpath(ws_path) + os.sep) and full_path != os.path.normpath(ws_path):
+        return web.json_response({"error": "invalid path"}, status=400)
     if not os.path.exists(full_path):
         return web.json_response({"error": "file not found"}, status=404)
 
@@ -5682,6 +6501,10 @@ async def sync_workspace_memory(request: web.Request) -> web.Response:
         workspace_id, ws_path,
         source_cli=body.get("source_cli"),
     )
+    # After successful sync, also push Commander memory entries to CLI native format
+    if result.status == "synced":
+        import asyncio as _aio
+        _aio.create_task(_sync_memory_to_cli(workspace_id))
     return web.json_response(dataclasses.asdict(result))
 
 
@@ -5749,6 +6572,21 @@ async def get_workspace_auto_memory(request: web.Request) -> web.Response:
 
 # ─── REST: Memory Entries (Commander-owned auto-memory) ──────────────
 
+
+async def _sync_memory_to_cli(workspace_id: str | None):
+    """Background task: write Commander memory entries back to CLI native format."""
+    if not workspace_id:
+        return
+    try:
+        ws_path = await _get_workspace_path(workspace_id)
+        if not ws_path:
+            return
+        from memory_manager import memory_manager
+        await memory_manager.sync_to_claude_memory(ws_path, workspace_id=workspace_id)
+    except Exception as exc:
+        logger.debug("sync_to_claude_memory failed: %s", exc)
+
+
 async def list_memory_entries(request: web.Request) -> web.Response:
     """GET /api/memory — list entries, optionally filtered."""
     from memory_manager import memory_manager
@@ -5781,6 +6619,8 @@ async def create_memory_entry(request: web.Request) -> web.Response:
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
     entry = await memory_manager.get(entry_id)
+    import asyncio as _aio
+    _aio.create_task(_sync_memory_to_cli(body.get("workspace_id")))
     return web.json_response(entry, status=201)
 
 
@@ -5796,6 +6636,8 @@ async def update_memory_entry(request: web.Request) -> web.Response:
     if not found:
         return web.json_response({"error": "not found"}, status=404)
     entry = await memory_manager.get(entry_id)
+    import asyncio as _aio
+    _aio.create_task(_sync_memory_to_cli(entry.get("workspace_id") if entry else None))
     return web.json_response(entry)
 
 
@@ -5803,9 +6645,13 @@ async def delete_memory_entry(request: web.Request) -> web.Response:
     """DELETE /api/memory/{id}."""
     from memory_manager import memory_manager
     entry_id = request.match_info["id"]
+    # Fetch workspace_id before deletion for sync
+    existing = await memory_manager.get(entry_id)
     found = await memory_manager.delete(entry_id)
     if not found:
         return web.json_response({"error": "not found"}, status=404)
+    import asyncio as _aio
+    _aio.create_task(_sync_memory_to_cli(existing.get("workspace_id") if existing else None))
     return web.json_response({"ok": True})
 
 
@@ -5831,9 +6677,9 @@ async def import_memory_from_cli(request: web.Request) -> web.Response:
     workspace_path = body.get("workspace_path")
 
     if not workspace_path and workspace_id:
-        ws_path, err = await _get_workspace_path(workspace_id)
-        if err:
-            return err
+        ws_path = await _get_workspace_path(workspace_id)
+        if not ws_path:
+            return web.json_response({"error": "workspace not found"}, status=404)
         workspace_path = ws_path
 
     if not workspace_path:
@@ -6415,6 +7261,333 @@ async def trigger_docs_build(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+# ─── REST: Observatory ───────────────────────────────────────────────
+
+async def list_observatory_findings(request: web.Request) -> web.Response:
+    """GET /api/observatory/findings"""
+    import observatory
+    params = {
+        "workspace_id": request.query.get("workspace_id"),
+        "source": request.query.get("source"),
+        "status": request.query.get("status"),
+        "min_score": float(request.query.get("min_score", 0)),
+    }
+    params = {k: v for k, v in params.items() if v}
+    findings = await observatory.get_findings(**params)
+    return web.json_response(findings)
+
+
+async def update_observatory_finding(request: web.Request) -> web.Response:
+    """PUT /api/observatory/findings/{id}"""
+    import observatory
+    finding_id = request.match_info["id"]
+    body = await request.json()
+    result = await observatory.update_finding(finding_id, body)
+    if not result:
+        return web.json_response({"error": "not found or no valid fields"}, status=404)
+    return web.json_response(result)
+
+
+async def delete_observatory_finding(request: web.Request) -> web.Response:
+    """DELETE /api/observatory/findings/{id}"""
+    import observatory
+    finding_id = request.match_info["id"]
+    ok = await observatory.delete_finding(finding_id)
+    if not ok:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def promote_observatory_finding(request: web.Request) -> web.Response:
+    """POST /api/observatory/findings/{id}/promote"""
+    import observatory
+    finding_id = request.match_info["id"]
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        return web.json_response({"error": "workspace_id required"}, status=400)
+    result = await observatory.promote_to_task(finding_id, workspace_id)
+    if not result:
+        return web.json_response({"error": "finding not found"}, status=404)
+    return web.json_response(result)
+
+
+async def list_observatory_scans(request: web.Request) -> web.Response:
+    """GET /api/observatory/scans"""
+    import observatory
+    source = request.query.get("source")
+    scans = await observatory.get_scans(source)
+    return web.json_response(scans)
+
+
+async def trigger_observatory_scan(request: web.Request) -> web.Response:
+    """POST /api/observatory/scan"""
+    import observatory
+    body = await request.json()
+    source = body.get("source")  # None or "all" = scan all sources
+    workspace_id = body.get("workspace_id")
+    mode = body.get("mode", "both")
+    keywords = body.get("keywords")
+
+    sources = [source] if source and source != "all" else ["github", "producthunt", "hackernews"]
+
+    # Run scan(s) in background
+    async def _run():
+        for src in sources:
+            try:
+                await observatory.run_scan(src, workspace_id, mode, keywords)
+            except Exception as e:
+                logger.error("Observatory scan failed for %s: %s", src, e)
+
+    _fire_and_forget(_run())
+    return web.json_response({"ok": True, "sources": sources, "status": "started"})
+
+
+async def get_observatory_settings(request: web.Request) -> web.Response:
+    """GET /api/observatory/settings"""
+    import observatory
+    workspace_id = request.query.get("workspace_id")
+    rows = await observatory.get_source_settings(workspace_id)
+    # Restructure as { sources: { github: {...}, producthunt: {...}, ... } }
+    sources = {}
+    for row in rows:
+        src = row.get("source")
+        if src:
+            kw = row.get("keywords", "[]")
+            # Parse JSON keywords array into comma-separated string for UI
+            try:
+                kw_list = json.loads(kw) if isinstance(kw, str) else kw
+                kw_str = ", ".join(kw_list) if isinstance(kw_list, list) else str(kw)
+            except (json.JSONDecodeError, TypeError):
+                kw_str = str(kw) if kw else ""
+            sources[src] = {
+                "enabled": bool(row.get("enabled", 0)),
+                "interval_hours": row.get("interval_hours", 24),
+                "mode": row.get("mode", "both"),
+                "keywords": kw_str,
+            }
+    return web.json_response({"sources": sources})
+
+
+async def update_observatory_settings(request: web.Request) -> web.Response:
+    """PUT /api/observatory/settings"""
+    import observatory
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+
+    # Support batch format: { sources: { github: {...}, producthunt: {...} } }
+    sources = body.get("sources")
+    if sources and isinstance(sources, dict):
+        results = {}
+        for source, cfg in sources.items():
+            result = await observatory.update_source_settings(workspace_id, source, cfg)
+            results[source] = result
+        return web.json_response(results)
+
+    # Single source format: { source: "github", enabled: true, ... }
+    source = body.get("source")
+    if not source:
+        return web.json_response({"error": "source or sources required"}, status=400)
+    result = await observatory.update_source_settings(workspace_id, source, body)
+    return web.json_response(result)
+
+
+async def get_observatory_api_keys(request: web.Request) -> web.Response:
+    """GET /api/observatory/api-keys — (legacy) redirects to system API keys."""
+    import api_keys
+    status = await api_keys.get_all_status()
+    return web.json_response(status)
+
+
+async def set_observatory_api_key(request: web.Request) -> web.Response:
+    """PUT /api/observatory/api-keys — (legacy) redirects to system API keys."""
+    import api_keys
+    body = await request.json()
+    name = body.get("name")
+    value = body.get("value", "")
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+    if not value:
+        await api_keys.delete(name)
+    else:
+        ok = await api_keys.save(name, value)
+        if not ok:
+            return web.json_response({"error": f"unknown key: {name}"}, status=400)
+    status = await api_keys.get_all_status()
+    return web.json_response(status)
+
+
+async def test_observatory_api_key(request: web.Request) -> web.Response:
+    """POST /api/observatory/api-keys/test — (legacy) redirects to system test."""
+    return await test_api_key(request)
+
+
+# ── System-wide API key management ───────────────────────────────────
+
+async def list_api_keys(request: web.Request) -> web.Response:
+    """GET /api/api-keys — status of all optional API keys."""
+    import api_keys
+    status = await api_keys.get_all_status()
+    return web.json_response(status)
+
+
+async def save_api_key(request: web.Request) -> web.Response:
+    """PUT /api/api-keys — save or delete an API key."""
+    import api_keys
+    body = await request.json()
+    name = body.get("name")
+    value = body.get("value", "")
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+    if not value:
+        await api_keys.delete(name)
+    else:
+        ok = await api_keys.save(name, value)
+        if not ok:
+            return web.json_response({"error": f"unknown key: {name}"}, status=400)
+    status = await api_keys.get_all_status()
+    return web.json_response(status)
+
+
+async def test_api_key(request: web.Request) -> web.Response:
+    """POST /api/api-keys/test — validate an API key against its service."""
+    import api_keys
+    body = await request.json()
+    name = body.get("name")
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+
+    key = await api_keys.resolve(name)
+    if not key:
+        return web.json_response({"ok": False, "error": "no key configured"})
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            if name == "github":
+                async with session.get(
+                    "https://api.github.com/rate_limit",
+                    headers={"Authorization": f"token {key}", "Accept": "application/vnd.github.v3+json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        limit = data.get("rate", {}).get("limit", 0)
+                        remaining = data.get("rate", {}).get("remaining", 0)
+                        return web.json_response({"ok": True, "rate_limit": limit, "remaining": remaining})
+                    return web.json_response({"ok": False, "error": f"HTTP {resp.status}"})
+
+            elif name == "producthunt":
+                query = '{ viewer { id } }'
+                async with session.post(
+                    "https://api.producthunt.com/v2/api/graphql",
+                    json={"query": query},
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return web.json_response({"ok": resp.status == 200, "status": resp.status})
+
+            elif name == "brave":
+                async with session.get(
+                    "https://api.search.brave.com/res/v1/web/search?q=test&count=1",
+                    headers={"Accept": "application/json", "X-Subscription-Token": key},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return web.json_response({"ok": resp.status == 200, "status": resp.status})
+
+            elif name == "anthropic":
+                async with session.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return web.json_response({"ok": resp.status == 200, "status": resp.status})
+
+            elif name == "google":
+                async with session.get(
+                    f"https://generativelanguage.googleapis.com/v1beta/models?key={key}",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return web.json_response({"ok": resp.status == 200, "status": resp.status})
+
+            elif name == "huggingface":
+                async with session.get(
+                    "https://huggingface.co/api/whoami-v2",
+                    headers={"Authorization": f"Bearer {key}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return web.json_response({"ok": resp.status == 200, "status": resp.status})
+
+            elif name == "searxng":
+                # SearXNG is a URL, not a token — test connectivity
+                url = key.rstrip("/") + "/search?q=test&format=json&engines=duckduckgo"
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return web.json_response({"ok": resp.status == 200, "status": resp.status})
+
+        return web.json_response({"ok": False, "error": "unknown service"})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)})
+
+
+async def create_observatorist(request: web.Request) -> web.Response:
+    """POST /api/workspaces/{id}/observatorist — Create or return the Observatorist session."""
+    import observatory
+    workspace_id = request.match_info["id"]
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+        ws = await cur.fetchone()
+        if not ws:
+            return web.json_response({"error": "workspace not found"}, status=404)
+
+        # Check for existing observatorist session
+        cur = await db.execute(
+            "SELECT * FROM sessions WHERE workspace_id = ? AND session_type = 'observatorist' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (workspace_id,),
+        )
+        existing = await cur.fetchone()
+        if existing:
+            d = dict(existing)
+            d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+            return web.json_response(d)
+
+        session_id = str(uuid.uuid4())
+        name = f"Observatorist — {dict(ws)['name']}"
+        await db.execute(
+            "INSERT INTO sessions (id, workspace_id, name, model, permission_mode, effort, "
+            "system_prompt, session_type, auto_approve_mcp, cli_type) "
+            "VALUES (?, ?, ?, 'sonnet', 'default', 'high', ?, 'observatorist', 1, 'claude')",
+            (session_id, workspace_id, name, observatory.OBSERVATORIST_SYSTEM_PROMPT),
+        )
+        # Attach Deep Research MCP for search tools
+        await db.execute(
+            "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) "
+            "VALUES (?, 'builtin-deep-research', 1)",
+            (session_id,),
+        )
+        # Attach Commander MCP for accessing observatory data
+        await db.execute(
+            "INSERT OR IGNORE INTO session_mcp_servers (session_id, mcp_server_id, auto_approve_override) "
+            "VALUES (?, 'builtin-commander', 1)",
+            (session_id,),
+        )
+        await db.commit()
+
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        d = dict(row)
+        d["status"] = "idle"
+
+        await broadcast({"type": "session_created", "session": d})
+        return web.json_response(d, status=201)
+    finally:
+        await db.close()
+
+
 # ─── REST: Test Queue ────────────────────────────────────────────────
 
 async def list_test_queue(request: web.Request) -> web.Response:
@@ -6934,6 +8107,28 @@ async def open_account_browser(request: web.Request) -> web.Response:
     body = await request.json() if request.content_length else {}
     url = body.get("url", "https://claude.ai")
 
+    # Validate browser_path against known safe patterns
+    _SAFE_BROWSER_NAMES = {"google chrome", "chrome", "chromium", "brave browser", "firefox", "safari", "arc", "microsoft edge", "vivaldi", "opera"}
+    def _is_safe_browser(path):
+        if not path:
+            return True
+        lp = path.lower()
+        # macOS .app bundles
+        if lp.endswith(".app") or ".app/" in lp:
+            app_name = lp.rsplit("/", 1)[-1].replace(".app", "").strip()
+            return app_name in _SAFE_BROWSER_NAMES or lp.startswith("/applications/")
+        # Binary paths — must exist and be in a standard location
+        import shutil
+        return shutil.which(os.path.basename(path)) is not None
+
+    if browser_path and not _is_safe_browser(browser_path):
+        return web.json_response({"error": "unrecognized browser path"}, status=400)
+
+    # Sanitize chrome_profile — only allow alphanumeric, spaces, dashes, underscores
+    import re as _re
+    if chrome_profile and not _re.match(r'^[\w\s\-\.]+$', chrome_profile):
+        return web.json_response({"error": "invalid chrome profile name"}, status=400)
+
     try:
         if browser_path and chrome_profile:
             # Launch specific browser with profile
@@ -7001,6 +8196,12 @@ async def open_next_account(request: web.Request) -> web.Response:
     body = await request.json() if request.content_length else {}
     url = body.get("url", "https://claude.ai")
 
+    # Validate browser path
+    if browser_path and not _is_safe_browser(browser_path):
+        return web.json_response({"error": "unrecognized browser path"}, status=400)
+    if chrome_profile and not _re.match(r'^[\w\s\-\.]+$', chrome_profile):
+        return web.json_response({"error": "invalid chrome profile name"}, status=400)
+
     try:
         if browser_path and chrome_profile:
             if browser_path.endswith(".app") or ".app/" in browser_path:
@@ -7050,6 +8251,56 @@ async def snapshot_account(request: web.Request) -> web.Response:
         await db.close()
 
     return web.json_response(result)
+
+
+# ─── REST: Playwright Auth Cycling ───────────────────────────────────────
+
+async def playwright_setup_browser(request: web.Request) -> web.Response:
+    """POST /api/accounts/{id}/setup-browser
+
+    Launch a visible Playwright browser for the user to log in manually.
+    Saves cookies in a persistent context for later headless re-auth.
+    Body: { "cli_type": "claude" | "gemini" }
+    """
+    from auth_cycler import auth_cycler
+    acc_id = request.match_info["id"]
+    body = await request.json() if request.content_length else {}
+    cli_type = body.get("cli_type")
+    result = await auth_cycler.setup_browser(acc_id, cli_type=cli_type)
+    status = 200 if result.get("ok") else 400
+    return web.json_response(result, status=status)
+
+
+async def playwright_auth(request: web.Request) -> web.Response:
+    """POST /api/accounts/{id}/playwright-auth
+
+    Automate ``claude auth login`` / ``gemini auth login`` using Playwright
+    with stored cookies.
+    Body: { "headless": true, "cli_type": "claude" | "gemini" }
+    """
+    from auth_cycler import auth_cycler
+    acc_id = request.match_info["id"]
+    body = await request.json() if request.content_length else {}
+    headless = body.get("headless", True)
+    cli_type = body.get("cli_type")
+    result = await auth_cycler.playwright_auth(acc_id, cli_type=cli_type, headless=headless)
+    status = 200 if result.get("status") == "success" else 400
+    return web.json_response(result, status=status)
+
+
+async def playwright_auth_status(request: web.Request) -> web.Response:
+    """GET /api/accounts/{id}/auth-status
+
+    Check whether an account has a Playwright browser context and valid auth snapshot.
+    """
+    from auth_cycler import auth_cycler
+    from account_sandbox import has_snapshot
+    acc_id = request.match_info["id"]
+    return web.json_response({
+        "account_id": acc_id,
+        "has_browser_context": auth_cycler.has_browser_context(acc_id),
+        "has_auth_snapshot": has_snapshot(acc_id),
+    })
 
 
 async def restart_with_account(request: web.Request) -> web.Response:
@@ -7514,6 +8765,15 @@ async def put_app_setting(request: web.Request) -> web.Response:
                 "warning": f"Setting saved but hook installation failed: {e}",
             })
 
+    if key == "experimental_auto_skill_suggestions":
+        if value == "on":
+            try:
+                from skill_suggester import ensure_index
+                _fire_and_forget(ensure_index(force=True))
+                logger.info("Skill index build kicked off (toggle on)")
+            except Exception as e:
+                logger.warning("Skill index kick failed: %s", e)
+
     if key == "experimental_myelin_coordination":
         from hook_installer import install_myelin_hooks, uninstall_myelin_hooks
         try:
@@ -7536,10 +8796,283 @@ async def put_app_setting(request: web.Request) -> web.Response:
 # General-purpose tool call safety engine. Evaluates ALL tool calls against
 # configurable rules. Called synchronously by the safety_gate.sh hook script.
 
+import re as _re_safety
+
+_PKG_INSTALL_PAT = _re_safety.compile(
+    r'(?:^|\s)(?:sudo\s+)?(?:'
+    r'(?:pip3?|python3?\s+-m\s+pip)\s+install'
+    r'|(?:npm|yarn|pnpm|bun)\s+(?:install|add|i)\b'
+    r'|cargo\s+(?:add|install)\b'
+    r'|go\s+(?:get|install)\b'
+    r'|gem\s+install\b'
+    r'|composer\s+require\b'
+    r'|brew\s+install\b'
+    r')', _re_safety.I,
+)
+
+
+async def _avcp_scan_inline(command: str, session_id: str, workspace_id: str):
+    """Run AVCP scanner inline for package manager commands.
+
+    Returns (decision, reason, packages_list) or None if not a package command.
+    """
+    if not _PKG_INSTALL_PAT.search(command):
+        return None
+
+    import os
+
+    # Reuse the detection/extraction from hooks.py
+    try:
+        from hooks import _detect_ecosystem, _extract_packages, _detect_install_scripts
+    except ImportError:
+        return None
+
+    ecosystem = _detect_ecosystem(command)
+    if ecosystem == "unknown":
+        return None
+
+    packages = _extract_packages(command, ecosystem)
+    if not packages:
+        return None
+
+    from resource_path import project_root as _pr, is_frozen as _is_frz
+    _frozen_avcp = _is_frz()
+    if _frozen_avcp:
+        scanner_bin = os.path.join(str(_pr()), "bin", "ive-avcp-scanner")
+    else:
+        scanner_path = os.path.join(str(_pr()), "anti-vibe-code-pwner", "lib", "scanner.py")
+
+    def _run():
+        import subprocess
+        threshold = int(os.environ.get("AVCP_THRESHOLD", "7"))
+        try:
+            if _frozen_avcp:
+                # In compiled mode, call the binary via subprocess
+                import json as _json
+                results = []
+                for pkg in packages[:10]:
+                    try:
+                        proc = subprocess.run(
+                            [scanner_bin, "--json", ecosystem, pkg, str(threshold)],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                        if proc.returncode == 0 and proc.stdout.strip():
+                            results.append(_json.loads(proc.stdout))
+                    except Exception:
+                        pass
+                return results or None
+            else:
+                # In source mode, import the scanner module directly
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("avcp_scanner", scanner_path)
+                if not spec or not spec.loader:
+                    return None
+                scanner = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(scanner)
+                results = []
+                for pkg in packages[:10]:
+                    try:
+                        r = scanner.full_check(ecosystem, pkg, threshold)
+                        r["install_scripts"] = _detect_install_scripts(
+                            ecosystem, pkg, r, scanner, subprocess,
+                        )
+                        results.append(r)
+                    except Exception:
+                        pass
+                return results or None
+        except Exception:
+            return None
+
+    loop = _asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, _run)
+    if not results:
+        return None
+
+    # Persist scan results to package_scans table
+    try:
+        d = await get_db()
+        try:
+            for r in results:
+                await d.execute(
+                    """INSERT INTO package_scans
+                       (session_id, workspace_id, package, ecosystem, version, age_days,
+                        status, vuln_count, vuln_critical, known_malware, decision, reason,
+                        advisories, install_scripts, llm_verdict, fallback)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id, workspace_id,
+                        r.get("package", ""), r.get("ecosystem", ""),
+                        r.get("version", ""), r.get("age_days", -1),
+                        r.get("status", "ok"), r.get("vuln_count", 0),
+                        1 if r.get("vuln_critical") else 0,
+                        1 if r.get("known_malware") else 0,
+                        r.get("status", "ok"), r.get("reason", ""),
+                        json.dumps(r.get("advisories", [])),
+                        r.get("install_scripts", ""),
+                        r.get("llm_verdict", ""),
+                        r.get("fallback", ""),
+                    ),
+                )
+            await d.commit()
+        finally:
+            await d.close()
+    except Exception:
+        pass
+
+    # Build decision from results
+    flagged = [r for r in results if r.get("status") == "flagged"]
+    malware = [r for r in results if r.get("known_malware")]
+    has_scripts = [r for r in results if r.get("install_scripts")]
+
+    pkg_summaries = []
+    for r in results:
+        pkg_summaries.append({
+            "package": r.get("package", ""),
+            "version": r.get("version", ""),
+            "status": r.get("status", "ok"),
+            "vuln_count": r.get("vuln_count", 0),
+            "vuln_critical": bool(r.get("vuln_critical")),
+            "known_malware": bool(r.get("known_malware")),
+            "install_scripts": r.get("install_scripts", ""),
+            "age_days": r.get("age_days", -1),
+            "fallback": r.get("fallback", ""),
+        })
+
+    if malware:
+        names = ", ".join(r["package"] for r in malware)
+        return ("deny", f"AVCP: KNOWN MALWARE detected in {names}. DO NOT INSTALL.", pkg_summaries)
+    elif flagged:
+        details = []
+        for r in flagged:
+            d = r["package"]
+            if r.get("vuln_critical"):
+                d += f" ({r.get('vuln_count', 0)} critical vulns)"
+            elif r.get("age_days", -1) >= 0:
+                d += f" ({r['age_days']}d old)"
+            if r.get("fallback"):
+                d += f" [safe: {r['fallback']}]"
+            details.append(d)
+        return ("deny", f"AVCP: {len(flagged)} package(s) flagged: {'; '.join(details)}", pkg_summaries)
+    elif has_scripts:
+        # ── Check install-script policy setting ──────────────────────
+        block_all_scripts = False
+        allowlisted_pkgs = set()
+        try:
+            _pol_db = await get_db()
+            try:
+                _cur = await _pol_db.execute(
+                    "SELECT value FROM app_settings WHERE key = 'safety_block_install_scripts'"
+                )
+                _row = await _cur.fetchone()
+                if _row and _row["value"] == "true":
+                    block_all_scripts = True
+                # Load allowlist
+                _cur2 = await _pol_db.execute(
+                    "SELECT package, ecosystem FROM install_script_allowlist"
+                )
+                for _alr in await _cur2.fetchall():
+                    allowlisted_pkgs.add((_alr["package"], _alr["ecosystem"]))
+            finally:
+                await _pol_db.close()
+        except Exception:
+            pass
+
+        # Filter out allowlisted packages
+        non_allowed = [r for r in has_scripts
+                       if (r["package"], r.get("ecosystem", ecosystem)) not in allowlisted_pkgs]
+
+        if not non_allowed:
+            # All packages with scripts are allowlisted — pass through
+            pass
+        else:
+            # ── LLM analysis of install scripts ──────────────────────
+            llm_verdict = ""
+            try:
+                from llm_router import llm_call
+                scripts_detail = "\n\n".join(
+                    f"Package: {r['package']} ({r.get('ecosystem', ecosystem)})\n"
+                    f"Install scripts: {r['install_scripts'][:500]}"
+                    for r in non_allowed
+                )
+                raw = await llm_call(
+                    cli="claude", model="haiku",
+                    prompt=scripts_detail,
+                    system=(
+                        "You are a supply chain security analyst. Analyze the following package "
+                        "install scripts detected before installation. For each package, determine "
+                        "if the install scripts are SAFE (normal build/compile steps), SUSPICIOUS "
+                        "(unusual network calls, obfuscation, env var exfiltration), or MALICIOUS "
+                        "(known attack patterns, data theft, backdoors).\n\n"
+                        "Respond with ONLY a JSON object, no other text:\n"
+                        "{\"verdict\": \"safe\"|\"suspicious\"|\"malicious\", "
+                        "\"summary\": \"one-line explanation\", \"details\": [\"per-package detail\"]}"
+                    ),
+                    timeout=120,
+                )
+                # Extract JSON from response (handle fences + trailing text)
+                import re as _re_llm
+                _jblob = raw or ""
+                if "```" in _jblob:
+                    _fence = _re_llm.search(r'```(?:json)?\s*\n(.*?)```', _jblob, _re_llm.S)
+                    if _fence:
+                        _jblob = _fence.group(1)
+                _brace_start = _jblob.find("{")
+                _brace_end = _jblob.rfind("}")
+                if _brace_start >= 0 and _brace_end > _brace_start:
+                    _jblob = _jblob[_brace_start:_brace_end + 1]
+                llm_result = json.loads(_jblob)
+                llm_verdict = json.dumps(llm_result) if isinstance(llm_result, dict) else str(llm_result)
+
+                # Persist LLM verdict to package_scans rows
+                try:
+                    _vdb = await get_db()
+                    try:
+                        for r in non_allowed:
+                            await _vdb.execute(
+                                "UPDATE package_scans SET llm_verdict = ? WHERE package = ? AND ecosystem = ? "
+                                "ORDER BY id DESC LIMIT 1",
+                                (llm_verdict, r["package"], r.get("ecosystem", ecosystem)),
+                            )
+                        await _vdb.commit()
+                    finally:
+                        await _vdb.close()
+                except Exception:
+                    pass
+
+                # Use LLM verdict to decide
+                verdict_str = llm_result.get("verdict", "").lower() if isinstance(llm_result, dict) else ""
+                verdict_summary = llm_result.get("summary", "") if isinstance(llm_result, dict) else ""
+
+                if verdict_str == "malicious":
+                    names = ", ".join(r["package"] for r in non_allowed)
+                    return ("deny", f"AVCP+LLM: MALICIOUS install scripts in {names} — {verdict_summary}", pkg_summaries)
+                elif verdict_str == "suspicious" or block_all_scripts:
+                    scripts_info = "; ".join(
+                        f"{r['package']}: {r['install_scripts'][:100]}" for r in non_allowed
+                    )
+                    reason = f"AVCP+LLM: {verdict_summary}" if verdict_summary else f"AVCP: install scripts detected — {scripts_info}"
+                    if block_all_scripts and verdict_str == "safe":
+                        reason = f"Install scripts blocked by policy — {scripts_info}. LLM says: {verdict_summary}"
+                    return ("ask", reason, pkg_summaries)
+                # verdict == "safe" and not block_all_scripts → allow
+            except Exception as _llm_err:
+                # LLM unavailable — fall back to pattern-based decision
+                logger.warning("LLM install script analysis failed: %s", _llm_err)
+                scripts_info = "; ".join(
+                    f"{r['package']}: {r['install_scripts'][:100]}" for r in non_allowed
+                )
+                if block_all_scripts:
+                    return ("ask", f"Install scripts blocked by policy (LLM unavailable) — {scripts_info}", pkg_summaries)
+                return ("ask", f"AVCP: install scripts detected — {scripts_info}", pkg_summaries)
+
+    return None  # All clean
+
+
 async def evaluate_safety(request: web.Request) -> web.Response:
     """POST /api/safety/evaluate — evaluate a tool call against safety rules.
 
-    Called by safety_gate.sh hook script synchronously.  Must be fast (<50ms).
+    Called by safety_gate.sh hook script synchronously.
+    Fast for normal tool calls (<50ms). Package manager commands take longer (AVCP scan).
     """
     try:
         data = await request.json()
@@ -7621,6 +9154,34 @@ async def evaluate_safety(request: web.Request) -> web.Response:
     init_cache(_load_rules)
 
     result = await evaluate(tool_name, tool_input, workspace_id=workspace_id or None)
+
+    # ── AVCP package scanning (inline, blocks before install) ─────────
+    # Only run if the regular rules didn't already deny, and it's a Bash command
+    if result.action != "deny" and tool_name in ("Bash", "execute", "execute_command"):
+        command = tool_input.get("command", "") or tool_input.get("script", "")
+        if command:
+            avcp_result = await _avcp_scan_inline(command, session_id, workspace_id)
+            if avcp_result:
+                # Override the decision if AVCP flagged something
+                avcp_decision, avcp_reason, avcp_packages = avcp_result
+                if avcp_decision in ("deny", "ask"):
+                    result.action = avcp_decision
+                    result.reason = avcp_reason
+                    # Notify UI about flagged packages
+                    _asyncio.ensure_future(bus.emit(
+                        CommanderEvent.SAFETY_RULE_TRIGGERED,
+                        {
+                            "rule_id": "avcp_package_scan",
+                            "rule_name": "AVCP Package Scan",
+                            "severity": "high" if avcp_decision == "deny" else "medium",
+                            "tool_name": tool_name,
+                            "decision": avcp_decision,
+                            "reason": avcp_reason,
+                            "session_id": session_id,
+                            "workspace_id": workspace_id,
+                            "packages": avcp_packages,
+                        },
+                    ))
 
     # Log decision asynchronously if rule matched or decision is not allow
     if result.action != "allow" or result.rule_id:
@@ -7811,6 +9372,241 @@ async def seed_safety_rules(request: web.Request) -> web.Response:
     try:
         from safety_engine import seed_builtin_rules
         await seed_builtin_rules(db)
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def get_external_access_log(request: web.Request) -> web.Response:
+    """GET /api/safety/access-log — compliance log of all external sources accessed."""
+    session_id = request.query.get("session_id")
+    workspace_id = request.query.get("workspace_id")
+    domain = request.query.get("domain")
+    source_type = request.query.get("source_type")
+    limit = min(int(request.query.get("limit", "200")), 1000)
+    offset = int(request.query.get("offset", "0"))
+
+    where_parts = []
+    params: list = []
+    if session_id:
+        where_parts.append("session_id = ?")
+        params.append(session_id)
+    if workspace_id:
+        where_parts.append("workspace_id = ?")
+        params.append(workspace_id)
+    if domain:
+        where_parts.append("domain = ?")
+        params.append(domain)
+    if source_type:
+        where_parts.append("source_type = ?")
+        params.append(source_type)
+
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            f"SELECT * FROM external_access_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = await cur.fetchall()
+        # Also return unique domain counts for summary
+        cur2 = await db.execute(
+            f"SELECT domain, COUNT(*) as count FROM external_access_log {where} GROUP BY domain ORDER BY count DESC LIMIT 50",
+            params,
+        )
+        domains = await cur2.fetchall()
+        return web.json_response({
+            "entries": [dict(r) for r in rows],
+            "domains": [dict(d) for d in domains],
+        })
+    finally:
+        await db.close()
+
+
+async def get_command_log(request: web.Request) -> web.Response:
+    """GET /api/safety/command-log — all commands executed by agents."""
+    session_id = request.query.get("session_id")
+    workspace_id = request.query.get("workspace_id")
+    q = request.query.get("q", "")
+    limit = min(int(request.query.get("limit", "200")), 1000)
+    offset = int(request.query.get("offset", "0"))
+
+    where_parts = []
+    params: list = []
+    if session_id:
+        where_parts.append("session_id = ?")
+        params.append(session_id)
+    if workspace_id:
+        where_parts.append("workspace_id = ?")
+        params.append(workspace_id)
+    if q:
+        where_parts.append("command LIKE ?")
+        params.append(f"%{q}%")
+
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            f"SELECT * FROM command_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def get_package_scans(request: web.Request) -> web.Response:
+    """GET /api/safety/package-scans — AVCP package scan results."""
+    session_id = request.query.get("session_id")
+    workspace_id = request.query.get("workspace_id")
+    limit = min(int(request.query.get("limit", "200")), 1000)
+    offset = int(request.query.get("offset", "0"))
+
+    where_parts = []
+    params: list = []
+    if session_id:
+        where_parts.append("session_id = ?")
+        params.append(session_id)
+    if workspace_id:
+        where_parts.append("workspace_id = ?")
+        params.append(workspace_id)
+
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            f"SELECT * FROM package_scans {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = await cur.fetchall()
+        return web.json_response([dict(r) for r in rows])
+    finally:
+        await db.close()
+
+
+async def post_avcp_result(request: web.Request) -> web.Response:
+    """POST /api/safety/avcp-result — receive AVCP scan results from hooks."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    session_id = data.get("session_id", "")
+    workspace_id = data.get("workspace_id", "")
+    packages = data.get("packages", [])
+    decision = data.get("decision", "allow")
+    reason = data.get("reason", "")
+    install_scripts = data.get("install_scripts", "")
+
+    if not packages:
+        return web.json_response({"ok": True, "stored": 0})
+
+    db = await get_db()
+    try:
+        for pkg in packages:
+            await db.execute(
+                """INSERT INTO package_scans
+                   (session_id, workspace_id, package, ecosystem, version, age_days,
+                    status, vuln_count, vuln_critical, known_malware, decision, reason,
+                    advisories, install_scripts, fallback)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id, workspace_id,
+                    pkg.get("package", ""),
+                    pkg.get("ecosystem", ""),
+                    pkg.get("version", ""),
+                    pkg.get("age_days", -1),
+                    pkg.get("status", "ok"),
+                    pkg.get("vuln_count", 0),
+                    1 if pkg.get("vuln_critical") else 0,
+                    1 if pkg.get("known_malware") else 0,
+                    decision,
+                    reason[:1000] if reason else "",
+                    json.dumps(pkg.get("advisories", [])),
+                    install_scripts[:2000] if install_scripts else "",
+                    pkg.get("fallback", ""),
+                ),
+            )
+        await db.commit()
+        return web.json_response({"ok": True, "stored": len(packages)})
+    finally:
+        await db.close()
+
+
+async def get_install_script_policy(request: web.Request) -> web.Response:
+    """GET /api/safety/install-script-policy — get policy setting + allowlist."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT value FROM app_settings WHERE key = 'safety_block_install_scripts'"
+        )
+        row = await cur.fetchone()
+        block_all = row["value"] == "true" if row else False
+
+        cur2 = await db.execute(
+            "SELECT * FROM install_script_allowlist ORDER BY created_at DESC"
+        )
+        allowlist = [dict(r) for r in await cur2.fetchall()]
+        return web.json_response({"block_all": block_all, "allowlist": allowlist})
+    finally:
+        await db.close()
+
+
+async def put_install_script_policy(request: web.Request) -> web.Response:
+    """PUT /api/safety/install-script-policy — toggle block-all setting."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    block_all = bool(data.get("block_all", False))
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('safety_block_install_scripts', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+            ("true" if block_all else "false",),
+        )
+        await db.commit()
+        return web.json_response({"ok": True, "block_all": block_all})
+    finally:
+        await db.close()
+
+
+async def add_install_script_allowlist(request: web.Request) -> web.Response:
+    """POST /api/safety/install-script-allowlist — allowlist a package."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    package = data.get("package", "").strip()
+    ecosystem = data.get("ecosystem", "").strip()
+    reason = data.get("reason", "").strip()
+    if not package or not ecosystem:
+        return web.json_response({"error": "package and ecosystem required"}, status=400)
+
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO install_script_allowlist (package, ecosystem, reason) VALUES (?, ?, ?) "
+            "ON CONFLICT(package, ecosystem) DO UPDATE SET reason = excluded.reason",
+            (package, ecosystem, reason),
+        )
+        await db.commit()
+        return web.json_response({"ok": True, "package": package, "ecosystem": ecosystem})
+    finally:
+        await db.close()
+
+
+async def remove_install_script_allowlist(request: web.Request) -> web.Response:
+    """DELETE /api/safety/install-script-allowlist/{id} — remove from allowlist."""
+    entry_id = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM install_script_allowlist WHERE id = ?", (entry_id,))
+        await db.commit()
         return web.json_response({"ok": True})
     finally:
         await db.close()
@@ -8098,6 +9894,34 @@ async def start_ralph_pipeline(request: web.Request) -> web.Response:
 # Cascades are ordered sequences of prompts. The runner lives on the frontend
 # (watches session status → sends next prompt when idle). Backend is storage.
 
+def _normalize_cascade_steps(raw):
+    """Parse steps from DB, handling double-encoded JSON and object-format steps."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    # Handle double-encoded JSON (string instead of list)
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (json.JSONDecodeError, TypeError):
+            return [parsed]
+    if not isinstance(parsed, list):
+        return []
+    # Normalize object-format steps {prompt: "..."} to plain strings
+    result = []
+    for step in parsed:
+        if isinstance(step, dict):
+            result.append(step.get("prompt", str(step)))
+        elif isinstance(step, str):
+            result.append(step)
+        else:
+            result.append(str(step))
+    return result
+
+
 async def list_cascades(request: web.Request) -> web.Response:
     db = await get_db()
     try:
@@ -8108,10 +9932,7 @@ async def list_cascades(request: web.Request) -> web.Response:
         results = []
         for row in rows:
             d = dict(row)
-            try:
-                d["steps"] = json.loads(d["steps"]) if d["steps"] else []
-            except (json.JSONDecodeError, TypeError):
-                d["steps"] = []
+            d["steps"] = _normalize_cascade_steps(d.get("steps"))
             try:
                 d["variables"] = json.loads(d["variables"]) if d.get("variables") else []
             except (json.JSONDecodeError, TypeError):
@@ -8150,7 +9971,7 @@ async def create_cascade(request: web.Request) -> web.Response:
         cur = await db.execute("SELECT * FROM cascades WHERE id = ?", (cascade_id,))
         row = await cur.fetchone()
         d = dict(row)
-        d["steps"] = json.loads(d["steps"])
+        d["steps"] = _normalize_cascade_steps(d.get("steps"))
         try:
             d["variables"] = json.loads(d["variables"]) if d.get("variables") else []
         except (json.JSONDecodeError, TypeError):
@@ -8203,7 +10024,7 @@ async def update_cascade(request: web.Request) -> web.Response:
         if not row:
             return web.json_response({"error": "not found"}, status=404)
         d = dict(row)
-        d["steps"] = json.loads(d["steps"]) if d["steps"] else []
+        d["steps"] = _normalize_cascade_steps(d.get("steps"))
         try:
             d["variables"] = json.loads(d["variables"]) if d.get("variables") else []
         except (json.JSONDecodeError, TypeError):
@@ -8618,7 +10439,8 @@ import shlex
 from pathlib import Path as _Path
 
 # Project root for invoking deep_research as a module
-_PROJECT_ROOT = _Path(__file__).parent.parent
+from resource_path import project_root as _project_root
+_PROJECT_ROOT = _project_root()
 _RESEARCH_DIR = _PROJECT_ROOT / "research"
 
 # Track running research jobs: { job_id: { proc, query, started_at, status, output_path } }
@@ -8772,6 +10594,24 @@ def _build_research_prompt(query: str, entry_id: str | None, job: dict) -> str:
             "Do NOT repeat what's already known. Update the existing entry with new findings."
         )
 
+    # Collaborative plan — inject pre-built decomposition as search strategy
+    plan = job.get("plan")
+    if plan and isinstance(plan, dict):
+        plan_parts = []
+        if plan.get("sub_queries"):
+            plan_parts.append("Sub-queries to investigate:\n" + "\n".join(f"  - {q}" for q in plan["sub_queries"]))
+        if plan.get("reformulations"):
+            plan_parts.append("Reformulations (different vocabulary):\n" + "\n".join(f"  - {q}" for q in plan["reformulations"]))
+        if plan.get("cross_domain_queries"):
+            plan_parts.append("Cross-domain queries:\n" + "\n".join(f"  - {q}" for q in plan["cross_domain_queries"]))
+        if plan.get("key_entities"):
+            plan_parts.append("Key entities to search for: " + ", ".join(plan["key_entities"]))
+        if plan_parts:
+            parts.append(
+                "\nRESEARCH PLAN (user-approved search strategy — follow this plan):\n"
+                + "\n".join(plan_parts)
+            )
+
     # Source and entry management
     parts.append(
         f"\nSave findings incrementally with save_research after each round. "
@@ -8872,9 +10712,14 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
         session_id = sess["id"]
         job["session_id"] = session_id
 
-        # 2. Attach MCP server + guideline
+        # 2. Attach MCP server + guideline (include user-selected MCP data sources)
+        all_mcp_ids = [dr_mcp_id]
+        user_mcp_ids = job.get("mcp_server_ids") or []
+        for mid in user_mcp_ids:
+            if mid not in all_mcp_ids:
+                all_mcp_ids.append(mid)
         await _rest("PUT", f"/api/sessions/{session_id}/mcp-servers", {
-            "mcp_server_ids": [dr_mcp_id],
+            "mcp_server_ids": all_mcp_ids,
         })
         if dr_guideline_id:
             await _rest("PUT", f"/api/sessions/{session_id}/guidelines", {
@@ -8937,9 +10782,21 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
                 done = False
 
                 for iteration in range(max_iterations):
+                    # Drain steered queries injected mid-research
+                    steered = job.get("steer_queries") or []
+                    steer_block = ""
+                    if steered:
+                        steer_block = (
+                            "\n\nUSER-INJECTED SUB-QUERIES (investigate these additionally):\n"
+                            + "\n".join(f"  - {q}" for q in steered)
+                        )
+                        job["steer_queries"] = []  # consumed
+
                     # Build prompt: initial on first iteration, continuation on subsequent
                     if iteration == 0:
                         prompt = _build_research_prompt(query, entry_id, job)
+                        if steer_block:
+                            prompt += steer_block
                     else:
                         # Continuation nudge — push the agent to go deeper
                         prompt = (
@@ -8956,6 +10813,8 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
                             "mostly known information), call finish_research with the complete report "
                             f"and ALL source URLs. entry_id='{entry_id}'"
                         )
+                        if steer_block:
+                            prompt += steer_block
 
                     await broadcast({
                         "type": "research_progress", "job_id": job_id,
@@ -8993,9 +10852,21 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
                                 elif mtype == "tool_event":
                                     tool = data.get("tool", "")
                                     if tool:
+                                        # Map tool names to research phases
+                                        tool_phase = "search"
+                                        if tool in ("multi_search", "gather"):
+                                            tool_phase = "search"
+                                        elif tool == "extract_pages":
+                                            tool_phase = "extract"
+                                        elif tool in ("save_research", "finish_research"):
+                                            tool_phase = "synthesize"
                                         await broadcast({
                                             "type": "research_progress", "job_id": job_id,
                                             "line": f"Tool: {tool}",
+                                            "phase": tool_phase,
+                                            "round": iteration + 1,
+                                            "total_rounds": max_iterations,
+                                            "elapsed": int(_time.time() - job.get("started_at", _time.time())),
                                             "entry_id": entry_id,
                                         })
                                     last_activity = _time.time()
@@ -9009,6 +10880,17 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
                     if not round_done:
                         done = True
                         break
+
+                    # If steer queries arrived during this iteration, ensure we
+                    # get at least one more iteration to incorporate them
+                    pending_steers = job.get("steer_queries") or []
+                    if pending_steers and iteration >= max_iterations - 1:
+                        max_iterations = iteration + 2  # add one more round
+                        await broadcast({
+                            "type": "research_progress", "job_id": job_id,
+                            "line": f"Steered queries pending — extending to {max_iterations} iterations",
+                            "entry_id": entry_id,
+                        })
 
                     # Check if agent already called finish_research (status=complete)
                     db_check = await get_db()
@@ -9148,7 +11030,7 @@ async def _run_research_job(job_id: str, query: str, model: str | None,
     from resource_path import is_frozen
     if is_frozen():
         # In compiled distribution, use the compiled deep-research binary
-        cmd = [str(_PROJECT_ROOT / "deep-research"), "research", query]
+        cmd = [str(_PROJECT_ROOT / "bin" / "ive-research"), "research", query]
     else:
         cmd = ["python3", "-m", "deep_research", "research", query]
     if model:
@@ -9171,20 +11053,43 @@ async def _run_research_job(job_id: str, query: str, model: str | None,
     })
 
     try:
+        # Inject DB-stored API keys into subprocess env
+        import api_keys as _api_keys
+        env_overrides = await _api_keys.resolve_env_overrides()
+        sub_env = {**os.environ, **env_overrides} if env_overrides else None
+
         proc = await _asyncio.create_subprocess_exec(
             *cmd, cwd=str(_PROJECT_ROOT),
             stdout=_asyncio.subprocess.PIPE,
             stderr=_asyncio.subprocess.STDOUT,
+            env=sub_env,
         )
         job["proc"] = proc
         async for line in proc.stdout:
             decoded = line.decode("utf-8", errors="replace").rstrip()
             if not decoded:
                 continue
-            await broadcast({
+            # Try to parse structured progress events from _emit()
+            progress_msg = {
                 "type": "research_progress", "job_id": job_id,
                 "line": decoded, "entry_id": entry_id,
-            })
+            }
+            try:
+                parsed = json.loads(decoded.replace("'", '"'))
+                if isinstance(parsed, dict) and "phase" in parsed:
+                    progress_msg.update({
+                        "phase": parsed.get("phase"),
+                        "detail": parsed.get("detail", decoded),
+                        "round": parsed.get("round"),
+                        "total_rounds": parsed.get("total_rounds"),
+                        "confidence": parsed.get("confidence"),
+                        "elapsed": parsed.get("elapsed"),
+                        "findings_count": parsed.get("findings_count"),
+                        "line": parsed.get("detail", decoded),
+                    })
+            except (json.JSONDecodeError, ValueError):
+                pass
+            await broadcast(progress_msg)
         await proc.wait()
         ok = proc.returncode == 0
         job["status"] = "completed" if ok else "failed"
@@ -9271,17 +11176,104 @@ async def start_research(request: web.Request) -> web.Response:
     recency_months = body.get("recency_months") # int or None — restrict to recent N months
     cross_temporal = body.get("cross_temporal", False)  # look at old paradigms applied to new
     dig_deeper = body.get("dig_deeper", False)  # continuing from previous findings
+    mcp_server_ids = body.get("mcp_server_ids", [])  # MCP servers as data sources
+    plan = body.get("plan")  # Pre-built research plan (from collaborative planning)
+    # If MCP servers are requested and backend is auto, prefer CLI path
+    if mcp_server_ids and not backend:
+        backend = "cli"
     _research_jobs[job_id] = {
         "query": query, "model": model, "status": "pending",
         "entry_id": entry_id, "backend": backend,
         "depth": depth, "recency_months": recency_months,
         "cross_temporal": cross_temporal, "dig_deeper": dig_deeper,
+        "mcp_server_ids": mcp_server_ids, "plan": plan,
+        "steer_queries": [],  # for mid-research injection
     }
     _asyncio.ensure_future(_run_research_job(
         job_id, query, model, llm_url, workspace_path, entry_id,
         workspace_id=workspace_id,
     ))
     return web.json_response({"job_id": job_id, "entry_id": entry_id, "query": query})
+
+
+async def decompose_research_plan(request: web.Request) -> web.Response:
+    """POST /api/research/plan — decompose a query into an editable research plan.
+
+    Uses llm_router to call the DECOMPOSE_QUERY prompt and return the plan
+    for the user to review/edit before starting research.
+    """
+    body = await request.json()
+    query = body.get("query", "").strip()
+    if not query:
+        return web.json_response({"error": "query required"}, status=400)
+
+    # deep_research lives at project root, not in backend/
+    import sys as _sys
+    if str(_PROJECT_ROOT) not in _sys.path:
+        _sys.path.insert(0, str(_PROJECT_ROOT))
+    try:
+        from deep_research.prompts import DECOMPOSE_QUERY, SYSTEM_RESEARCHER
+    except ImportError:
+        # Inline fallback if deep_research isn't available
+        DECOMPOSE_QUERY = (
+            "Break this research question into a comprehensive search strategy.\n\n"
+            "Research question: {query}\n\n"
+            'Return a JSON object with: {{"sub_queries": [...], "reformulations": [...], '
+            '"cross_domain_queries": [...], "key_entities": [...]}}'
+        )
+        SYSTEM_RESEARCHER = "You are a research analyst."
+    from llm_router import llm_call_json
+
+    prompt = DECOMPOSE_QUERY.format(query=query)
+    try:
+        plan = await llm_call_json(
+            cli="claude", model="sonnet",
+            prompt=prompt, system=SYSTEM_RESEARCHER,
+            timeout=60,
+        )
+    except Exception as e:
+        logger.warning("research plan decomposition failed: %s", e)
+        # Fallback: generate a minimal plan without LLM
+        plan = {
+            "sub_queries": [query],
+            "reformulations": [],
+            "cross_domain_queries": [],
+            "key_entities": [],
+        }
+    return web.json_response({"plan": plan, "query": query})
+
+
+async def steer_research_job(request: web.Request) -> web.Response:
+    """POST /api/research/jobs/{job_id}/steer — inject sub-queries into running research.
+
+    Accepts {queries: ["query1", "query2", ...]} and appends them to the job's
+    steer_queries list. They'll be picked up on the next iteration of the
+    research loop (either standalone via _steer_queue, or CLI via prompt injection).
+    """
+    job_id = request.match_info["job_id"]
+    job = _research_jobs.get(job_id)
+    if not job:
+        return web.json_response({"error": "job not found"}, status=404)
+    if job.get("status") not in ("running", "pending"):
+        return web.json_response({"error": "job is not running"}, status=400)
+
+    body = await request.json()
+    queries = body.get("queries", [])
+    if not queries:
+        return web.json_response({"error": "queries array required"}, status=400)
+
+    # Append to steer list (consumed by next iteration)
+    existing = job.get("steer_queries") or []
+    existing.extend(queries)
+    job["steer_queries"] = existing
+
+    await broadcast({
+        "type": "research_progress", "job_id": job_id,
+        "line": f"Steered: +{len(queries)} sub-queries injected",
+        "entry_id": job.get("entry_id"),
+    })
+
+    return web.json_response({"ok": True, "queued": len(existing)})
 
 
 async def list_research_jobs(request: web.Request) -> web.Response:
@@ -9318,7 +11310,240 @@ async def stop_research_job(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-# ─── Plan file read/write ────────────────────────────────────────────────
+# ─── Research Schedules (cron-like recurring research) ────────────────────
+
+_research_scheduler_task: _asyncio.Task | None = None
+
+
+async def list_research_schedules(request: web.Request) -> web.Response:
+    """GET /api/research/schedules — list all research schedules."""
+    workspace_id = request.query.get("workspace_id")
+    db = await get_db()
+    try:
+        if workspace_id:
+            cur = await db.execute(
+                "SELECT * FROM research_schedules WHERE workspace_id = ? ORDER BY created_at DESC",
+                (workspace_id,),
+            )
+        else:
+            cur = await db.execute("SELECT * FROM research_schedules ORDER BY created_at DESC")
+        rows = await cur.fetchall()
+        return web.json_response([_parse_schedule_row(r) for r in rows])
+    finally:
+        await db.close()
+
+
+def _parse_schedule_row(row) -> dict:
+    """Parse JSON string fields in a research_schedule row."""
+    d = dict(row)
+    for field in ("mcp_server_ids", "plan"):
+        if isinstance(d.get(field), str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return d
+
+
+async def create_research_schedule(request: web.Request) -> web.Response:
+    """POST /api/research/schedules — create a recurring research schedule."""
+    body = await request.json()
+    query = body.get("query", "").strip()
+    if not query:
+        return web.json_response({"error": "query required"}, status=400)
+
+    sid = str(uuid.uuid4())
+    workspace_id = body.get("workspace_id")
+    mode = body.get("mode", "auto")
+    mcp_server_ids = json.dumps(body.get("mcp_server_ids", []))
+    plan = json.dumps(body.get("plan", {}))
+    interval_hours = body.get("interval_hours", 24)
+    enabled = 1 if body.get("enabled", True) else 0
+
+    # Compute next_run_at
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    next_run = (now + timedelta(hours=interval_hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO research_schedules
+               (id, workspace_id, query, mode, mcp_server_ids, plan, interval_hours, enabled, next_run_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sid, workspace_id, query, mode, mcp_server_ids, plan, interval_hours, enabled, next_run),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM research_schedules WHERE id = ?", (sid,))
+        row = await cur.fetchone()
+        return web.json_response(_parse_schedule_row(row))
+    finally:
+        await db.close()
+
+
+async def update_research_schedule(request: web.Request) -> web.Response:
+    """PUT /api/research/schedules/{id} — update a research schedule."""
+    sid = request.match_info["id"]
+    body = await request.json()
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM research_schedules WHERE id = ?", (sid,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+
+        updates = []
+        params = []
+        for field in ("query", "mode", "interval_hours"):
+            if field in body:
+                updates.append(f"{field} = ?")
+                params.append(body[field])
+        if "enabled" in body:
+            updates.append("enabled = ?")
+            params.append(1 if body["enabled"] else 0)
+        if "mcp_server_ids" in body:
+            updates.append("mcp_server_ids = ?")
+            params.append(json.dumps(body["mcp_server_ids"]))
+        if "plan" in body:
+            updates.append("plan = ?")
+            params.append(json.dumps(body["plan"]))
+
+        if updates:
+            updates.append("updated_at = datetime('now')")
+            # Recompute next_run if interval changed
+            if "interval_hours" in body:
+                from datetime import datetime, timedelta
+                interval = body["interval_hours"]
+                next_run = (datetime.utcnow() + timedelta(hours=interval)).strftime("%Y-%m-%d %H:%M:%S")
+                updates.append("next_run_at = ?")
+                params.append(next_run)
+
+            params.append(sid)
+            await db.execute(
+                f"UPDATE research_schedules SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            await db.commit()
+
+        cur = await db.execute("SELECT * FROM research_schedules WHERE id = ?", (sid,))
+        return web.json_response(_parse_schedule_row(await cur.fetchone()))
+    finally:
+        await db.close()
+
+
+async def delete_research_schedule(request: web.Request) -> web.Response:
+    """DELETE /api/research/schedules/{id} — delete a research schedule."""
+    sid = request.match_info["id"]
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM research_schedules WHERE id = ?", (sid,))
+        await db.commit()
+        return web.json_response({"ok": True})
+    finally:
+        await db.close()
+
+
+async def _research_scheduler_loop():
+    """Background loop that checks for due research schedules and triggers jobs."""
+    while True:
+        try:
+            await _asyncio.sleep(60)  # check every minute
+            from datetime import datetime
+
+            db = await get_db()
+            try:
+                now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                cur = await db.execute(
+                    "SELECT * FROM research_schedules WHERE enabled = 1 AND next_run_at <= ?",
+                    (now,),
+                )
+                due = await cur.fetchall()
+            finally:
+                await db.close()
+
+            for row in due:
+                sched = dict(row)
+                logger.info("research scheduler: triggering job for schedule %s: %s", sched["id"], sched["query"])
+
+                # Build a virtual request body and trigger via the internal API
+                mcp_ids = []
+                try:
+                    mcp_ids = json.loads(sched.get("mcp_server_ids") or "[]")
+                except Exception:
+                    pass
+                plan_data = {}
+                try:
+                    plan_data = json.loads(sched.get("plan") or "{}")
+                except Exception:
+                    pass
+
+                job_id = str(uuid.uuid4())
+                entry_id = str(uuid.uuid4())
+
+                db2 = await get_db()
+                try:
+                    await db2.execute(
+                        """INSERT INTO research_entries
+                           (id, workspace_id, topic, query, status)
+                           VALUES (?, ?, ?, ?, 'pending')""",
+                        (entry_id, sched.get("workspace_id"), sched["query"], sched["query"]),
+                    )
+                    await db2.commit()
+                finally:
+                    await db2.close()
+
+                _research_jobs[job_id] = {
+                    "query": sched["query"], "model": None, "status": "pending",
+                    "entry_id": entry_id, "backend": sched.get("mode", "auto"),
+                    "depth": "standard", "mcp_server_ids": mcp_ids, "plan": plan_data,
+                    "steer_queries": [], "scheduled": True,
+                }
+
+                # Resolve workspace path + model
+                workspace_path = None
+                model = None
+                if sched.get("workspace_id"):
+                    db3 = await get_db()
+                    try:
+                        cur3 = await db3.execute(
+                            "SELECT path, research_model FROM workspaces WHERE id = ?",
+                            (sched["workspace_id"],),
+                        )
+                        ws = await cur3.fetchone()
+                        if ws:
+                            workspace_path = ws["path"]
+                            model = ws["research_model"]
+                    finally:
+                        await db3.close()
+
+                _asyncio.ensure_future(_run_research_job(
+                    job_id, sched["query"], model, None, workspace_path,
+                    entry_id, workspace_id=sched.get("workspace_id"),
+                ))
+
+                # Update schedule: last_run_at + next_run_at
+                from datetime import timedelta
+                interval = sched.get("interval_hours", 24)
+                next_run = (datetime.utcnow() + timedelta(hours=interval)).strftime("%Y-%m-%d %H:%M:%S")
+
+                db4 = await get_db()
+                try:
+                    await db4.execute(
+                        "UPDATE research_schedules SET last_run_at = ?, next_run_at = ?, last_job_id = ?, updated_at = datetime('now') WHERE id = ?",
+                        (now, next_run, job_id, sched["id"]),
+                    )
+                    await db4.commit()
+                finally:
+                    await db4.close()
+
+        except _asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("research scheduler error")
+            await _asyncio.sleep(60)
+
+
+# ─── Plan file read/write ─────────��──────────────────────────────────────
 
 _PLANS_DIR = _Path.home() / ".claude" / "plans"
 
@@ -9431,11 +11656,191 @@ async def cors_middleware(request: web.Request, handler):
             raise
         except Exception as e:
             logger.exception("Unhandled error")
+            import telemetry
+            telemetry.report_error_sync(
+                type(e).__name__, str(e),
+                f"{request.method} {request.path}",
+            )
             resp = web.json_response({"error": str(e)}, status=500)
-    resp.headers["Access-Control-Allow-Origin"] = "*"
+    # In multiplayer mode, restrict CORS to the actual request origin
+    # instead of wildcard — this server grants shell access.
+    if AUTH_TOKEN:
+        origin = request.headers.get("Origin", "")
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+        # No Origin header (same-origin requests, curl) → no CORS header needed
+    else:
+        resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return resp
+
+
+# ─── Token auth middleware (multiplayer mode) ────────────────────────────
+# When AUTH_TOKEN is set, every request must present the token via:
+#   1. Cookie 'ive_token'  (set automatically via login form)
+#   2. Authorization: Bearer <token>  (API clients)
+#   3. Query param ?token=  (convenience — sets cookie and redirects)
+# Token never needs to appear in a URL — the default flow uses a login form.
+# Localhost hook endpoints (/api/hooks/*) are exempt (verified local).
+
+AUTH_TOKEN: str | None = None  # Set by --multiplayer / --token flag
+
+_LOCALHOST_ADDRS = {"127.0.0.1", "::1", "localhost"}
+
+# ── Rate limiting for auth failures ──────────────────────────────────────
+import time as _auth_time
+
+_auth_failures: dict[str, list[float]] = {}  # IP → list of failure timestamps
+_AUTH_MAX_ATTEMPTS = 5     # max failures per window
+_AUTH_WINDOW_SECS = 60     # rolling window
+_AUTH_LOCKOUT_SECS = 30    # lockout after exceeding limit
+
+
+def _is_rate_limited(ip: str) -> bool:
+    now = _auth_time.time()
+    attempts = _auth_failures.get(ip, [])
+    attempts = [t for t in attempts if now - t < _AUTH_WINDOW_SECS]
+    _auth_failures[ip] = attempts
+    if len(attempts) >= _AUTH_MAX_ATTEMPTS:
+        return now - attempts[-1] < _AUTH_LOCKOUT_SECS
+    return False
+
+
+def _record_auth_failure(ip: str):
+    now = _auth_time.time()
+    if ip not in _auth_failures:
+        _auth_failures[ip] = []
+    _auth_failures[ip].append(now)
+    # Trim to window
+    _auth_failures[ip] = _auth_failures[ip][-_AUTH_MAX_ATTEMPTS * 2:]
+
+
+def _make_cookie_params(request: web.Request) -> dict:
+    """Cookie params with Secure flag when behind HTTPS."""
+    is_https = (
+        request.scheme == "https"
+        or request.headers.get("X-Forwarded-Proto") == "https"
+    )
+    return dict(httponly=True, samesite="Lax", max_age=86400 * 30, secure=is_https)
+
+
+# ── Login form HTML ─────────────────────────────────────────────────��────
+_LOGIN_HTML = """\
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IVE — Connect</title></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#0a0a0a;color:#e5e5e5;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+<div style="text-align:center;width:300px">
+<h2 style="color:#22d3ee;margin:0 0 4px">IVE</h2>
+<p style="color:#555;font-size:13px;margin:0 0 28px">Integrated Vibecoding Environment</p>
+{error}
+<form method="POST" action="/auth" style="display:flex;flex-direction:column;gap:10px">
+<input type="password" name="token" placeholder="Paste your access token" autofocus
+ style="background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:11px 14px;
+ color:#e5e5e5;font-size:14px;outline:none;font-family:ui-monospace,SFMono-Regular,monospace;
+ transition:border-color .15s" onfocus="this.style.borderColor='#22d3ee'"
+ onblur="this.style.borderColor='#2a2a2a'" />
+<button type="submit" style="background:#22d3ee;color:#0a0a0a;border:none;border-radius:8px;
+ padding:11px;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .15s"
+ onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Connect</button>
+</form>
+<p style="color:#333;font-size:11px;margin-top:20px">Token is shown in the terminal where IVE was started</p>
+</div></body></html>"""
+
+_LOGIN_RATE_LIMITED_HTML = """\
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>IVE — Rate Limited</title></head>
+<body style="font-family:system-ui;background:#0a0a0a;color:#e5e5e5;display:flex;
+align-items:center;justify-content:center;height:100vh;margin:0">
+<div style="text-align:center">
+<h2 style="color:#f87171">Too many attempts</h2>
+<p style="color:#666">Try again in {seconds} seconds</p>
+</div></body></html>"""
+
+
+async def auth_login(request: web.Request) -> web.Response:
+    """POST /auth — validate token from login form, set cookie."""
+    peername = request.transport.get_extra_info("peername")
+    remote_ip = peername[0] if peername else "unknown"
+
+    if _is_rate_limited(remote_ip):
+        return web.Response(
+            status=429, content_type="text/html",
+            text=_LOGIN_RATE_LIMITED_HTML.format(seconds=_AUTH_LOCKOUT_SECS),
+        )
+
+    data = await request.post()
+    token = data.get("token", "").strip()
+
+    if token != AUTH_TOKEN:
+        _record_auth_failure(remote_ip)
+        attempts = len([t for t in _auth_failures.get(remote_ip, [])
+                        if _auth_time.time() - t < _AUTH_WINDOW_SECS])
+        remaining = _AUTH_MAX_ATTEMPTS - attempts
+        error_msg = (
+            f'<p style="color:#f87171;font-size:13px;margin:0 0 16px">'
+            f'Invalid token ({remaining} attempt{"s" if remaining != 1 else ""} remaining)</p>'
+        )
+        return web.Response(
+            status=401, content_type="text/html",
+            text=_LOGIN_HTML.format(error=error_msg),
+        )
+
+    resp = web.HTTPFound("/")
+    resp.set_cookie("ive_token", AUTH_TOKEN, **_make_cookie_params(request))
+    return resp
+
+
+@web.middleware
+async def token_auth_middleware(request: web.Request, handler):
+    if not AUTH_TOKEN:
+        return await handler(request)
+
+    # Localhost is always trusted — MCP servers, hooks, CLI tools, and the
+    # local browser all connect from 127.0.0.1.  Auth only gates remote
+    # access (tunnel / multiplayer over the internet).
+    peername = request.transport.get_extra_info("peername")
+    remote_ip = peername[0] if peername else "unknown"
+    if remote_ip in _LOCALHOST_ADDRS:
+        return await handler(request)
+
+    # Auth login form endpoint — exempt (has its own rate limiting)
+    if request.path == "/auth" and request.method == "POST":
+        return await handler(request)
+    if _is_rate_limited(remote_ip):
+        return web.json_response(
+            {"error": "Too many auth attempts. Try again later."},
+            status=429,
+        )
+
+    token = (
+        request.cookies.get("ive_token")
+        or request.query.get("token")
+        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
+
+    if token != AUTH_TOKEN:
+        _record_auth_failure(remote_ip)
+        # Browser → login form. API client → JSON 401.
+        if request.headers.get("Accept", "").startswith("text/html"):
+            return web.Response(
+                status=401, content_type="text/html",
+                text=_LOGIN_HTML.format(error=""),
+            )
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    # ?token= in URL → set cookie and redirect to clean URL (convenience)
+    if request.query.get("token") and request.method == "GET" and not request.path.startswith(("/api/", "/ws")):
+        clean_query = {k: v for k, v in request.query.items() if k != "token"}
+        clean_url = str(request.url.with_query(clean_query))
+        resp = web.HTTPFound(clean_url)
+        resp.set_cookie("ive_token", AUTH_TOKEN, **_make_cookie_params(request))
+        return resp
+
+    return await handler(request)
 
 
 async def on_startup(app: web.Application):
@@ -9499,6 +11904,15 @@ async def on_startup(app: web.Application):
     await pipeline_engine.ensure_presets()
     await pipeline_engine.recover_active_runs()
 
+    # ── Research scheduler (cron-like recurring research) ───────────
+    global _research_scheduler_task
+    _research_scheduler_task = _asyncio.ensure_future(_research_scheduler_loop())
+    logger.info("Research scheduler started")
+
+    # ── Telemetry (anonymous startup + daily heartbeat) ─────────────
+    import telemetry
+    telemetry.start_background()
+
     async def store_and_broadcast_capture(session_id: str, capture: dict):
         """Store capture in DB and broadcast via WebSocket."""
         db = await get_db()
@@ -9529,25 +11943,48 @@ async def on_startup(app: web.Application):
                 "percent_left": capture.get("percent_left"),
             })
 
-        # Quota exceeded → mark account + broadcast for failover UI
+        # Quota exceeded → try auto-failover if enabled, else mark + notify
         if capture.get("capture_type") == "quota_exceeded":
-            db2 = await get_db()
+            auto_cycled = False
             try:
-                cur2 = await db2.execute("SELECT account_id FROM sessions WHERE id = ?", (session_id,))
-                row2 = await cur2.fetchone()
-                if row2 and row2["account_id"]:
-                    await db2.execute(
-                        "UPDATE accounts SET status = 'quota_exceeded', quota_reset_at = datetime('now', '+4 hours') WHERE id = ?",
-                        (row2["account_id"],),
-                    )
-                    await db2.commit()
-            finally:
-                await db2.close()
-            await broadcast({
-                "type": "quota_exceeded",
-                "session_id": session_id,
-                "message": capture.get("raw_text", "Quota exceeded"),
-            })
+                from auth_cycler import auth_cycler as _ac, _is_feature_enabled
+                if await _is_feature_enabled():
+                    result = await _ac.auto_failover(session_id)
+                    if result:
+                        auto_cycled = True
+                        # Stop current PTY — frontend will auto-restart
+                        await pty_mgr.stop_session(session_id)
+                        await broadcast({
+                            "type": "account_switched",
+                            "session_id": session_id,
+                            "old_account_id": result["old_account_id"],
+                            "old_account_name": result["old_account_name"],
+                            "new_account_id": result["new_account_id"],
+                            "new_account_name": result["new_account_name"],
+                            "message": f"Auto-cycled: {result['old_account_name']} → {result['new_account_name']}",
+                        })
+            except Exception as e:
+                logger.error("Auto auth cycling failed: %s", e, exc_info=True)
+
+            if not auto_cycled:
+                # Manual fallback: just mark account + notify
+                db2 = await get_db()
+                try:
+                    cur2 = await db2.execute("SELECT account_id FROM sessions WHERE id = ?", (session_id,))
+                    row2 = await cur2.fetchone()
+                    if row2 and row2["account_id"]:
+                        await db2.execute(
+                            "UPDATE accounts SET status = 'quota_exceeded', quota_reset_at = datetime('now', '+4 hours') WHERE id = ?",
+                            (row2["account_id"],),
+                        )
+                        await db2.commit()
+                finally:
+                    await db2.close()
+                await broadcast({
+                    "type": "quota_exceeded",
+                    "session_id": session_id,
+                    "message": capture.get("raw_text", "Quota exceeded"),
+                })
 
         # Branch detected → /branch switched this PTY to the branch.
         # Create a new session for the ORIGINAL conversation so it opens
@@ -9558,11 +11995,21 @@ async def on_startup(app: web.Application):
                 _fire_and_forget(_open_original_as_tab(session_id, original_native_id))
 
     capture_proc.on_capture(store_and_broadcast_capture)
+
+    # ── Observatory: automated ecosystem scanner ─────────────────────
+    import observatory
+    await observatory.scheduler.start()
+
     logger.info(f"IVE v{VERSION} backend on http://{HOST}:{PORT}")
 
 
 async def on_cleanup(app: web.Application):
     await pty_mgr.stop_all()
+    try:
+        import observatory
+        await observatory.scheduler.stop()
+    except Exception:
+        pass
     try:
         import preview_browser
         await preview_browser.shutdown()
@@ -9722,6 +12169,42 @@ async def sync_agent_skill(request: web.Request) -> web.Response:
 
 
 # ─── REST: Plugin marketplace ─────────────────────────────────────────────
+
+async def search_agent_skills(request: web.Request) -> web.Response:
+    """Semantic search across the skills catalog. Used by MCP tools and UI."""
+    query = request.query.get("q", "").strip()
+    if not query:
+        return web.json_response({"error": "q parameter required"}, status=400)
+    limit = int(request.query.get("limit", "5"))
+    from skill_suggester import search_skills, index_status
+    results = await search_skills(query, limit=limit)
+    status = index_status()
+    return web.json_response({"results": results, "index": status})
+
+
+async def get_agent_skill_content(request: web.Request) -> web.Response:
+    """Get full SKILL.md content by name. Used by MCP tools."""
+    name = request.query.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "name parameter required"}, status=400)
+    from skill_suggester import get_skill_content
+    result = await get_skill_content(name)
+    if not result:
+        return web.json_response({"error": "skill not found"}, status=404)
+    return web.json_response(result)
+
+
+async def dismiss_skill_suggestion(request: web.Request) -> web.Response:
+    """Dismiss a skill suggestion for a session."""
+    body = await request.json()
+    session_id = body.get("session_id", "")
+    entity_id = body.get("entity_id", "")
+    if not session_id or not entity_id:
+        return web.json_response({"error": "session_id and entity_id required"}, status=400)
+    from skill_suggester import dismiss_skill
+    dismiss_skill(session_id, entity_id)
+    return web.json_response({"ok": True})
+
 
 async def list_plugin_registries(request: web.Request) -> web.Response:
     regs = await plugin_manager.list_registries()
@@ -10852,11 +13335,16 @@ async def list_recent_file_activity(request: web.Request) -> web.Response:
 
 
 def create_app() -> web.Application:
-    app = web.Application(middlewares=[cors_middleware])
+    middlewares = [cors_middleware]
+    if AUTH_TOKEN:
+        middlewares.append(token_auth_middleware)
+    app = web.Application(middlewares=middlewares)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
 
     app.router.add_get("/ws", ws_handler)
+    if AUTH_TOKEN:
+        app.router.add_post("/auth", auth_login)
 
     app.router.add_get("/api/workspaces", list_workspaces)
     app.router.add_post("/api/workspaces", create_workspace)
@@ -10908,6 +13396,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/sessions/{id}/clone", clone_session)
     app.router.add_get("/api/sessions/{id}/export", export_session)
     app.router.add_post("/api/sessions/{id}/distill", distill_session)
+    app.router.add_post("/api/sessions/{id}/summarize", summarize_session)
     app.router.add_get("/api/sessions/{id}/scratchpad", get_session_scratchpad)
     app.router.add_put("/api/sessions/{id}/scratchpad", update_session_scratchpad)
     app.router.add_get("/api/sessions/{id}/queue", get_session_queue)
@@ -10961,9 +13450,15 @@ def create_app() -> web.Application:
     app.router.add_post("/api/research", create_research)
     # Deep-research jobs (subprocess runner) — kept on a distinct sub-path so
     # they don't collide with the DB CRUD routes above.
+    app.router.add_post("/api/research/plan", decompose_research_plan)
     app.router.add_post("/api/research/jobs", start_research)
     app.router.add_get("/api/research/jobs", list_research_jobs)
+    app.router.add_post("/api/research/jobs/{job_id}/steer", steer_research_job)
     app.router.add_delete("/api/research/jobs/{job_id}", stop_research_job)
+    app.router.add_get("/api/research/schedules", list_research_schedules)
+    app.router.add_post("/api/research/schedules", create_research_schedule)
+    app.router.add_put("/api/research/schedules/{id}", update_research_schedule)
+    app.router.add_delete("/api/research/schedules/{id}", delete_research_schedule)
     app.router.add_get("/api/research/search", search_research)
     app.router.add_get("/api/research/{id}", get_research_with_sources)
     app.router.add_put("/api/research/{id}", update_research)
@@ -11003,6 +13498,25 @@ def create_app() -> web.Application:
     app.router.add_get("/api/workspaces/{id}/docs", get_docs_status)
     app.router.add_post("/api/workspaces/{id}/docs/build", trigger_docs_build)
 
+    # Observatory
+    app.router.add_get("/api/observatory/findings", list_observatory_findings)
+    app.router.add_get("/api/observatory/scans", list_observatory_scans)
+    app.router.add_get("/api/observatory/settings", get_observatory_settings)
+    app.router.add_put("/api/observatory/settings", update_observatory_settings)
+    app.router.add_post("/api/observatory/scan", trigger_observatory_scan)
+    app.router.add_get("/api/observatory/api-keys", get_observatory_api_keys)
+    app.router.add_put("/api/observatory/api-keys", set_observatory_api_key)
+    app.router.add_post("/api/observatory/api-keys/test", test_observatory_api_key)
+    app.router.add_put("/api/observatory/findings/{id}", update_observatory_finding)
+    app.router.add_delete("/api/observatory/findings/{id}", delete_observatory_finding)
+    app.router.add_post("/api/observatory/findings/{id}/promote", promote_observatory_finding)
+    app.router.add_post("/api/workspaces/{id}/observatorist", create_observatorist)
+
+    # System-wide API key management
+    app.router.add_get("/api/api-keys", list_api_keys)
+    app.router.add_put("/api/api-keys", save_api_key)
+    app.router.add_post("/api/api-keys/test", test_api_key)
+
     app.router.add_get("/api/workspaces/{id}/test-queue", list_test_queue)
     app.router.add_post("/api/workspaces/{id}/test-queue", enqueue_test)
     app.router.add_put("/api/test-queue/{id}", update_test_queue_entry)
@@ -11041,6 +13555,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/accounts/{id}/test", test_account)
     app.router.add_post("/api/accounts/{id}/snapshot", snapshot_account)
     app.router.add_post("/api/accounts/{id}/open-browser", open_account_browser)
+    app.router.add_post("/api/accounts/{id}/setup-browser", playwright_setup_browser)
+    app.router.add_post("/api/accounts/{id}/playwright-auth", playwright_auth)
+    app.router.add_get("/api/accounts/{id}/auth-status", playwright_auth_status)
     app.router.add_post("/api/sessions/{id}/restart-with-account", restart_with_account)
     app.router.add_post("/api/sessions/{id}/pop-out", pop_out_session)
 
@@ -11064,6 +13581,14 @@ def create_app() -> web.Application:
     app.router.add_post("/api/safety/rules/seed", seed_safety_rules)
     app.router.add_put("/api/safety/rules/{id}", update_safety_rule)
     app.router.add_delete("/api/safety/rules/{id}", delete_safety_rule)
+    app.router.add_get("/api/safety/access-log", get_external_access_log)
+    app.router.add_get("/api/safety/command-log", get_command_log)
+    app.router.add_get("/api/safety/package-scans", get_package_scans)
+    app.router.add_post("/api/safety/avcp-result", post_avcp_result)
+    app.router.add_get("/api/safety/install-script-policy", get_install_script_policy)
+    app.router.add_put("/api/safety/install-script-policy", put_install_script_policy)
+    app.router.add_post("/api/safety/install-script-allowlist", add_install_script_allowlist)
+    app.router.add_delete("/api/safety/install-script-allowlist/{id}", remove_install_script_allowlist)
     app.router.add_get("/api/safety/decisions", get_safety_decisions)
     app.router.add_get("/api/safety/proposals", get_safety_proposals)
     app.router.add_post("/api/safety/proposals/{id}/accept", accept_safety_proposal)
@@ -11129,9 +13654,12 @@ def create_app() -> web.Application:
     # Agent Skills
     app.router.add_get("/api/skills", list_agent_skills)
     app.router.add_get("/api/skills/installed", list_installed_skills_handler)
+    app.router.add_get("/api/skills/search", search_agent_skills)
+    app.router.add_get("/api/skills/content", get_agent_skill_content)
     app.router.add_post("/api/skills/install", install_agent_skill)
     app.router.add_post("/api/skills/uninstall", uninstall_agent_skill)
     app.router.add_post("/api/skills/sync", sync_agent_skill)
+    app.router.add_post("/api/skills/dismiss-suggestion", dismiss_skill_suggestion)
     app.router.add_get("/api/skills/{path:.*}", get_agent_skill)
 
     # Plan file
@@ -11199,5 +13727,245 @@ def create_app() -> web.Application:
     return app
 
 
+def _get_lan_ips():
+    """Get LAN IP addresses for this machine."""
+    import socket
+    ips = []
+    try:
+        # Connect to an external address to find the primary LAN interface
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        s.connect(("8.8.8.8", 80))
+        ips.append(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    return ips
+
+
+def _get_hostname_local():
+    """Get mDNS hostname (e.g. 'michaels-mbp.local')."""
+    import socket
+    try:
+        hostname = socket.gethostname()
+        if not hostname.endswith(".local"):
+            hostname += ".local"
+        return hostname
+    except Exception:
+        return None
+
+
+def _generate_token():
+    """Generate a random auth token and persist it."""
+    import secrets
+    token_dir = _Path.home() / ".ive"
+    token_dir.mkdir(parents=True, exist_ok=True)
+    token_file = token_dir / "token"
+    if token_file.exists():
+        stored = token_file.read_text().strip()
+        if stored:
+            return stored
+    token = secrets.token_urlsafe(16)
+    token_file.write_text(token)
+    token_file.chmod(0o600)
+    return token
+
+
+_tunnel_proc = None  # Track for cleanup
+
+
+async def _start_cloudflare_tunnel(port: int):
+    """Start a cloudflared quick tunnel (no account required). Returns tunnel URL."""
+    global _tunnel_proc
+    import shutil
+    cloudflared = shutil.which("cloudflared")
+    if not cloudflared:
+        logger.warning("cloudflared not found — install with: brew install cloudflare/cloudflare/cloudflared")
+        return None
+
+    _tunnel_proc = await asyncio.create_subprocess_exec(
+        cloudflared, "tunnel", "--url", f"http://localhost:{port}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    # cloudflared prints the tunnel URL to stderr
+    import re
+    url_pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+    deadline = asyncio.get_event_loop().time() + 30
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            line = await asyncio.wait_for(_tunnel_proc.stderr.readline(), timeout=2)
+        except asyncio.TimeoutError:
+            continue
+        if not line:
+            break
+        text = line.decode("utf-8", errors="replace")
+        m = url_pattern.search(text)
+        if m:
+            return m.group(0)
+
+    logger.warning("Could not detect cloudflared tunnel URL within 30s")
+    return None
+
+
+def _start_mdns(port: int):
+    """Register IVE as an mDNS service for LAN discovery (best-effort)."""
+    import shutil
+    import subprocess
+    import sys
+
+    if sys.platform == "darwin":
+        dns_sd = shutil.which("dns-sd")
+        if dns_sd:
+            try:
+                proc = subprocess.Popen(
+                    [dns_sd, "-R", "IVE", "_http._tcp", "local", str(port)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return proc
+            except Exception as e:
+                logger.debug("mDNS registration failed: %s", e)
+    elif sys.platform.startswith("linux"):
+        avahi = shutil.which("avahi-publish-service") or shutil.which("avahi-publish")
+        if avahi:
+            try:
+                proc = subprocess.Popen(
+                    [avahi, "IVE", "_http._tcp", str(port)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return proc
+            except Exception as e:
+                logger.debug("mDNS registration failed: %s", e)
+    return None
+
+
+def _print_banner(host, port, token, tunnel_url=None):
+    """Print the startup banner with network info."""
+    lan_ips = _get_lan_ips()
+    hostname = _get_hostname_local()
+    local_url = f"http://localhost:{port}"
+
+    lines = []
+    lines.append("")
+    lines.append("  \033[1;36mIVE\033[0m — Integrated Vibecoding Environment")
+    lines.append(f"  v{VERSION}")
+    lines.append("")
+    lines.append(f"  \033[1mLocal:\033[0m     {local_url}")
+    if host == "0.0.0.0":
+        for ip in lan_ips:
+            lines.append(f"  \033[1mNetwork:\033[0m   http://{ip}:{port}")
+        if hostname:
+            lines.append(f"  \033[1mBonjour:\033[0m   http://{hostname}:{port}")
+    if tunnel_url:
+        lines.append(f"  \033[1mTunnel:\033[0m    {tunnel_url}")
+    if token:
+        share_base = tunnel_url or (f"http://{lan_ips[0]}:{port}" if lan_ips else local_url)
+        lines.append("")
+        lines.append(f"  \033[1;33mToken:\033[0m     {token}")
+        lines.append(f"  \033[1;32mShare:\033[0m     {share_base}")
+        lines.append(f"  \033[90m           Teammates open the URL → paste token to connect\033[0m")
+        lines.append(f"  \033[90m           Rate limited: {_AUTH_MAX_ATTEMPTS} attempts / {_AUTH_WINDOW_SECS}s, then {_AUTH_LOCKOUT_SECS}s lockout\033[0m")
+    lines.append("")
+
+    width = max(len(l.replace("\033[1;36m", "").replace("\033[0m", "").replace("\033[1m", "")
+                      .replace("\033[1;33m", "").replace("\033[1;32m", "")) for l in lines if l) + 2
+    border = "─" * width
+
+    print(f"\n  \033[90m╭{border}╮\033[0m")
+    for l in lines:
+        if l:
+            print(f"  \033[90m│\033[0m{l}")
+        else:
+            print(f"  \033[90m│\033[0m")
+    print(f"  \033[90m╰{border}╯\033[0m\n", flush=True)
+
+
 if __name__ == "__main__":
-    web.run_app(create_app(), host=HOST, port=PORT)
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(description="IVE backend server")
+    parser.add_argument("--multiplayer", action="store_true",
+                        help="Enable multiplayer mode (bind 0.0.0.0, require auth token)")
+    parser.add_argument("--host", default=None,
+                        help="Bind address (default: 127.0.0.1, or 0.0.0.0 with --multiplayer)")
+    parser.add_argument("--port", type=int, default=None,
+                        help=f"Port (default: {PORT})")
+    parser.add_argument("--token", default=None,
+                        help="Auth token (auto-generated if omitted with --multiplayer)")
+    parser.add_argument("--headless", action="store_true",
+                        help="Don't open browser on startup")
+    parser.add_argument("--tunnel", action="store_true",
+                        help="Start a Cloudflare tunnel for internet access")
+    args = parser.parse_args()
+
+    bind_host = args.host or ("0.0.0.0" if args.multiplayer or args.tunnel else HOST)
+    bind_port = args.port or PORT
+
+    # Token: required for multiplayer/tunnel, auto-generated if not provided
+    if args.multiplayer or args.tunnel:
+        AUTH_TOKEN = args.token or _generate_token()
+    elif args.token:
+        AUTH_TOKEN = args.token
+
+    # mDNS registration for LAN discovery
+    mdns_proc = None
+    if bind_host == "0.0.0.0":
+        mdns_proc = _start_mdns(bind_port)
+
+    # Cloudflare tunnel (async, started inside the event loop)
+    tunnel_url_holder = [None]  # mutable for closure
+
+    async def _startup_with_tunnel(app):
+        if args.tunnel:
+            tunnel_url_holder[0] = await _start_cloudflare_tunnel(bind_port)
+            if tunnel_url_holder[0]:
+                logger.info("Cloudflare tunnel: %s", tunnel_url_holder[0])
+        _print_banner(bind_host, bind_port, AUTH_TOKEN, tunnel_url_holder[0])
+
+    app = create_app()
+    app.on_startup.append(_startup_with_tunnel)
+
+    async def _cleanup_multiplayer(app):
+        if mdns_proc:
+            mdns_proc.terminate()
+        if _tunnel_proc:
+            try:
+                _tunnel_proc.terminate()
+                await asyncio.wait_for(_tunnel_proc.wait(), timeout=3)
+            except Exception:
+                _tunnel_proc.kill()
+
+    app.on_cleanup.append(_cleanup_multiplayer)
+
+    try:
+        web.run_app(app, host=bind_host, port=bind_port, print=None)
+    except Exception as fatal:
+        logger.exception("Fatal server crash")
+        import telemetry
+        # Sync send — event loop is dead at this point
+        import urllib.request
+        try:
+            payload = json.dumps({
+                "api_key": telemetry.POSTHOG_API_KEY,
+                "event": "ive_crash",
+                "distinct_id": telemetry._machine_id(),
+                "properties": {
+                    "error_type": type(fatal).__name__,
+                    "message": str(fatal)[:500],
+                    "$lib": "ive-server",
+                },
+            }).encode()
+            req = urllib.request.Request(
+                f"{telemetry.POSTHOG_HOST}/capture/",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=3)
+        except Exception:
+            pass
+        raise

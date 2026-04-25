@@ -156,6 +156,13 @@ if [ "$MULTIPLAYER" = true ]; then
     echo "  Frontend build up to date."
   fi
 
+  # Show token immediately (server banner may take a moment)
+  TOKEN_FILE="$HOME/.ive/token"
+  if [ -f "$TOKEN_FILE" ]; then
+    echo "  Token: $(cat "$TOKEN_FILE")"
+    echo ""
+  fi
+
   (cd "$DIR/backend" && python3 server.py "${PASSTHROUGH_ARGS[@]}")
   exit $?
 fi
