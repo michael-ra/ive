@@ -47,7 +47,7 @@ jobs:
           # VitePress docs under /docs/
           cp -r docs/.vitepress/dist _site/docs
           # CNAME for custom domain
-          echo 'useive.dev' > _site/CNAME
+          echo 'ive.dev' > _site/CNAME
 
       - uses: actions/upload-pages-artifact@v3
         with:
