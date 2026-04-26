@@ -42,6 +42,19 @@ ws_clients: set[web.WebSocketResponse] = set()
 # Maps client_id -> { ws, name, color, viewing_session }
 ws_peers: dict[str, dict] = {}
 
+# Tracks which Playwright preview ids each WS is subscribed to, so we can
+# unsubscribe everything on disconnect (otherwise headless pages leak).
+ws_preview_subs: dict[int, set[str]] = {}
+
+
+def _ws_subscriber_id(ws) -> str:
+    """Pick a stable subscriber id for a ws — prefer the multiplayer
+    client_id from `hello`, fall back to the ws object id."""
+    for cid, info in ws_peers.items():
+        if info.get("ws") is ws:
+            return cid
+    return f"ws-{id(ws)}"
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -2424,6 +2437,9 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         await pty_mgr.stop_session(session_id)
 
                 # ── Live Preview (Playwright browser) ──────────────
+                # Multi-peer: previews are coalesced by share_key
+                # (workspace_id + port). All subscribers receive frames;
+                # one subscriber at a time holds the driver role.
                 elif action == "preview_start":
                     url = data.get("url", "").strip()
                     if not url:
@@ -2432,27 +2448,47 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         url = "https://" + url
                     pw = data.get("width", 1280)
                     ph = data.get("height", 720)
+                    workspace_id = data.get("workspace_id")
                     try:
                         import preview_browser
+                        sub_id = _ws_subscriber_id(ws)
+                        share_key = preview_browser.share_key_for(url, workspace_id)
 
                         async def _send_frame(b64, _ws=ws):
-                            try:
-                                await _ws.send_json({"type": "preview_frame", "data": b64})
-                            except Exception:
-                                pass
+                            await _ws.send_json({"type": "preview_frame", "data": b64})
 
                         async def _send_nav(new_url, _ws=ws):
-                            try:
-                                await _ws.send_json({"type": "preview_navigated", "url": new_url})
-                            except Exception:
-                                pass
+                            await _ws.send_json({"type": "preview_navigated", "url": new_url})
 
-                        pid = await preview_browser.start_preview(
-                            url, pw, ph,
+                        async def _send_driver(driver, _ws=ws):
+                            await _ws.send_json({
+                                "type": "preview_driver_changed",
+                                "driver_id": driver,
+                            })
+
+                        pid, started_new, driver_id = await preview_browser.start_or_attach(
+                            url=url,
+                            width=pw,
+                            height=ph,
+                            share_key=share_key,
+                            subscriber_id=sub_id,
                             on_frame=_send_frame,
                             on_navigate=_send_nav,
+                            on_driver_changed=_send_driver,
                         )
-                        await ws.send_json({"type": "preview_started", "preview_id": pid, "url": url})
+                        ws_preview_subs.setdefault(id(ws), set()).add(pid)
+                        await ws.send_json({
+                            "type": "preview_started",
+                            "preview_id": pid,
+                            "url": url,
+                            "share_key": share_key,
+                            "shared": share_key is not None,
+                            "started_new": started_new,
+                            "driver_id": driver_id,
+                            "is_driver": driver_id == sub_id,
+                            "subscriber_id": sub_id,
+                            "subscriber_count": preview_browser.subscriber_count(pid),
+                        })
                     except Exception as e:
                         logger.warning("Preview start failed: %s", e)
                         await ws.send_json({"type": "preview_error", "error": str(e)})
@@ -2462,7 +2498,14 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     evt = data.get("event")
                     if pid and evt:
                         import preview_browser
-                        await preview_browser.send_input(pid, evt)
+                        sub_id = _ws_subscriber_id(ws)
+                        ok = await preview_browser.send_input(pid, sub_id, evt)
+                        if not ok:
+                            await ws.send_json({
+                                "type": "preview_driver_denied",
+                                "preview_id": pid,
+                                "driver_id": preview_browser.get_driver(pid),
+                            })
 
                 elif action == "preview_navigate":
                     pid = data.get("preview_id")
@@ -2471,7 +2514,14 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         if not url.startswith(("http://", "https://")):
                             url = "https://" + url
                         import preview_browser
-                        await preview_browser.navigate(pid, url)
+                        sub_id = _ws_subscriber_id(ws)
+                        ok = await preview_browser.navigate(pid, sub_id, url)
+                        if not ok:
+                            await ws.send_json({
+                                "type": "preview_driver_denied",
+                                "preview_id": pid,
+                                "driver_id": preview_browser.get_driver(pid),
+                            })
 
                 elif action == "preview_resize":
                     pid = data.get("preview_id")
@@ -2479,7 +2529,15 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     ph = data.get("height", 720)
                     if pid:
                         import preview_browser
-                        await preview_browser.resize(pid, pw, ph)
+                        sub_id = _ws_subscriber_id(ws)
+                        await preview_browser.resize(pid, sub_id, pw, ph)
+
+                elif action == "preview_claim_driver":
+                    pid = data.get("preview_id")
+                    if pid:
+                        import preview_browser
+                        sub_id = _ws_subscriber_id(ws)
+                        await preview_browser.claim_driver(pid, sub_id)
 
                 elif action == "preview_screenshot":
                     pid = data.get("preview_id")
@@ -2495,10 +2553,17 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                             })
 
                 elif action == "preview_stop":
+                    # In the multi-peer model this is "I'm leaving" — the
+                    # page only actually shuts down once subscribers hit 0
+                    # and the grace period elapses.
                     pid = data.get("preview_id")
                     if pid:
                         import preview_browser
-                        await preview_browser.stop_preview(pid)
+                        sub_id = _ws_subscriber_id(ws)
+                        await preview_browser.unsubscribe(pid, sub_id)
+                        subs = ws_preview_subs.get(id(ws))
+                        if subs:
+                            subs.discard(pid)
 
                 # ── Multiplayer presence ──────────────────────
                 elif action == "hello":
@@ -2569,6 +2634,17 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 break
     finally:
         ws_clients.discard(ws)
+        # Unsubscribe from any active Playwright previews so the headless
+        # pages are torn down (after grace period) instead of leaking.
+        owned_pids = ws_preview_subs.pop(id(ws), set())
+        if owned_pids:
+            try:
+                import preview_browser
+                sub_id = _ws_subscriber_id(ws)
+                for pid in owned_pids:
+                    await preview_browser.unsubscribe(pid, sub_id)
+            except Exception as e:
+                logger.debug("Preview unsubscribe on disconnect failed: %s", e)
         # Clean up peer presence and notify others
         leaving_id = None
         for cid, info in ws_peers.items():

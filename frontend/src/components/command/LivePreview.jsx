@@ -16,6 +16,15 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
   const [previewId, setPreviewId] = useState(null)
   const [needsInstall, setNeedsInstall] = useState(false)
   const [installing, setInstalling] = useState(false)
+  // ── Multiplayer-shared preview state ────────────────────
+  // When this preview is keyed (workspace + port) the backend may attach
+  // us to an existing browser page rather than spawn a new one. Only the
+  // current driver can dispatch input/navigate/resize.
+  const [shared, setShared] = useState(false)
+  const [driverId, setDriverId] = useState(null)
+  const [subscriberId, setSubscriberId] = useState(null)
+  const [driverDeniedAt, setDriverDeniedAt] = useState(0)
+  const isDriver = !shared || (driverId !== null && driverId === subscriberId)
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
   const urlInputRef = useRef(null)
@@ -131,6 +140,7 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
       url: rewriteLocalPreviewUrl(initialUrl),
       width: Math.round(width),
       height: Math.round(height),
+      workspace_id: wsId,
     }))
     wsRef.current = globalWs
 
@@ -140,9 +150,18 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
 
       if (data.type === 'preview_started') {
         setPreviewId(data.preview_id)
+        setShared(Boolean(data.shared))
+        setSubscriberId(data.subscriber_id || null)
+        setDriverId(data.driver_id || null)
         setLoading(false)
         setNeedsInstall(false)
         setError(null)
+      } else if (data.type === 'preview_driver_changed') {
+        setDriverId(data.driver_id || null)
+      } else if (data.type === 'preview_driver_denied') {
+        // Another peer is driving — flash a subtle hint instead of
+        // silently dropping the user's clicks.
+        setDriverDeniedAt(Date.now())
       } else if (data.type === 'preview_error') {
         setNeedsInstall(true)
         setLoading(false)
@@ -213,14 +232,27 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
     }
   }, [globalWs, currentUrl])
 
+  // ── Driver claim helper ─────────────────────────────────
+  // First interaction from a non-driver subscriber auto-claims control.
+  // Server processes WS frames serially, so the claim lands before the
+  // input that immediately follows it.
+  const ensureDriver = useCallback(() => {
+    if (!shared || isDriver || !previewId || wsRef.current?.readyState !== 1) return
+    wsRef.current.send(JSON.stringify({ action: 'preview_claim_driver', preview_id: previewId }))
+  }, [shared, isDriver, previewId])
+
   // ── Mouse / keyboard forwarding to Playwright ───────────
   const sendMouseEvent = useCallback((type, e) => {
     if (!previewId || !wsRef.current || !canvasRef.current) return
+    // Suppress mousemove storms while watching — they'd flood claim-driver
+    // requests. Real interaction (mousedown/up/click) still claims.
+    if (type === 'mousemove' && shared && !isDriver) return
     if (type === 'mousemove') {
       const now = Date.now()
       if (now - lastMouseMove.current < 33) return
       lastMouseMove.current = now
     }
+    if (type === 'mousedown') ensureDriver()
     const rect = canvasRef.current.getBoundingClientRect()
     const scaleX = canvasRef.current.width / rect.width
     const scaleY = canvasRef.current.height / rect.height
@@ -236,7 +268,7 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
         altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey,
       },
     }))
-  }, [previewId])
+  }, [previewId, shared, isDriver, ensureDriver])
 
   const sendWheelEvent = useCallback((e) => {
     if (!previewId || !wsRef.current || !canvasRef.current) return
@@ -263,6 +295,7 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) return
     if (e.key === 'r' && (e.metaKey || e.ctrlKey)) return
 
+    if (type === 'keydown') ensureDriver()
     e.preventDefault()
     wsRef.current.send(JSON.stringify({
       action: 'preview_input',
@@ -274,7 +307,7 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
         altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey,
       },
     }))
-  }, [previewId])
+  }, [previewId, ensureDriver])
 
   // ── Screenshot ──────────────────────────────────────────
   const handleCapture = useCallback(async () => {
@@ -574,6 +607,28 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
         <Camera size={14} className="text-indigo-400 shrink-0" />
         <span className="text-[11px] text-zinc-400 font-mono shrink-0">Preview</span>
         {previewId && <span className="text-[9px] text-emerald-500/60 font-mono shrink-0">LIVE</span>}
+        {previewId && shared && (
+          isDriver ? (
+            <span
+              className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-indigo-500/10 text-indigo-300 border-indigo-500/30 shrink-0"
+              title="You are driving this shared preview"
+            >
+              DRIVING
+            </span>
+          ) : (
+            <button
+              onClick={ensureDriver}
+              className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 transition-colors ${
+                Date.now() - driverDeniedAt < 800
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  : 'bg-zinc-700/30 text-zinc-400 border-zinc-600/40 hover:bg-zinc-700/60 hover:text-zinc-200'
+              }`}
+              title="Another peer is driving — click to take control"
+            >
+              WATCHING · take control
+            </button>
+          )
+        )}
 
         <input
           ref={urlInputRef} type="text" value={currentUrl}
