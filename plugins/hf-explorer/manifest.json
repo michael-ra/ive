@@ -1,0 +1,28 @@
+{
+  "name": "hf-explorer",
+  "version": "1.0.0",
+  "description": "Browse, search, and read Hugging Face Hub repos — models, datasets, and spaces. Optional hf-mount integration for filesystem-level access.",
+  "author": "IVE",
+  "license": "MIT",
+  "categories": ["ml", "models", "datasets", "research"],
+  "tags": ["huggingface", "models", "datasets", "ml", "transformers", "llm"],
+  "source_format": "commander",
+  "security_tier": 1,
+  "components": [
+    {
+      "type": "guideline",
+      "name": "HF Explorer",
+      "description": "Teaches the agent when and how to explore Hugging Face Hub — progressive discovery from search to file reading",
+      "activation": "always",
+      "file": "SKILL.md",
+      "skippable": true
+    }
+  ],
+  "mcp_server": {
+    "name": "hf-explorer",
+    "command": "python3",
+    "args": ["plugins/hf-explorer/mcp_server.py"],
+    "env": {},
+    "description": "Search, browse, and read Hugging Face Hub repos — models, datasets, spaces. Optional hf-mount for filesystem access."
+  }
+}
