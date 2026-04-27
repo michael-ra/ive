@@ -374,6 +374,19 @@ _output_decoders: dict[str, codecs.IncrementalDecoder] = {}
 # Per-session bytes held back at flush time because they look like the start
 # of an incomplete ANSI escape sequence. Prepended to the next flush.
 _output_held_bytes: dict[str, bytes] = {}
+# Per-session PTY start timestamp. During the first _INITIAL_COLLAPSE_MS
+# after spawn, _flush_output looks for a full-screen-clear (\x1b[2J) in
+# the accumulated buffer and drops bytes before it. This collapses the
+# Claude Code "render banner once at default size, then SIGWINCH from
+# fit-addon, then redraw at real size" sequence into a single render —
+# the user no longer sees both banners in scrollback.
+_pty_start_time: dict[str, float] = {}
+_INITIAL_COLLAPSE_MS = 1500
+
+
+def mark_pty_started(session_id: str) -> None:
+    """Begin the initial-render collapse window for `session_id`."""
+    _pty_start_time[session_id] = _time.time()
 
 
 def _split_ansi_tail(data: bytes) -> tuple[bytes, bytes]:
@@ -437,9 +450,33 @@ async def _flush_output(session_id: str):
     # or held bytes from a prior flush whose follow-up never came.
     if chunks:
         raw = held + b"".join(chunks)
+    else:
+        raw = held
+
+    # During the initial-render window, drop everything before the LAST
+    # full-screen-clear so Claude's pre-resize banner doesn't end up in
+    # scrollback alongside the post-resize one. After the window expires,
+    # we leave \x1b[2J alone — clears outside the startup window are
+    # legitimately user-visible (e.g. a /clear command).
+    start_t = _pty_start_time.get(session_id)
+    if start_t is not None:
+        if (_time.time() - start_t) * 1000 < _INITIAL_COLLAPSE_MS:
+            last_clear = raw.rfind(b"\x1b[2J")
+            if last_clear > 0:
+                # Bytes ahead of the last clear are about to be erased
+                # by xterm anyway — but they get pushed into scrollback
+                # first. Dropping them here keeps scrollback clean.
+                # Reset the UTF-8 decoder since we may have just thrown
+                # away continuation bytes it was waiting on.
+                raw = raw[last_clear:]
+                _output_decoders.pop(session_id, None)
+        else:
+            _pty_start_time.pop(session_id, None)
+
+    if chunks:
         safe, hold = _split_ansi_tail(raw)
     else:
-        safe, hold = held, b""
+        safe, hold = raw, b""
 
     if hold:
         _output_held_bytes[session_id] = hold
@@ -575,6 +612,7 @@ async def handle_pty_exit(session_id: str, code: int):
     _input_esc.pop(session_id, None)
     _output_decoders.pop(session_id, None)
     _output_held_bytes.pop(session_id, None)
+    _pty_start_time.pop(session_id, None)
     _session_workspace.pop(session_id, None)
 
 
@@ -2384,6 +2422,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         pre_files = None
                         if not config.get("native_session_id"):
                             pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"])
+                        mark_pty_started(session_id)
                         await pty_mgr.start_session(
                             session_id, config["workspace_path"], cols, rows, cmd_args, extra_env, cmd_binary
                         )
@@ -3140,6 +3179,7 @@ async def create_session(request: web.Request) -> web.Response:
                 cmd = auto_sess.build_command()
                 try:
                     pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"])
+                    mark_pty_started(session_id)
                     await pty_mgr.start_session(session_id, config["workspace_path"], 120, 40, cmd[1:], cmd_binary=cmd[0])
                     await broadcast({"session_id": session_id, "type": "status", "status": "running"})
                     _schedule_session_detection(cli_type, session_id, config["workspace_path"], pre_files)
