@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, FolderOpen, MessageSquare, ChevronDown, ChevronRight, Trash2, Search, Crown, Kanban, GitCompareArrows, GripVertical, Shield, Server, Check, GitMerge, FlaskConical, BookOpenCheck, FileText, Pencil, Copy, ClipboardCopy, Square, ExternalLink, Download, Telescope, Archive, ArchiveRestore, Sparkles } from 'lucide-react'
+import { Plus, FolderOpen, MessageSquare, ChevronDown, ChevronRight, Trash2, Search, Crown, Kanban, GitCompareArrows, GripVertical, Shield, Server, Check, GitMerge, FlaskConical, BookOpenCheck, FileText, Pencil, Copy, ClipboardCopy, Square, ExternalLink, Download, Telescope, Archive, ArchiveRestore, Sparkles, Settings } from 'lucide-react'
 import MergeDialog from '../session/MergeDialog'
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
@@ -1169,10 +1169,11 @@ export default function Sidebar() {
                     useStore.setState({ activeWorkspaceId: ws.id })
                     window.dispatchEvent(new CustomEvent('open-workspace-settings', { detail: { workspaceId: ws.id } }))
                   }}
-                  className="flex items-center gap-1.5 w-full px-3 py-1.5 mb-0.5 text-[10px] text-text-faint hover:text-text-secondary hover:bg-bg-hover transition-colors group/ws-btn"
+                  className="flex items-center gap-1.5 w-full px-3 py-1.5 mb-0.5 text-[10px] text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors group/ws-btn"
                   title="Open workspace settings (⌘K → Workspace Settings)"
                 >
-                  <span className="font-mono text-[9px]">⚙</span>
+                  <Settings size={11} className="text-text-faint group-hover/ws-btn:text-text-secondary transition-colors shrink-0" />
+                  <span>Settings</span>
                   <span className="flex items-center gap-1.5 ml-auto">
                     <span className={`px-1 py-0.5 rounded text-[9px] font-mono border ${
                       ws.human_oversight === 'full_auto'
