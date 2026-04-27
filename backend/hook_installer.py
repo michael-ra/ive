@@ -644,8 +644,22 @@ HOOKEOF
 HOOKEOF
     exit 0
     ;;
+  allow_auto)
+    # Explicit allow — overrides Claude Code's native first-tool-call
+    # confirmation menu. Server returns this only when the session's stored
+    # permission_mode is 'auto' AND no deny/ask rule matched, so the
+    # operator's intent ("auto-approve unless safety gate flags it") is
+    # honored without a manual keystroke.
+    if [ "$CLI_TYPE" = "gemini" ]; then
+      exit 0  # Gemini has its own permission model; pass through
+    fi
+    cat <<HOOKEOF
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"[Safety Gate] $API_REASON"}}
+HOOKEOF
+    exit 0
+    ;;
   *)
-    # allow, or parse error — pass through
+    # allow, or parse error — pass through (Claude's native gating runs)
     exit 0
     ;;
 esac

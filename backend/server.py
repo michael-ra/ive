@@ -9700,6 +9700,35 @@ async def evaluate_safety(request: web.Request) -> web.Response:
             },
         ))
 
+    # ── Auto-mode override ──────────────────────────────────────────────
+    # When no destructive rule matched (action stayed 'allow'), upgrade to
+    # 'allow_auto' for sessions whose stored permission_mode is 'auto'. The
+    # hook script translates 'allow_auto' into an explicit
+    # `permissionDecision: "allow"` so Claude Code skips its native first-
+    # tool-call menu. Sessions on 'default' get a normal 'allow' (exit 0,
+    # pass through) so Claude's native gating still prompts the user as
+    # they intended.
+    if result.action == "allow" and session_id:
+        try:
+            db_mode = await get_db()
+            try:
+                cur = await db_mode.execute(
+                    "SELECT permission_mode FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+                row = await cur.fetchone()
+                if row and (row["permission_mode"] or "").lower() == "auto":
+                    return web.json_response({
+                        "decision": "allow_auto",
+                        "reason": "auto mode + no destructive rule matched",
+                        "rule_id": None,
+                        "latency_ms": result.latency_ms,
+                    })
+            finally:
+                await db_mode.close()
+        except Exception:
+            pass  # fall through to plain allow
+
     return web.json_response({
         "decision": result.action,
         "reason": result.reason,
