@@ -1345,18 +1345,31 @@ def handle_jsonrpc(request: dict) -> dict:
 
 
 def main():
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        response = handle_jsonrpc(request)
-        if response is not None:
-            sys.stdout.write(json.dumps(response) + "\n")
-            sys.stdout.flush()
+    from mcp_exit_log import install, log_exit
+    install("documentor")
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            response = handle_jsonrpc(request)
+            if response is not None:
+                try:
+                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.flush()
+                except BrokenPipeError:
+                    log_exit("stdout-broken-pipe", "(parent stopped reading)")
+                    return
+        log_exit("stdin-eof", "(parent closed stdin)")
+    except SystemExit:
+        raise
+    except BaseException as e:
+        log_exit("unhandled-exception", f"{type(e).__name__}: {e}")
+        raise
 
 
 if __name__ == "__main__":

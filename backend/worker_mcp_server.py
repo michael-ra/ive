@@ -993,7 +993,11 @@ def _app_setting(key: str) -> str | None:
 
 
 def main():
+    from mcp_exit_log import install, log_exit
+    install("worker-board")
+
     if not SESSION_ID:
+        log_exit("config-error", "(WORKER_SESSION_ID env var not set)")
         print("WORKER_SESSION_ID env var not set — cannot scope task access.", file=sys.stderr)
         sys.exit(1)
 
@@ -1014,18 +1018,29 @@ def main():
     if flags.get("coordination") and _app_setting("experimental_myelin_coordination") == "on":
         TOOLS.update(MYELIN_COORD_TOOLS)
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        resp = handle_request(req)
-        if resp is not None:
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                req = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            resp = handle_request(req)
+            if resp is not None:
+                try:
+                    sys.stdout.write(json.dumps(resp) + "\n")
+                    sys.stdout.flush()
+                except BrokenPipeError:
+                    log_exit("stdout-broken-pipe", "(parent stopped reading)")
+                    return
+        log_exit("stdin-eof", "(parent closed stdin)")
+    except SystemExit:
+        raise
+    except BaseException as e:
+        log_exit("unhandled-exception", f"{type(e).__name__}: {e}")
+        raise
 
 
 if __name__ == "__main__":
