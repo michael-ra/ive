@@ -138,7 +138,7 @@ async def _do_dispatch(workspace_id: str, specific_task_id: str = None):
             return
 
         max_workers = ws["commander_max_workers"] or 3
-        task_deps_enabled = bool(ws.get("task_dependencies_enabled"))
+        task_deps_enabled = bool(ws["task_dependencies_enabled"])
 
         # 2. Find Commander session
         cur = await db.execute(
