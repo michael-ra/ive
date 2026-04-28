@@ -1730,6 +1730,12 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     ws_clients.add(ws)
+    # Tag the socket with its joiner_session id (when present) so a
+    # subsequent /api/sessions/auth/{id}/revoke can close live connections
+    # the revoked joiner is holding open. Without this, revocation only
+    # affects the next HTTP request — the existing WS keeps driving PTYs.
+    auth_ctx = request.get("auth")
+    ws._ive_actor_id = getattr(auth_ctx, "actor_id", None) if auth_ctx else None
     logger.info(f"WebSocket connected ({len(ws_clients)} total)")
 
     try:
@@ -13761,6 +13767,39 @@ async def auth_login(request: web.Request) -> web.Response:
         )
 
     resp = web.HTTPFound("/")
+    # In tunnel mode the legacy ive_token cookie is intentionally ignored by
+    # resolve_auth (so revoking a joiner_session can't be circumvented by a
+    # bookmarked token). Mint a per-row joiner_session instead so the form
+    # login still works AND remains revocable from the Sharing panel.
+    if _TUNNEL_MODE:
+        try:
+            cookie_value, sess = await _joiner_sessions.create_session(
+                mode="full",
+                actor_kind="owner_legacy",
+                ttl_seconds=86400,
+                label="Owner (form login)",
+                last_ip=remote_ip,
+                last_user_agent=request.headers.get("User-Agent"),
+            )
+            resp.set_cookie(
+                _auth_context.SESSION_COOKIE,
+                cookie_value,
+                **_make_cookie_params(request),
+            )
+            resp.del_cookie(_auth_context.LEGACY_COOKIE)
+            _fire_and_forget(bus.emit(
+                CommanderEvent.SESSION_MINTED,
+                {
+                    "session_id": sess.id,
+                    "actor_kind": sess.actor_kind,
+                    "mode": sess.mode,
+                    "via": "tunnel_form_login",
+                },
+                source="commander",
+            ))
+            return resp
+        except Exception:
+            logger.exception("Failed to mint joiner session for tunnel form login; falling back to legacy cookie")
     resp.set_cookie("ive_token", AUTH_TOKEN, **_make_cookie_params(request))
     return resp
 
@@ -14192,6 +14231,15 @@ async def revoke_auth_session_handler(request: web.Request) -> web.Response:
             {"session_id": sid, "revoked_by": ctx.actor_kind},
             source="commander",
         )
+        # Close any live WebSocket the revoked actor is holding so they
+        # can't keep driving PTYs after revocation. Snapshot first because
+        # ws.close() triggers the finally{} branch which mutates ws_clients.
+        doomed = [w for w in ws_clients if getattr(w, "_ive_actor_id", None) == sid]
+        for w in doomed:
+            try:
+                await w.close(code=1008, message=b"session revoked")
+            except Exception:
+                pass
     return web.json_response({"ok": True, "revoked": bool(revoked)})
 
 

@@ -117,19 +117,33 @@ async def resolve_auth(request, *, auth_token: str | None, tunnel_mode: bool) ->
             )
 
     # 3. Legacy ive_token cookie / ?token= / Bearer == AUTH_TOKEN.
-    legacy = (
-        request.cookies.get(LEGACY_COOKIE)
-        or request.query.get("token")
-        or bearer  # bearer might be the legacy token
-    )
-    if _tokens_equal(legacy, auth_token):
-        return AuthContext(
-            actor_kind="owner_legacy",
-            actor_id=None,
-            mode="full",
-            brief_subscope=None,
-            label="Owner (legacy token)",
-            expires_at=None,
+    #
+    # SECURITY: When the public tunnel is active, this path is *disabled* as a
+    # blanket auth grant. Reason: revoking a joiner_sessions row only nukes
+    # the ive_session cookie. A visitor still holding the legacy ive_token
+    # cookie or a bookmarked ?token= URL would otherwise sail past the revoke
+    # because resolve_auth would return owner_legacy/Full from this branch.
+    #
+    # In tunnel mode the legacy token can ONLY be exchanged for a joiner
+    # session (see token_auth_middleware: ?token= redirect → mint session,
+    # and /auth POST → mint session). Once that exchange happens the visitor
+    # is on ive_session and revoke works. If they re-present the legacy
+    # token after revoke, they'll be 401'd back to /auth, where they'd need
+    # the token again to mint a *new* session — which the owner can revoke.
+    if not tunnel_mode:
+        legacy = (
+            request.cookies.get(LEGACY_COOKIE)
+            or request.query.get("token")
+            or bearer  # bearer might be the legacy token
         )
+        if _tokens_equal(legacy, auth_token):
+            return AuthContext(
+                actor_kind="owner_legacy",
+                actor_id=None,
+                mode="full",
+                brief_subscope=None,
+                label="Owner (legacy token)",
+                expires_at=None,
+            )
 
     return None
