@@ -271,7 +271,7 @@ export default function MissionControl({ onClose }) {
                   </span>
                   <span className="text-[10px] text-text-faint/50 font-mono truncate">{ws.path}</span>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                   {wsSessions.map((session) => (
                     <div key={session.id} data-session-idx={sessionIdxMap[session.id]} className="min-w-0">
                       <SessionCard

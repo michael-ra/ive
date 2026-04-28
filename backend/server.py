@@ -13836,6 +13836,38 @@ async def token_auth_middleware(request: web.Request, handler):
         clean_query = {k: v for k, v in request.query.items() if k != "token"}
         clean_url = str(request.url.with_query(clean_query))
         resp = web.HTTPFound(clean_url)
+        # In tunnel mode, mint a per-row joiner_session so the visitor shows
+        # up in /api/sessions/auth and can be revoked individually. Locally
+        # we keep the legacy cookie path (single-user dev convenience).
+        if _TUNNEL_MODE:
+            try:
+                cookie_value, sess = await _joiner_sessions.create_session(
+                    mode="full",
+                    actor_kind="owner_legacy",
+                    ttl_seconds=86400,
+                    label="Token link visitor",
+                    last_ip=remote_ip,
+                    last_user_agent=request.headers.get("User-Agent"),
+                )
+                resp.set_cookie(
+                    _auth_context.SESSION_COOKIE,
+                    cookie_value,
+                    **_make_cookie_params(request),
+                )
+                resp.del_cookie(_auth_context.LEGACY_COOKIE)
+                _fire_and_forget(bus.emit(
+                    CommanderEvent.SESSION_MINTED,
+                    {
+                        "session_id": sess.id,
+                        "actor_kind": sess.actor_kind,
+                        "mode": sess.mode,
+                        "via": "tunnel_token_link",
+                    },
+                    source="commander",
+                ))
+                return resp
+            except Exception:
+                logger.exception("Failed to mint joiner session for tunnel token link; falling back to legacy cookie")
         resp.set_cookie("ive_token", AUTH_TOKEN, **_make_cookie_params(request))
         return resp
 
@@ -14351,24 +14383,121 @@ _frontend_build_proc = None
 
 
 async def runtime_tunnel_stop_handler(request: web.Request) -> web.Response:
-    """POST /api/runtime/tunnel/stop — terminate the cloudflared subprocess."""
+    """POST /api/runtime/tunnel/stop — terminate the cloudflared subprocess.
+
+    If the stop request is coming through the tunnel itself, we can't
+    kill cloudflared synchronously — the response would never reach the
+    client (502 from the edge). Detach the kill so the response flushes
+    cleanly first."""
     global _TUNNEL_MODE, _runtime_tunnel_url, _tunnel_proc
     ctx = get_auth(request)
     if not ctx.is_owner:
         return web.json_response({"error": "owner only"}, status=403)
-    if _tunnel_proc:
-        try:
-            _tunnel_proc.terminate()
-            await asyncio.wait_for(_tunnel_proc.wait(), timeout=3)
-        except Exception:
-            try:
-                _tunnel_proc.kill()
-            except Exception:
-                pass
+    via_tunnel = bool(request.headers.get("Cf-Connecting-Ip"))
+    proc = _tunnel_proc
     _tunnel_proc = None
     _runtime_tunnel_url = None
     _TUNNEL_MODE = False
+
+    async def _kill_after_response():
+        if via_tunnel:
+            await asyncio.sleep(0.5)
+        if not proc:
+            return
+        try:
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    _fire_and_forget(_kill_after_response())
     return web.json_response({"ok": True, "running": False})
+
+
+async def runtime_mode_handler(request: web.Request) -> web.Response:
+    """POST /api/runtime/mode — body {mode: 'off' | 'local' | 'tunnel'}.
+
+    Single atomic switch consolidating multiplayer + tunnel:
+      - off:    multiplayer=False, tunnel=False
+      - local:  multiplayer=True,  tunnel=False  (LAN preview proxy)
+      - tunnel: multiplayer=True,  tunnel=True   (public via cloudflared)
+    """
+    global _MULTIPLAYER_MODE, _TUNNEL_MODE, AUTH_TOKEN, _runtime_tunnel_url, _tunnel_proc
+    ctx = get_auth(request)
+    if not ctx.is_owner:
+        return web.json_response({"error": "owner only"}, status=403)
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    mode = (body.get("mode") or "").strip().lower()
+    if mode not in ("off", "local", "tunnel"):
+        return web.json_response(
+            {"error": "mode must be one of: off, local, tunnel"}, status=400,
+        )
+
+    target_multiplayer = mode in ("local", "tunnel")
+    target_tunnel = mode == "tunnel"
+
+    # Tear down cloudflared when leaving tunnel mode.
+    if not target_tunnel and _tunnel_proc and _tunnel_proc.returncode is None:
+        proc = _tunnel_proc
+        _tunnel_proc = None
+        _runtime_tunnel_url = None
+        async def _kill():
+            try:
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+        _fire_and_forget(_kill())
+
+    _MULTIPLAYER_MODE = target_multiplayer
+    _TUNNEL_MODE = target_tunnel
+
+    if target_tunnel and not (_tunnel_proc and _tunnel_proc.returncode is None):
+        import shutil as _shutil
+        if not _shutil.which("cloudflared"):
+            _TUNNEL_MODE = False
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "cloudflared is not installed. Install with: brew install cloudflare/cloudflare/cloudflared",
+                },
+                status=500,
+            )
+        if not AUTH_TOKEN:
+            AUTH_TOKEN = _generate_token()
+            logger.info("Auto-generated AUTH_TOKEN for runtime tunnel")
+        bind_port = int(os.environ.get("PORT") or 5111)
+        url = await _start_cloudflare_tunnel(bind_port)
+        if not url:
+            _TUNNEL_MODE = False
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "cloudflared started but no tunnel URL was emitted within 60s. Check network access and try again.",
+                },
+                status=500,
+            )
+        _runtime_tunnel_url = url
+        _fire_and_forget(_ensure_frontend_built())
+
+    proc_alive = _tunnel_proc is not None and _tunnel_proc.returncode is None
+    return web.json_response({
+        "ok": True,
+        "mode": mode,
+        "multiplayer": {"enabled": _MULTIPLAYER_MODE},
+        "tunnel": {
+            "running": proc_alive,
+            "url": _runtime_tunnel_url if proc_alive else None,
+            "token": AUTH_TOKEN if (proc_alive and AUTH_TOKEN) else None,
+        },
+    })
 
 
 async def runtime_multiplayer_toggle_handler(request: web.Request) -> web.Response:
@@ -16619,6 +16748,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/runtime/tunnel/start", runtime_tunnel_start_handler)
     app.router.add_post("/api/runtime/tunnel/stop", runtime_tunnel_stop_handler)
     app.router.add_post("/api/runtime/multiplayer", runtime_multiplayer_toggle_handler)
+    app.router.add_post("/api/runtime/mode", runtime_mode_handler)
     # PR 4: catch-me-up digest + Web Push subscriptions
     app.router.add_get("/api/catchup", catchup_handler)
     app.router.add_post("/api/push/subscribe", push_subscribe_handler)

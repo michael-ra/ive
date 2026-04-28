@@ -721,6 +721,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ enabled: !!enabled }),
     }),
+  // Atomic 3-state mode switch: 'off' | 'local' | 'tunnel'.
+  // Backend handles cloudflared start/stop, multiplayer flag, AUTH_TOKEN
+  // mint, and frontend dist build in one round-trip.
+  setMode: (mode) =>
+    request('/runtime/mode', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    }),
 
   listAuditLog: ({ actor_id, actor_kind, since, path_prefix, limit } = {}) => {
     const qs = new URLSearchParams()

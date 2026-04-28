@@ -4,8 +4,8 @@ import {
   Search, Copy, Download, Layout, LayoutGrid, History, Inbox, ListChecks,
   Kanban, GitBranch, GitCompareArrows, Crown, StickyNote, User, RotateCcw, Package,
   FlaskConical, Zap, Volume2, MessageSquareQuote, ListOrdered, Server, Sparkles,
-  Brain, MessagesSquare, ExternalLink, BookOpenCheck, Key, Telescope, Ticket,
-  Newspaper, ShieldCheck, Globe
+  Brain, MessagesSquare, ExternalLink, BookOpenCheck, Key, Telescope,
+  Newspaper, Share2
 } from 'lucide-react'
 
 export const ACTIONS = [
@@ -56,9 +56,7 @@ export const ACTIONS = [
   { id: 'general-settings', label: 'General Settings', icon: ToggleLeft, section: 'Config' },
   { id: 'sound-settings', label: 'Sound Notifications', icon: Volume2, section: 'Config' },
   { id: 'api-keys', label: 'API Keys', icon: Key, section: 'Config' },
-  { id: 'invites', label: 'Invites — Share Access', icon: Ticket, section: 'Auth' },
-  { id: 'auth-sessions', label: 'Authenticated Sessions & Audit', icon: ShieldCheck, section: 'Auth', hint: 'Active joiners, IPs, mode, audit log + revoke' },
-  { id: 'runtime-controls', label: 'Tunnel & Multiplayer', icon: Globe, section: 'Auth', hint: 'Start/stop public tunnel, toggle multiplayer' },
+  { id: 'sharing', label: 'Sharing — Mode, Invites & Sessions', icon: Share2, section: 'Auth', hint: 'Off / Local / Tunnel + invite minting + active joiners' },
   { id: 'code-review', label: 'Code Review', icon: GitCompareArrows, section: 'Git', shortcut: '⌘⇧G' },
   { id: 'annotate', label: 'Annotate Output', icon: MessageSquareQuote, section: 'Sessions', shortcut: '⌘⇧A' },
   { id: 'memory-search', label: 'Memory Search', icon: Brain, section: 'W2W' },

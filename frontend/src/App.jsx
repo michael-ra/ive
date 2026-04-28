@@ -25,9 +25,7 @@ import SoundSettingsPanel from './components/settings/SoundSettingsPanel'
 import GeneralSettingsPanel from './components/settings/GeneralSettingsPanel'
 import WorkspaceSettingsPanel from './components/settings/WorkspaceSettingsPanel'
 import ApiKeysPanel from './components/settings/ApiKeysPanel'
-import InvitesPanel from './components/settings/InvitesPanel'
-import AuthSessionsPanel from './components/settings/AuthSessionsPanel'
-import RuntimeControlsPanel from './components/settings/RuntimeControlsPanel'
+import SharingPanel from './components/settings/SharingPanel'
 import FirstLaunchOnboarding from './components/onboarding/FirstLaunchOnboarding'
 import MobileInstallPrompt from './components/mobile/MobileInstallPrompt'
 import CatchUpBanner, { touchLastSeen } from './components/catchup/CatchUpBanner'
@@ -179,9 +177,7 @@ export default function App() {
       if (panel === 'sound-settings') setShowSoundSettings(true)
       if (panel === 'experimental') setShowExperimental(true)
       if (panel === 'api-keys') setShowApiKeys(true)
-      if (panel === 'invites') setShowInvites(true)
-      if (panel === 'auth-sessions') setShowAuthSessions(true)
-      if (panel === 'runtime-controls') setShowRuntimeControls(true)
+      if (panel === 'sharing' || panel === 'invites' || panel === 'auth-sessions' || panel === 'runtime-controls') setShowSharing(true)
       if (panel === 'prompts') setShowPrompts(true)
       if (panel === 'search') setShowSearch(true)
     }
@@ -467,9 +463,7 @@ export default function App() {
   const [showGeneralSettings, setShowGeneralSettings] = useState(false)
   const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false)
   const [showApiKeys, setShowApiKeys] = useState(false)
-  const [showInvites, setShowInvites] = useState(false)
-  const [showAuthSessions, setShowAuthSessions] = useState(false)
-  const [showRuntimeControls, setShowRuntimeControls] = useState(false)
+  const [showSharing, setShowSharing] = useState(false)
   const [showFirstLaunch, setShowFirstLaunch] = useState(false)
   const [wsSettingsInitialId, setWsSettingsInitialId] = useState(null)
   const [showCodeReview, setShowCodeReview] = useState(false)
@@ -526,7 +520,7 @@ export default function App() {
     setShowGeneralSettings(false)
     setShowWorkspaceSettings(false)
     setShowApiKeys(false)
-    setShowInvites(false)
+    setShowSharing(false)
     setShowCodeReview(false)
     setShowDistill(false); setDistillInitial(null)
     setShowAnnotator(false)
@@ -579,9 +573,7 @@ export default function App() {
         [showGeneralSettings, () => setShowGeneralSettings(false)],
         [showWorkspaceSettings, () => setShowWorkspaceSettings(false)],
         [showApiKeys, () => setShowApiKeys(false)],
-        [showInvites, () => setShowInvites(false)],
-        [showAuthSessions, () => setShowAuthSessions(false)],
-        [showRuntimeControls, () => setShowRuntimeControls(false)],
+        [showSharing, () => setShowSharing(false)],
         [showCodeReview, () => setShowCodeReview(false)],
         [showGridEditor, () => setShowGridEditor(false)],
         [showScratchpad, () => setShowScratchpad(false)],
@@ -593,12 +585,12 @@ export default function App() {
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [showDistill, showQuickFeature, showAnnotator, screenshotData, livePreviewUrl, showPreviewPalette, showCommand, showPrompts, showGuidelines, showMcpServers, showBroadcast, showSearch, showMission, showHistory, showInbox, showPlan, showBoard, showPipelineEditor, showTree, showTemplates, showScratchpad, showAccounts, showShortcuts, showResearchHub, showCodeReview, showMarketplace, showQuickActionPalette, showExperimental, showSafety, showSoundSettings, showGeneralSettings, showWorkspaceSettings, showApiKeys, showInvites, showAuthSessions, showRuntimeControls, showGridEditor, splitMode])
+  }, [showDistill, showQuickFeature, showAnnotator, screenshotData, livePreviewUrl, showPreviewPalette, showCommand, showPrompts, showGuidelines, showMcpServers, showBroadcast, showSearch, showMission, showHistory, showInbox, showPlan, showBoard, showPipelineEditor, showTree, showTemplates, showScratchpad, showAccounts, showShortcuts, showResearchHub, showCodeReview, showMarketplace, showQuickActionPalette, showExperimental, showSafety, showSoundSettings, showGeneralSettings, showWorkspaceSettings, showApiKeys, showSharing, showGridEditor, splitMode])
 
   // When a modal overlay opens, pull focus away from the terminal so that
   // keyboard events (arrows, Enter, etc.) reach panel handlers instead of
   // being consumed by xterm.js.
-  const anyModalOpen = showDistill || showQuickFeature || showAnnotator || showCommand || showPrompts || showGuidelines || showMcpServers || showBroadcast || showSearch || showMission || showHistory || showInbox || showPlan || showBoard || showTree || showTemplates || showShortcuts || showAccounts || showResearchHub || showCodeReview || showGridEditor || showPreviewPalette || !!livePreviewUrl || showMarketplace || showQuickActionPalette || showExperimental || showSoundSettings || showGeneralSettings || showApiKeys || showInvites || showAuthSessions || showRuntimeControls || !!screenshotData
+  const anyModalOpen = showDistill || showQuickFeature || showAnnotator || showCommand || showPrompts || showGuidelines || showMcpServers || showBroadcast || showSearch || showMission || showHistory || showInbox || showPlan || showBoard || showTree || showTemplates || showShortcuts || showAccounts || showResearchHub || showCodeReview || showGridEditor || showPreviewPalette || !!livePreviewUrl || showMarketplace || showQuickActionPalette || showExperimental || showSoundSettings || showGeneralSettings || showApiKeys || showSharing || !!screenshotData
   useEffect(() => {
     if (anyModalOpen) {
       const active = document.activeElement
@@ -717,9 +709,11 @@ export default function App() {
       'sound-settings': () => setShowSoundSettings(true),
       'workspace-settings': () => { setWsSettingsInitialId(useStore.getState().activeWorkspaceId); setShowWorkspaceSettings(true) },
       'api-keys': () => setShowApiKeys(true),
-      'invites': () => setShowInvites(true),
-      'auth-sessions': () => setShowAuthSessions(true),
-      'runtime-controls': () => setShowRuntimeControls(true),
+      'sharing': () => setShowSharing(true),
+      // Legacy aliases — the three split panels were unified into Sharing.
+      'invites': () => setShowSharing(true),
+      'auth-sessions': () => setShowSharing(true),
+      'runtime-controls': () => setShowSharing(true),
       'add-workspace': () => {
         api.browseFolder().then(({ path }) => {
           if (path) api.createWorkspace(path).then((ws) => {
@@ -1387,9 +1381,7 @@ export default function App() {
       {showGeneralSettings && <GeneralSettingsPanel onClose={() => setShowGeneralSettings(false)} />}
       {showWorkspaceSettings && <WorkspaceSettingsPanel onClose={() => setShowWorkspaceSettings(false)} initialWorkspaceId={wsSettingsInitialId} />}
       {showApiKeys && <ApiKeysPanel onClose={() => setShowApiKeys(false)} />}
-      {showInvites && <InvitesPanel onClose={() => setShowInvites(false)} />}
-      {showAuthSessions && <AuthSessionsPanel onClose={() => setShowAuthSessions(false)} />}
-      {showRuntimeControls && <RuntimeControlsPanel onClose={() => setShowRuntimeControls(false)} />}
+      {showSharing && <SharingPanel onClose={() => setShowSharing(false)} />}
       {showFirstLaunch && (
         <FirstLaunchOnboarding onDone={() => setShowFirstLaunch(false)} />
       )}
