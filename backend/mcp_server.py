@@ -124,6 +124,27 @@ def tool_create_session(args: dict) -> str:
         body["system_prompt"] = system_prompt
     body["auto_start"] = True  # Auto-start PTY so send_message works immediately
     result = api_call("POST", "/sessions", body)
+
+    # Auto-kickoff: PTY spawn brings up Claude Code at its welcome screen,
+    # which idles until a user message arrives. The system prompt is appended
+    # via --append-system-prompt and tells the worker WHAT to do, but doesn't
+    # itself trigger the first turn — Claude needs a user message to begin.
+    # Without this, planners and workers sit silent until the Commander
+    # remembers to chain a send_message, which it often forgets.
+    #
+    # Only auto-kickoff when a task_id is set (i.e., the worker has a clear
+    # assignment). Skip for ad-hoc sessions where the user wants to compose
+    # their own first message. Override with kickoff_message="" to opt out
+    # explicitly, or pass a custom string to override the default.
+    if task_id and isinstance(result, dict) and result.get("id") and not result.get("error"):
+        kickoff = args.get("kickoff_message")
+        if kickoff is None:
+            kickoff = "Begin work on your assigned task."
+        if kickoff:
+            import time as _time
+            _time.sleep(3.0)  # PTY boot + Claude TUI ready (mirrors frontend delay)
+            api_call("POST", f"/sessions/{result['id']}/input", {"message": kickoff})
+
     return json.dumps(result, indent=2)
 
 
@@ -840,7 +861,7 @@ TOOLS = {
     },
     "create_session": {
         "handler": tool_create_session,
-        "description": "Create a new worker session. Pass task_id to auto-assign a feature board task and give the worker tools to update its own ticket status. Set plan_first=true for planning before implementation. Set ralph_loop=true for persistent execute→verify→fix loop until genuinely complete. Set session_type='test_worker' to create a test worker with Playwright MCP for browser automation.",
+        "description": "Create a new worker session. Pass task_id to auto-assign a feature board task and give the worker tools to update its own ticket status. When task_id is set, the worker is also auto-kickoffed with a brief 'Begin work on your assigned task.' user message after PTY boot — so you do NOT need to chain a send_message immediately after create_session for the worker to start. Override the kickoff text via kickoff_message='...' or pass kickoff_message='' to opt out and compose the first message yourself. Set plan_first=true for planning before implementation. Set ralph_loop=true for persistent execute→verify→fix loop until genuinely complete. Set session_type='test_worker' to create a test worker with Playwright MCP for browser automation.",
         "inputSchema": {
             "type": "object",
             "properties": {
