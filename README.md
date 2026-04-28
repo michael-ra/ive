@@ -125,9 +125,9 @@ Memory entries scoped per-workspace, auto-imported the moment your CLI writes th
 Visual pipeline editor · Feature Board Kanban · Deep Research engine · Mission Control · Code Review · Full-text search across sessions · Live Preview + screenshot annotator · Voice quick-feature drop · Per-terminal scratchpads · 40+ rebindable hotkeys · RALPH execute → verify → fix loops · Token-saving output styles · Mobile-first PWA + Web Push.
 
 <p align="center">
-  <img src="docs/screenshots/agent-tree.png" alt="Agent Tree — sub-agent hierarchy with full transcripts" width="780">
+  <img src="docs/screenshots/pipeline-editor.png" alt="Pipeline Editor — preset library and active runs" width="780">
 </p>
-<p align="center"><sub>⌘T — Agent Tree: every sub-agent spawned, with model, status, and full transcript.</sub></p>
+<p align="center"><sub>⌘⇧L — Pipeline Editor: pick a preset (RALPH · Research Loop · Review Loop · TDD Loop · Verification Cascade) or build from scratch.</sub></p>
 
 ## 🎯 What changes the moment you install
 
