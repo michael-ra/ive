@@ -34,10 +34,18 @@ const QUESTIONS = [
   },
 ]
 
-// Stagger between field reveals during the autofill animation (ms).
-const STAGGER_MS = 180
-// How long the rainbow shimmer plays through each field's new text (ms).
-const SHIMMER_MS = 1600
+// How long to wait between each field beginning its reveal (top-to-bottom).
+const STAGGER_MS = 220
+// Per-character delay during the type-in animation.  ~22ms = ~45 chars/sec
+// — fast enough to feel responsive, slow enough that the rainbow shimmer
+// flowing through the partial text is visible.
+const CHAR_MS = 22
+// How long the shimmer keeps playing after the last character lands, before
+// the text settles to plain. Apple's effect lingers a beat past completion.
+const SHIMMER_TAIL_MS = 500
+// Soft cap on how long any one field can spend revealing — stops a long
+// paragraph from running for many seconds. Falls back to a faster char rate.
+const MAX_REVEAL_MS = 2200
 
 export default function WorkspaceVisionOnboarding({ workspace, onClose, onDone }) {
   const [answers, setAnswers] = useState(() =>
@@ -90,36 +98,60 @@ export default function WorkspaceVisionOnboarding({ workspace, onClose, onDone }
     try {
       const result = await api.autofillVision(transcript)
       setPhase('filling')
-      // Stagger the reveals so each field shimmers in turn — like the
-      // Apple writing-tools rewrite, top-to-bottom.
+
+      // For each field that has new content: type it character-by-character
+      // into the textarea while the shimmer overlay sweeps through whatever
+      // partial text is currently rendered. This is the Apple Writing-Tools
+      // effect — letters tumble in with the iridescent gradient flowing
+      // through them, then settle to plain a beat after the last character.
       let lastEndsAt = 0
+      let pendingFinishes = 0
       QUESTIONS.forEach((q, i) => {
-        const delay = i * STAGGER_MS
-        const endsAt = delay + SHIMMER_MS
+        const incoming = typeof result[q.key] === 'string' ? result[q.key].trim() : ''
+        const current = answers[q.key] || ''
+        if (!incoming || incoming === current) return // nothing to reveal
+
+        // Adaptive char delay — long fields tighten so we don't drag.
+        const charMs = Math.max(8, Math.min(CHAR_MS, MAX_REVEAL_MS / incoming.length))
+        const startDelay = i * STAGGER_MS
+        const revealDur = incoming.length * charMs
+        const endsAt = startDelay + revealDur + SHIMMER_TAIL_MS
         if (endsAt > lastEndsAt) lastEndsAt = endsAt
+        pendingFinishes += 1
 
         setTimeout(() => {
-          let didChange = false
-          setAnswers((prev) => {
-            const incoming = typeof result[q.key] === 'string' ? result[q.key].trim() : ''
-            if (incoming && incoming !== prev[q.key]) {
-              didChange = true
-              return { ...prev, [q.key]: incoming }
+          // Wipe any prior content and start the type-in. shimmer overlay
+          // tracks the textarea value so it auto-shows partial text styled
+          // with the rainbow gradient.
+          setAnswers((prev) => ({ ...prev, [q.key]: '' }))
+          setShimmering((prev) => ({ ...prev, [q.key]: true }))
+          let charIdx = 0
+          const tick = () => {
+            charIdx += 1
+            const slice = incoming.slice(0, charIdx)
+            setAnswers((prev) => ({ ...prev, [q.key]: slice }))
+            if (charIdx < incoming.length) {
+              setTimeout(tick, charMs)
+            } else {
+              // Last character placed — let the shimmer linger briefly,
+              // then settle the text to plain.
+              setTimeout(() => {
+                setShimmering((prev) => ({ ...prev, [q.key]: false }))
+                pendingFinishes -= 1
+                if (pendingFinishes <= 0) setPhase('idle')
+              }, SHIMMER_TAIL_MS)
             }
-            return prev
-          })
-          // Only shimmer fields whose text actually changed — a field the
-          // user didn't mention shouldn't pretend to "rewrite".
-          if (didChange) {
-            setShimmering((prev) => ({ ...prev, [q.key]: true }))
-            setTimeout(() => {
-              setShimmering((prev) => ({ ...prev, [q.key]: false }))
-            }, SHIMMER_MS)
           }
-        }, delay)
+          tick()
+        }, startDelay)
       })
-      // Clear the busy phase once the last shimmer has finished.
-      setTimeout(() => setPhase('idle'), lastEndsAt + 100)
+
+      // Defensive: if no field changed (e.g. the LLM returned all empties),
+      // pendingFinishes never increments and phase would stick. Catch it.
+      if (pendingFinishes === 0) {
+        setPhase('idle')
+        setError("Couldn't extract anything from that — try saying more about the product.")
+      }
     } catch (e) {
       setError(e?.message || 'Autofill failed')
       setPhase('idle')
