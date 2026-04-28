@@ -114,10 +114,20 @@ Hand a friend a 4-word passcode (or a QR) and they're in. Clamp them to **Brief 
 
 The Marketplace ships with **8,000+ skills** browsable offline. Bring any plugin from the Claude or Gemini ecosystems — IVE auto-detects, translates, and exports back. Three first-party MCP servers (Commander, Worker, Documentor) wire your agents into the app itself. Type `@prompt:` / `@research:` / `@ralph` and watch the token expand inline.
 
+<p align="center">
+  <img src="docs/screenshots/mcp-servers.png" alt="MCP Servers panel — Commander, Documentor, deep-research and more" width="780">
+</p>
+<p align="center"><sub>⌘⇧S — MCP Servers: register once, attach per session, swap on the fly.</sub></p>
+
 ### 4. Memory + intelligence built in
 > Hub-and-spoke sync, three-way merge, briefings, an LLM router that uses *your* CLI subscription — no API keys.
 
 Memory entries scoped per-workspace, auto-imported the moment your CLI writes them. Step away for an hour, come back — IVE has written you a 2–5 sentence prose digest of what happened by fusing the event bus, git log, and memory hub. What one agent learns, every agent remembers. Stale-session banner auto-loads at the top of the app when you've been gone > 30 min.
+
+<p align="center">
+  <img src="docs/screenshots/knowledge.png" alt="Knowledge — workspace memory entries by category" width="780">
+</p>
+<p align="center"><sub>Workspace knowledge — memory entries by category (architecture · convention · gotcha · pattern · api · setup), shared across every agent.</sub></p>
 
 ### 5. Quality-of-life everywhere
 > Everything you wished your terminal had — already inside.
@@ -196,6 +206,11 @@ A first-class diff viewer: file tree on the left, syntax-highlighted unified dif
 
 ### 📓 Scratchpads — three layers, all auto-saved
 **⌘J** for a global pad. **Per-session** pad attached to each terminal — context for that agent stays with that agent. **Per-task Excalidraw** drawing surface inside every Feature Board ticket — sketch architecture next to the description. Plus a **Quick Feature drop** (⌘⇧N) with voice input — speak a feature into existence while your hands are full of agents.
+
+<p align="center">
+  <img src="docs/screenshots/scratchpad.png" alt="Per-session scratchpad pinned next to the terminal" width="780">
+</p>
+<p align="center"><sub>Per-session scratchpad — your context for that agent stays attached to that agent.</sub></p>
 
 ## 🎒 The full toolkit
 
