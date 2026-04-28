@@ -317,13 +317,20 @@ export default function App() {
       setShowMcpServers(true)
     }
     const handleOpenGuidelines = () => { closeExclusivePanels(); setShowGuidelines(true) }
+    const handleOpenMarketplace = (e) => {
+      closeExclusivePanels()
+      setMarketplaceTab(e.detail?.tab || null)
+      setShowMarketplace(true)
+    }
     window.addEventListener('open-distill-result', handleOpenDistillResult)
     window.addEventListener('open-mcp-parse-result', handleOpenMcpResult)
     window.addEventListener('open-guidelines', handleOpenGuidelines)
+    window.addEventListener('open-marketplace', handleOpenMarketplace)
     return () => {
       window.removeEventListener('open-distill-result', handleOpenDistillResult)
       window.removeEventListener('open-mcp-parse-result', handleOpenMcpResult)
       window.removeEventListener('open-guidelines', handleOpenGuidelines)
+      window.removeEventListener('open-marketplace', handleOpenMarketplace)
     }
   }, [])
 
