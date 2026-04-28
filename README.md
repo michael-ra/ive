@@ -89,24 +89,45 @@ Extensibility is a first-class citizen. IVE ships with a built-in marketplace of
 
 ---
 
-## 📸 A Glimpse Inside
+## 📸 Take the Tour
 
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <img src="docs/screenshots/mission-control.png" alt="Mission Control">
-      <br><b>Mission Control</b><br>Monitor all active agent sessions at a glance.
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/screenshots/pipeline-editor.png" alt="Pipeline Editor">
-      <br><b>Pipeline Editor</b><br>Design autonomous multi-agent workflows visually.
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/screenshots/code-review.png" alt="Code Review">
-      <br><b>Integrated Code Review</b><br>Diff viewer with inline agent annotation support.
-    </td>
-  </tr>
-</table>
+A walk through what makes IVE different. Click any image for the full experience at [ive.dev](https://ive.dev).
+
+<p align="center">
+  <a href="https://ive.dev/#orchestration"><img src="docs/screenshots/landing/orchestration.png" alt="Orchestration — One brain. Infinite hands. Commander spawns agent armies. Pipelines wire them into workflows. RALPH iterates autonomously." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#intelligence"><img src="docs/screenshots/landing/intelligence.png" alt="Intelligence — Remember. Research. Learn. Deep research across the open web. Shared memory across every agent. 8,000+ skills." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#collaboration"><img src="docs/screenshots/landing/collaboration.png" alt="Collaboration — Multiple agents. Zero conflicts. Agents coordinate automatically. File locks prevent overwrites. Events flow through a central bus." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#multiplayer"><img src="docs/screenshots/landing/multiplayer.png" alt="Multiplayer — Bring your team. Keep your keys. Tunneled URLs, 4-word invites, QR codes. Brief / Code / Full access modes." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#catchup"><img src="docs/screenshots/landing/catchup.png" alt="Catch-Up — Never miss anything. 2-5 sentence prose briefings on return. Activity feed, stale-session banner, mode-aware filtering." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#workflows"><img src="docs/screenshots/landing/workflows.png" alt="Workflows & Prompts — Compose once. Chain forever. Reusable prompts, cascades with variables and loops, output-style control." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#sessions"><img src="docs/screenshots/landing/sessions.png" alt="Session Mastery — tmux wishes it could do this. Visual grid layouts, session merging, broadcast groups, multi-line composer." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#devtools"><img src="docs/screenshots/landing/devtools.png" alt="Developer Tools — See everything. Annotate anything. Git diff annotations, voice-annotated screenshots, live previews, 40+ shortcuts." width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://ive.dev/#security"><img src="docs/screenshots/landing/security.png" alt="Security — Ship fast. Stay safe. Supply chain scanning, isolated worktrees, sandboxed accounts. Security at every layer." width="900"></a>
+</p>
 
 ---
 
