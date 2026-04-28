@@ -31,9 +31,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/mission-control.png" alt="Mission Control — every active session at a glance" width="900">
+  <img src="docs/screenshots/main-layout.png" alt="IVE — sidebar of sessions across workspaces, command grid in the middle" width="900">
 </p>
-<p align="center"><sub>Mission Control · every live session across all workspaces · <kbd>⌘M</kbd></sub></p>
+<p align="center"><sub>The IVE main layout — workspaces and sessions on the left, every action one click away.</sub></p>
 
 <br>
 
@@ -86,8 +86,9 @@ Five promises. Real receipts behind each.
 Three-layer abstraction (`cli_features.py` → `cli_session.py` → `cli_profiles.py`) — adding a new CLI means adding one profile. Real PTY (`os.fork()` + `pty.openpty()`) means Shift+Tab, plan mode, slash commands, interactive prompts — everything works exactly like native.
 
 <p align="center">
-  <img src="docs/screenshots/main-layout.png" alt="IVE main layout" width="780">
+  <img src="docs/screenshots/mission-control.png" alt="Mission Control — every active session at a glance" width="780">
 </p>
+<p align="center"><sub>Mission Control (⌘M) — every live session across all workspaces in one grid.</sub></p>
 
 ### 2. Multiplayer
 > Invite collaborators with one click. Clamp them to Brief / Code / Full. No shared admin password.
