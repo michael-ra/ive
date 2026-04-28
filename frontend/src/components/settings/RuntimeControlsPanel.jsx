@@ -59,8 +59,13 @@ export default function RuntimeControlsPanel({ onClose }) {
     setBusy(true)
     setError(null)
     try {
-      await api.setMultiplayer(!status.multiplayer.enabled)
-      await reload()
+      const next = !status.multiplayer.enabled
+      const r = await api.setMultiplayer(next)
+      // The POST returns the canonical new value — apply it directly so the
+      // pill flips even if a follow-up reload lands stale (HTTP cache, race
+      // with another tab, etc).
+      const newEnabled = typeof r?.enabled === 'boolean' ? r.enabled : next
+      setStatus((prev) => (prev ? { ...prev, multiplayer: { enabled: newEnabled } } : prev))
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e))
     } finally {

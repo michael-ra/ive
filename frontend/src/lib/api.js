@@ -706,7 +706,9 @@ export const api = {
     request(`/sessions/auth/${id}/revoke`, { method: 'POST' }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   // Runtime tunnel + multiplayer
-  getRuntimeStatus: () => request('/runtime/status'),
+  // cache: 'no-store' — runtime flags are toggled live; we never want a
+  // stale 304/200-from-cache to mask a fresh state change.
+  getRuntimeStatus: () => request('/runtime/status', { cache: 'no-store' }),
   startTunnel: () => request('/runtime/tunnel/start', { method: 'POST' }),
   stopTunnel: () => request('/runtime/tunnel/stop', { method: 'POST' }),
   setMultiplayer: (enabled) =>
