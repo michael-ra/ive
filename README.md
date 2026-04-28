@@ -44,7 +44,7 @@ Current AI CLI tools are powerful, but running multiple agents simultaneously ac
 Get up and running in seconds. IVE handles its own dependencies and agent installations.
 
 ```bash
-git clone https://github.com/vibe2vibe/ive.git
+git clone https://github.com/michael-ra/ive.git
 cd ive
 ./start.sh
 ```
