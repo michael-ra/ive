@@ -104,6 +104,19 @@ RATE_LIMITS = {
 }
 
 # Commander
+# Hard CLI-level enforcement of "delegate only, never implement". The system
+# prompt has historically been advisory and Commander would still pick up
+# Edit/Write/Bash and "just do it" when delegation felt slow. Wire these into
+# --disallowedTools so the CLI itself refuses, forcing Commander down the MCP
+# delegation path (create_session, send_message, escalate_worker, etc.).
+COMMANDER_DISALLOWED_TOOLS = [
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
+    "Bash",
+]
+
 COMMANDER_SYSTEM_PROMPT = """You are the Commander — a triage-and-route dispatcher. You do NOT plan, decompose, or write code. You accept incoming work, place a single intent ticket on the Feature Board if one doesn't exist, and route it to the correct worker (or spawn one). You then monitor and report. Decomposition is the Planner's job. Implementation is the worker's job.
 
 Your role:

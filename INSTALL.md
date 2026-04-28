@@ -31,15 +31,25 @@ feature. IVE will run without them — `start.sh` warns but does not exit.
 | **ffmpeg** | Documentor's GIF recording (`brew install ffmpeg` / `apt install ffmpeg`) |
 | **sqlite3** CLI | Auto-update-CLI setting (gracefully skipped if missing) |
 | **Playwright Chromium** | Screenshots, live preview, browser-based OAuth |
+| **fastembed ONNX weights** | Semantic search, coordination, dense retrieval |
 
-`start.sh` runs `playwright install chromium` automatically once Python
-deps are installed and stamps `~/.ive/.playwright-installed` so subsequent
-runs are no-ops. To re-run the install manually:
+`start.sh` pre-fetches both the Playwright Chromium binary (~150MB) and
+the fastembed model weights (~56MB total — `BAAI/bge-small-en-v1.5` plus
+the `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder reranker) automatically
+once the Python wheels are installed. Each is gated by a stamp file
+(`~/.ive/.playwright-installed`, `~/.ive/.embeddings-installed`) so
+subsequent launches are no-ops.
+
+To re-run an install manually:
 
 ```bash
+# Chromium
 ~/.ive/venv/bin/python3 -m playwright install chromium
 # or, if you're not using the venv:
 python3 -m playwright install chromium
+
+# fastembed weights (re-warm both models)
+rm -f ~/.ive/.embeddings-installed && ./start.sh
 ```
 
 ### How `start.sh` handles Python deps (PEP 668)
@@ -83,10 +93,14 @@ cd ive
 4. Install `backend/requirements.txt` into the chosen interpreter
    (skipped if up to date).
 5. Run `playwright install chromium` once and stamp it.
-6. `npm install` in `frontend/` (skipped if `node_modules/` exists).
-7. Free ports `5111` and `5173` of any stale processes.
-8. Start the backend on `http://127.0.0.1:5111`.
-9. Start the Vite dev server on `http://localhost:5173` and open it.
+6. Pre-fetch the fastembed ONNX weights (`BAAI/bge-small-en-v1.5` +
+   cross-encoder reranker, ~56MB total) once and stamp it. Skipped if
+   `fastembed` isn't installed; warns and continues if the download
+   fails (lazy load takes over on first use).
+7. `npm install` in `frontend/` (skipped if `node_modules/` exists).
+8. Free ports `5111` and `5173` of any stale processes.
+9. Start the backend on `http://127.0.0.1:5111`.
+10. Start the Vite dev server on `http://localhost:5173` and open it.
 
 Press `Ctrl+C` to shut down both processes cleanly.
 
@@ -125,6 +139,7 @@ do `git pull` instead of re-cloning.
 | `~/.ive/venv` | Private Python venv (only created when system pip is externally-managed) |
 | `~/.ive/.deps-checked.<hash>` | Stamp from the dependency check; delete to re-run |
 | `~/.ive/.playwright-installed` | Stamp marking that Chromium is downloaded |
+| `~/.ive/.embeddings-installed` | Stamp marking that fastembed ONNX weights are pre-fetched |
 | `backend/.deps-installed` | Stamp from `pip install` (when not using the venv) |
 | `frontend/node_modules` | npm packages — delete to force a clean reinstall |
 | `frontend/dist` | Production build (only created in `--multiplayer` mode) |

@@ -113,3 +113,70 @@ async def git_log(workspace_path: str, count: int = 20) -> list[dict]:
                 "date": parts[4],
             })
     return commits
+
+
+async def git_log_window(
+    workspace_path: str,
+    since_iso: str | None = None,
+    until_iso: str | None = None,
+    limit: int = 50,
+    include_stat: bool = True,
+) -> list[dict]:
+    """Get commits in a time window. Optionally include shortstat
+    (insertions/deletions/files). Returns [] if path is not a git repo
+    or git fails (e.g. timeout)."""
+    fmt = "%H|%h|%s|%an|%ai"
+    args = ["git", "log", f"-{limit}", f"--format={fmt}"]
+    if include_stat:
+        args.append("--shortstat")
+    if since_iso:
+        args.append(f"--since={since_iso}")
+    if until_iso:
+        args.append(f"--until={until_iso}")
+
+    try:
+        stdout, _, rc = await _run(args, workspace_path)
+    except (TimeoutError, FileNotFoundError, OSError):
+        return []
+    if rc != 0:
+        return []
+
+    commits: list[dict] = []
+    current: dict | None = None
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "|" in line and line.count("|") >= 4 and not line.startswith(" "):
+            # New commit header line.
+            parts = line.split("|", 4)
+            if len(parts) >= 5:
+                current = {
+                    "hash": parts[0],
+                    "short_hash": parts[1],
+                    "message": parts[2],
+                    "author": parts[3],
+                    "date": parts[4],
+                    "files_changed": 0,
+                    "insertions": 0,
+                    "deletions": 0,
+                }
+                commits.append(current)
+        elif current is not None and ("file changed" in line or "files changed" in line):
+            # Shortstat line: " 3 files changed, 42 insertions(+), 5 deletions(-)"
+            for chunk in line.split(","):
+                chunk = chunk.strip()
+                tokens = chunk.split()
+                if not tokens:
+                    continue
+                try:
+                    n = int(tokens[0])
+                except ValueError:
+                    continue
+                if "file" in chunk:
+                    current["files_changed"] = n
+                elif "insertion" in chunk:
+                    current["insertions"] = n
+                elif "deletion" in chunk:
+                    current["deletions"] = n
+    return commits

@@ -638,7 +638,7 @@ export default function PlanViewer({ onClose }) {
 
         {/* Footer actions */}
         <div className="flex items-center gap-1 px-5 py-3 border-t border-border-primary bg-bg-elevated/30 shrink-0">
-          {sessionId && (
+          {sessionId && plan?.items?.length > 0 && (
             <>
               <button
                 onClick={handleApprove}

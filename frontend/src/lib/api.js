@@ -468,8 +468,15 @@ export const api = {
   deleteAccount: (id) => request(`/accounts/${id}`, { method: 'DELETE' }),
   testAccount: (id) => request(`/accounts/${id}/test`, { method: 'POST' }),
   snapshotAccount: (id) => request(`/accounts/${id}/snapshot`, { method: 'POST' }),
-  openAccountBrowser: (id, url) => request(`/accounts/${id}/open-browser`, { method: 'POST', body: JSON.stringify({ url }) }),
-  openNextAccount: (url) => request('/accounts/open-next', { method: 'POST', body: JSON.stringify({ url }) }),
+  openAccountBrowser: (id, opts = {}) => {
+    // Back-compat: callers used to pass a bare URL string.
+    const body = typeof opts === 'string' ? { url: opts } : (opts || {})
+    return request(`/accounts/${id}/open-browser`, { method: 'POST', body: JSON.stringify(body) })
+  },
+  openNextAccount: (opts = {}) => {
+    const body = typeof opts === 'string' ? { url: opts } : (opts || {})
+    return request('/accounts/open-next', { method: 'POST', body: JSON.stringify(body) })
+  },
   restartWithAccount: (sessionId, accountId) =>
     request(`/sessions/${sessionId}/restart-with-account`, { method: 'POST', body: JSON.stringify({ account_id: accountId }) }),
   setupBrowser: (id, cliType) => request(`/accounts/${id}/setup-browser`, {
@@ -480,6 +487,7 @@ export const api = {
       method: 'POST', body: JSON.stringify({ headless, cli_type: cliType || undefined }),
     }),
   getAuthStatus: (id) => request(`/accounts/${id}/auth-status`),
+  detectBrowsers: () => request('/browser/detect'),
   popOutSession: (sessionId) =>
     request(`/sessions/${sessionId}/pop-out`, { method: 'POST' }),
 
@@ -559,6 +567,8 @@ export const api = {
   },
   importMemoryFromCli: (workspaceId) =>
     request('/memory/import', { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId }) }),
+  compactMemoryEntries: (body) =>
+    request('/memory/compact', { method: 'POST', body: JSON.stringify(body || {}) }),
   getMemoryPrompt: (workspaceId) =>
     request(`/memory/prompt${workspaceId ? '?workspace=' + workspaceId : ''}`),
 
@@ -627,6 +637,49 @@ export const api = {
     request('/observatory/api-keys/test', { method: 'POST', body: JSON.stringify({ name }) }),
   createObservatorist: (workspaceId) =>
     request(`/workspaces/${workspaceId}/observatorist`, { method: 'POST' }),
+  // Smart pipeline (profile + curated targets + insights)
+  getObservatoryProfile: (workspaceId) =>
+    request(`/observatory/profile?workspace_id=${workspaceId}`),
+  regenerateObservatoryProfile: (workspaceId) =>
+    request('/observatory/profile/regenerate', {
+      method: 'POST', body: JSON.stringify({ workspace_id: workspaceId }),
+    }),
+  updateObservatoryProfile: (workspaceId, profile) =>
+    request('/observatory/profile', {
+      method: 'PUT', body: JSON.stringify({ workspace_id: workspaceId, profile }),
+    }),
+  recalibrateObservatoryProfile: (workspaceId) =>
+    request('/observatory/profile/recalibrate', {
+      method: 'POST', body: JSON.stringify({ workspace_id: workspaceId }),
+    }),
+  listObservatorySearchTargets: (params = {}) => {
+    const qs = new URLSearchParams(params).toString()
+    return request(`/observatory/search-targets${qs ? '?' + qs : ''}`)
+  },
+  addObservatorySearchTarget: (data) =>
+    request('/observatory/search-targets', { method: 'POST', body: JSON.stringify(data) }),
+  updateObservatorySearchTarget: (id, data) =>
+    request(`/observatory/search-targets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteObservatorySearchTarget: (id) =>
+    request(`/observatory/search-targets/${id}`, { method: 'DELETE' }),
+  planObservatorySearchTargets: (workspaceId, source) =>
+    request('/observatory/search-targets/plan', {
+      method: 'POST', body: JSON.stringify({ workspace_id: workspaceId, source }),
+    }),
+  triggerObservatorySmartScan: (data) =>
+    request('/observatory/scan/smart', { method: 'POST', body: JSON.stringify(data) }),
+  listObservatoryInsights: (workspaceId, type) => {
+    const qs = new URLSearchParams({
+      workspace_id: workspaceId, ...(type ? { type } : {}),
+    }).toString()
+    return request(`/observatory/insights?${qs}`)
+  },
+  upsertObservatoryInsight: (data) =>
+    request('/observatory/insights', { method: 'POST', body: JSON.stringify(data) }),
+  updateObservatoryInsight: (id, data) =>
+    request(`/observatory/insights/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteObservatoryInsight: (id) =>
+    request(`/observatory/insights/${id}`, { method: 'DELETE' }),
 
   // ── System API Keys ──────────────────────────────────────────────
   getApiKeys: () => request('/api-keys'),
@@ -645,6 +698,58 @@ export const api = {
     request(`/invite/${id}/revoke`, { method: 'POST' }),
   redeemInvite: (token) =>
     request('/invite/redeem', { method: 'POST', body: JSON.stringify({ token }) }),
+
+  // ── Auth context / per-row joiner sessions (PR 2) ──────────────────
+  whoami: () => request('/whoami'),
+  listAuthSessions: () => request('/sessions/auth'),
+  revokeAuthSession: (id) =>
+    request(`/sessions/auth/${id}/revoke`, { method: 'POST' }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
+  // Runtime tunnel + multiplayer
+  getRuntimeStatus: () => request('/runtime/status'),
+  startTunnel: () => request('/runtime/tunnel/start', { method: 'POST' }),
+  stopTunnel: () => request('/runtime/tunnel/stop', { method: 'POST' }),
+  setMultiplayer: (enabled) =>
+    request('/runtime/multiplayer', {
+      method: 'POST',
+      body: JSON.stringify({ enabled: !!enabled }),
+    }),
+
+  listAuditLog: ({ actor_id, actor_kind, since, path_prefix, limit } = {}) => {
+    const qs = new URLSearchParams()
+    if (actor_id) qs.set('actor_id', actor_id)
+    if (actor_kind) qs.set('actor_kind', actor_kind)
+    if (since) qs.set('since', since)
+    if (path_prefix) qs.set('path_prefix', path_prefix)
+    if (limit) qs.set('limit', String(limit))
+    const q = qs.toString()
+    return request(`/audit${q ? `?${q}` : ''}`)
+  },
+
+  // ── Catch-me-up digest + Web Push (PR 4) ──────────────────────────
+  getCatchup: ({ since, until, workspace_id, limit, llm, cli, model } = {}) => {
+    const qs = new URLSearchParams()
+    if (since) qs.set('since', since)
+    if (until) qs.set('until', until)
+    if (workspace_id) qs.set('workspace_id', workspace_id)
+    if (limit) qs.set('limit', String(limit))
+    if (llm === false) qs.set('llm', 'false')
+    if (cli) qs.set('cli', cli)
+    if (model) qs.set('model', model)
+    const s = qs.toString()
+    return request(`/catchup${s ? `?${s}` : ''}`)
+  },
+  pushVapidPubkey: () => request('/push/vapid-pubkey'),
+  subscribePush: (subscription) =>
+    request('/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(subscription),
+    }),
+  unsubscribePush: (endpoint) =>
+    request('/push/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    }),
 }
 
 // ── Cloudflare-tunnel-aware preview URL helper ────────────────────

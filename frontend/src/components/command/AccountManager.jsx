@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { User, X, Trash2, Plus, Eye, EyeOff, CheckCircle, AlertCircle, Zap, RefreshCw, Globe, SkipForward, Timer, Theater, KeyRound } from 'lucide-react'
+import { User, X, Trash2, Plus, Eye, EyeOff, CheckCircle, AlertCircle, Zap, RefreshCw, Globe, SkipForward, Timer, Theater, KeyRound, ChevronRight, ChevronDown } from 'lucide-react'
 import { api } from '../../lib/api'
 import usePanelCreate from '../../hooks/usePanelCreate'
 import useListKeyboardNav from '../../hooks/useListKeyboardNav'
@@ -42,6 +42,9 @@ export default function AccountManager({ onClose }) {
   const [tick, setTick] = useState(0) // drives countdown re-renders
   const [pwBusy, setPwBusy] = useState(null) // account id with in-flight Playwright op
   const [authStatuses, setAuthStatuses] = useState({}) // id → { has_browser_context, has_auth_snapshot }
+  const [detected, setDetected] = useState({ browsers: [], profiles: [], has_claude_auth: false, has_gemini_auth: false })
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [creatingPhase, setCreatingPhase] = useState(null) // null | 'creating' | 'snapshotting'
   const listRef = useRef(null)
   const panelRef = useRef(null)
 
@@ -50,6 +53,7 @@ export default function AccountManager({ onClose }) {
 
   useEffect(() => {
     api.getAccounts().then(setAccounts)
+    api.detectBrowsers().then(setDetected).catch(() => {})
   }, [])
 
   // Tick every second while any account is cooling down, to update countdowns.
@@ -88,7 +92,13 @@ export default function AccountManager({ onClose }) {
     try {
       const result = await api.setupBrowser(acc.id, cliType)
       if (result.ok) {
-        alert(result.message || 'Browser context saved.')
+        // Surface the warning prominently when isolation failed (Claude only) —
+        // otherwise the user thinks setup worked but multi-account is silently broken.
+        if (cliType === 'claude' && result.isolated === false && result.warning) {
+          alert(`⚠ ${result.message}\n\n${result.warning}`)
+        } else {
+          alert(result.message || 'Browser context saved.')
+        }
       } else {
         alert(result.message || result.error || 'Setup failed')
       }
@@ -122,22 +132,49 @@ export default function AccountManager({ onClose }) {
 
   const handleCreate = async (e) => {
     e?.preventDefault?.()
-    if (!newName.trim()) return
+    if (!newName.trim() || creatingPhase) return
     const hasKey = newKey.trim()
-    const acc = await api.createAccount({
-      name: newName.trim(),
-      type: hasKey ? 'api_key' : 'oauth',
-      api_key: hasKey ? newKey.trim() : undefined,
-      is_default: newDefault,
-      browser_path: newBrowser.trim() || undefined,
-      chrome_profile: newProfile.trim() || undefined,
-    })
-    setAccounts([...accounts, acc])
+
+    setCreatingPhase('creating')
+    let acc
+    try {
+      acc = await api.createAccount({
+        name: newName.trim(),
+        type: hasKey ? 'api_key' : 'oauth',
+        api_key: hasKey ? newKey.trim() : undefined,
+        is_default: newDefault,
+        browser_path: newBrowser.trim() || undefined,
+        chrome_profile: newProfile.trim() || undefined,
+      })
+    } catch (err) {
+      setCreatingPhase(null)
+      alert('Create failed: ' + err.message)
+      return
+    }
+
+    // OAuth account + a populated ~/.claude/ on disk → auto-snapshot so users
+    // skip the manual "snapshot auth" click after `claude auth login`.
+    if (!hasKey && detected.has_claude_auth) {
+      setCreatingPhase('snapshotting')
+      try { await api.snapshotAccount(acc.id) } catch {}
+    }
+
+    // Refresh list and land the user ON the new account so the Playwright
+    // setup CTA + other actions are immediately visible.
+    const updated = await api.getAccounts()
+    setAccounts(updated)
+    const fresh = updated.find((a) => a.id === acc.id) || acc
+    const newIdx = 1 + updated.findIndex((a) => a.id === acc.id) // +1 for systemItem
+    setSelected(fresh)
+    setSelectedIdx(newIdx >= 1 ? newIdx : -1)
+
     setMode('list')
     setNewName('')
     setNewKey('')
     setNewBrowser('')
     setNewProfile('')
+    setShowAdvanced(false)
+    setCreatingPhase(null)
   }
 
   // ⌘= opens the add-account form; ⌘↵ saves it.
@@ -280,24 +317,78 @@ export default function AccountManager({ onClose }) {
           <form onSubmit={handleCreate} className="p-4 border-b border-zinc-800 space-y-2">
             <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Account name (e.g. Personal Max, Work Max)" className={inputClass} autoFocus />
             <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="API key (optional — leave blank for OAuth/subscription)" type="password" className={inputClass} />
-            <div className="border border-zinc-800 rounded p-2 space-y-1.5">
-              <p className="text-[11px] text-zinc-500 font-mono uppercase">Browser / Chrome Profile</p>
-              <input value={newBrowser} onChange={(e) => setNewBrowser(e.target.value)} placeholder="Browser path (e.g. Google Chrome, /Applications/Brave Browser.app)" className={inputClass} />
-              <input value={newProfile} onChange={(e) => setNewProfile(e.target.value)} placeholder="Chrome profile directory (e.g. Profile 1, Default)" className={inputClass} />
-              <p className="text-[11px] text-zinc-600 font-mono leading-relaxed">
-                For non-API accounts: assign a browser and Chrome profile so "open next" launches the right session.
-              </p>
-            </div>
             <p className="text-[11px] text-zinc-600 font-mono leading-relaxed">
-              <strong className="text-zinc-400">API key:</strong> paste sk-ant-... above. <strong className="text-zinc-400">OAuth/Max subscription:</strong> leave blank, create account, then run <code className="text-indigo-400">claude auth login</code> in a terminal and click "snapshot auth".
+              <strong className="text-zinc-400">API key:</strong> paste sk-ant-... above.{' '}
+              <strong className="text-zinc-400">OAuth/Max subscription:</strong> leave blank — {detected.has_claude_auth
+                ? <>your existing <code className="text-indigo-400">~/.claude/</code> auth will be snapshotted automatically.</>
+                : <>then run <code className="text-indigo-400">claude auth login</code> and click "snapshot auth".</>}
             </p>
             <label className="flex items-center gap-1 text-[11px] text-zinc-400 font-mono cursor-pointer">
               <input type="checkbox" checked={newDefault} onChange={(e) => setNewDefault(e.target.checked)} />
               set as default for new sessions
             </label>
-            <div className="flex gap-1">
-              <button type="submit" className="px-2.5 py-1.5 text-[11px] bg-indigo-600 hover:bg-indigo-500 text-white rounded font-mono">add account</button>
-              <button type="button" onClick={() => setMode('list')} className="px-2.5 py-1.5 text-[11px] bg-zinc-800 text-zinc-400 rounded font-mono">cancel</button>
+
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300 font-mono"
+            >
+              {showAdvanced ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+              advanced (browser / profile for "open browser")
+            </button>
+            {showAdvanced && (
+              <div className="border border-zinc-800 rounded p-2 space-y-1.5">
+                {detected.browsers.length > 0 ? (
+                  <select
+                    value={newBrowser}
+                    onChange={(e) => setNewBrowser(e.target.value)}
+                    className={inputClass}
+                  >
+                    <option value="">— default browser —</option>
+                    {detected.browsers.map((b) => (
+                      <option key={b.path} value={b.path}>{b.name} — {b.path}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input value={newBrowser} onChange={(e) => setNewBrowser(e.target.value)} placeholder="Browser path (e.g. /Applications/Google Chrome.app)" className={inputClass} />
+                )}
+                {detected.profiles.length > 0 ? (
+                  <select
+                    value={newProfile}
+                    onChange={(e) => setNewProfile(e.target.value)}
+                    className={inputClass}
+                  >
+                    <option value="">— no specific profile —</option>
+                    {detected.profiles.map((p) => (
+                      <option key={p.dir} value={p.dir}>
+                        {p.name}{p.email ? ` (${p.email})` : ''} — {p.dir}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input value={newProfile} onChange={(e) => setNewProfile(e.target.value)} placeholder="Chrome profile directory (e.g. Default, Profile 1)" className={inputClass} />
+                )}
+                <p className="text-[11px] text-zinc-600 font-mono leading-relaxed">
+                  Only used by the "open browser" / "open next" feature. Auth and sessions don't need this.
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-center gap-1">
+              <button
+                type="submit"
+                disabled={!!creatingPhase}
+                className="px-2.5 py-1.5 text-[11px] bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 disabled:cursor-not-allowed text-white rounded font-mono flex items-center gap-1"
+              >
+                {creatingPhase === 'creating' && (
+                  <><RefreshCw size={10} className="animate-spin" /> creating…</>
+                )}
+                {creatingPhase === 'snapshotting' && (
+                  <><RefreshCw size={10} className="animate-spin" /> snapshotting ~/.claude/ (can take 10–30s)…</>
+                )}
+                {!creatingPhase && 'add account'}
+              </button>
+              <button type="button" disabled={!!creatingPhase} onClick={() => setMode('list')} className="px-2.5 py-1.5 text-[11px] bg-zinc-800 text-zinc-400 disabled:opacity-50 rounded font-mono">cancel</button>
             </div>
           </form>
         )}
@@ -411,6 +502,48 @@ export default function AccountManager({ onClose }) {
                   )
                 })()}
 
+                {/* Playwright CTA — OAuth accounts without a browser context
+                    can't be auto-refreshed when their snapshot ages out. */}
+                {selected.id !== '__system'
+                  && selected.type !== 'api_key'
+                  && authStatuses[selected.id]
+                  && !authStatuses[selected.id].has_browser_context && (
+                  <div className="bg-violet-500/10 border border-violet-500/30 rounded p-2 space-y-1.5">
+                    <div className="flex items-start gap-1.5">
+                      <Theater size={11} className="text-violet-300 shrink-0 mt-0.5" />
+                      <div className="flex-1 space-y-1">
+                        <p className="text-violet-200 text-[11px]">Set up Playwright for headless re-auth</p>
+                        <p className="text-violet-300/70 text-[11px] leading-relaxed">
+                          Auto-rotation can refresh OAuth tokens automatically — but only if this account has a saved browser context. Click once, log in inside the visible browser, and you're done.
+                        </p>
+                        <p className="text-violet-300/70 text-[11px] leading-relaxed">
+                          <strong className="text-amber-300">macOS tip:</strong> when the keychain dialog appears asking to store
+                          the Claude token, click <strong>"Don't Allow"</strong>. That forces per-account file storage so
+                          multiple OAuth accounts don't overwrite each other's creds in the shared keychain.
+                        </p>
+                        <div className="flex gap-1 pt-0.5">
+                          <button
+                            onClick={() => handleSetupBrowser(selected, 'claude')}
+                            disabled={pwBusy === selected.id}
+                            className="flex items-center gap-1 px-1.5 py-1 text-[11px] bg-violet-600 hover:bg-violet-500 text-white rounded disabled:opacity-50"
+                          >
+                            <Theater size={10} />
+                            {pwBusy === selected.id ? 'opening browser…' : 'set up for Claude'}
+                          </button>
+                          <button
+                            onClick={() => handleSetupBrowser(selected, 'gemini')}
+                            disabled={pwBusy === selected.id}
+                            className="flex items-center gap-1 px-1.5 py-1 text-[11px] bg-violet-600/30 hover:bg-violet-600/50 text-violet-200 rounded disabled:opacity-50"
+                          >
+                            <Theater size={10} />
+                            {pwBusy === selected.id ? '…' : 'or for Gemini'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-1">
                   <div>
                     <label className="text-[11px] text-zinc-600 uppercase">Type</label>
@@ -428,7 +561,7 @@ export default function AccountManager({ onClose }) {
                   {selected.id !== '__system' && authStatuses[selected.id] && (
                     <div className="col-span-2">
                       <label className="text-[11px] text-zinc-600 uppercase">Playwright</label>
-                      <p className="text-zinc-400 flex items-center gap-2">
+                      <p className="text-zinc-400 flex items-center gap-2 flex-wrap">
                         <span className={authStatuses[selected.id].has_browser_context ? 'text-violet-400' : 'text-zinc-600'}>
                           {authStatuses[selected.id].has_browser_context ? 'browser context saved' : 'no browser context'}
                         </span>
@@ -436,6 +569,37 @@ export default function AccountManager({ onClose }) {
                         <span className={authStatuses[selected.id].has_auth_snapshot ? 'text-green-400' : 'text-zinc-600'}>
                           {authStatuses[selected.id].has_auth_snapshot ? 'auth snapshot ready' : 'no snapshot'}
                         </span>
+                        {selected.type !== 'api_key' && (
+                          <>
+                            <span className="text-zinc-700">|</span>
+                            <span
+                              className={authStatuses[selected.id].isolated_credentials ? 'text-emerald-400' : 'text-amber-400'}
+                              title={authStatuses[selected.id].isolated_credentials
+                                ? 'Per-account .credentials.json on disk — multi-account isolation works.'
+                                : 'No per-account credentials file. Claude is reading from the shared macOS keychain, which all OAuth accounts overwrite. Re-run "setup claude" and click "Don\'t Allow" on the keychain dialog.'}
+                            >
+                              {authStatuses[selected.id].isolated_credentials ? 'isolated (file)' : 'shared (keychain) ⚠'}
+                            </span>
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Loud warning when an OAuth account's tokens went to the
+                      shared macOS keychain — multi-account silently breaks here. */}
+                  {selected.id !== '__system'
+                    && selected.type !== 'api_key'
+                    && authStatuses[selected.id]
+                    && authStatuses[selected.id].has_auth_snapshot
+                    && !authStatuses[selected.id].isolated_credentials && (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2 col-span-2">
+                      <p className="text-amber-300 text-[11px] leading-relaxed">
+                        <strong>Credentials went to the macOS keychain, not this account.</strong> All OAuth
+                        accounts read from the same keychain entry, so this one's creds will be overwritten by
+                        whichever account logged in last. To fix: re-run <code className="text-amber-200">setup claude</code> and
+                        click <strong>"Don't Allow"</strong> when macOS asks to access the keychain — that forces
+                        the per-account file fallback.
                       </p>
                     </div>
                   )}
@@ -498,106 +662,155 @@ export default function AccountManager({ onClose }) {
                 )}
 
                 {selected.id !== '__system' && (
-                  <div className="flex flex-wrap gap-1 pt-2">
-                    {selected.api_key && (
-                      <button
-                        onClick={() => handleTest(selected)}
-                        disabled={testing}
-                        className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors disabled:opacity-50"
-                      >
-                        <Zap size={10} />
-                        {testing ? 'testing...' : 'test key'}
-                      </button>
-                    )}
-                    <button
-                      onClick={async () => {
-                        try {
-                          const result = await api.openAccountBrowser(selected.id)
-                          if (!result.ok) alert(result.error || 'Failed to open browser')
-                        } catch (e) {
-                          alert('Failed: ' + e.message)
-                        }
-                      }}
-                      className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 rounded transition-colors"
-                      title="Open this account's browser with its configured profile"
-                    >
-                      <Globe size={10} />
-                      open browser
-                    </button>
-                    <button
-                      onClick={async () => {
-                        const result = await api.snapshotAccount(selected.id)
-                        if (result.ok) {
-                          alert(`Auth snapshotted: ${result.files} files captured. This account can now run in its own sandbox.`)
-                          const updated = await api.getAccounts()
-                          setAccounts(updated)
-                          setSelected(updated.find((a) => a.id === selected.id))
-                        } else {
-                          alert(result.error || 'Snapshot failed')
-                        }
-                      }}
-                      className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 rounded transition-colors"
-                      title="Capture current ~/.claude/ auth state for this account"
-                    >
-                      <RefreshCw size={10} />
-                      snapshot auth
-                    </button>
-                    <button
-                      onClick={() => handleSetupBrowser(selected, 'claude')}
-                      disabled={pwBusy === selected.id}
-                      className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded transition-colors disabled:opacity-50"
-                      title="Open Playwright browser to log into Anthropic — saves cookies for headless re-auth"
-                    >
-                      <Theater size={10} />
-                      {pwBusy === selected.id ? 'opening...' : 'setup claude'}
-                    </button>
-                    <button
-                      onClick={() => handleSetupBrowser(selected, 'gemini')}
-                      disabled={pwBusy === selected.id}
-                      className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded transition-colors disabled:opacity-50"
-                      title="Open Playwright browser to log into Google — saves cookies for headless re-auth"
-                    >
-                      <Theater size={10} />
-                      {pwBusy === selected.id ? 'opening...' : 'setup gemini'}
-                    </button>
+                  <div className="space-y-2.5 pt-2">
+                    {/* ── First-time login ─────────────────────────── */}
+                    <div className="space-y-1">
+                      <p className="text-[11px] text-zinc-500 uppercase tracking-wide">1. Log in (one-time)</p>
+                      <p className="text-[11px] text-zinc-600 leading-relaxed">
+                        Pick one. <strong className="text-violet-300">setup</strong> opens a Playwright browser so the CLI does its real OAuth flow (saves cookies + per-account credentials). <strong className="text-amber-300">snapshot</strong> reuses the system-wide <code>~/.claude/</code> you already authenticated outside IVE.
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        <button
+                          onClick={() => handleSetupBrowser(selected, 'claude')}
+                          disabled={pwBusy === selected.id}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded transition-colors disabled:opacity-50"
+                          title="Run `claude auth login` inside a visible Playwright window — saves cookies + per-account .credentials.json"
+                        >
+                          <Theater size={10} />
+                          {pwBusy === selected.id ? 'opening...' : 'setup claude'}
+                        </button>
+                        <button
+                          onClick={() => handleSetupBrowser(selected, 'gemini')}
+                          disabled={pwBusy === selected.id}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded transition-colors disabled:opacity-50"
+                          title="Run `gemini auth login` inside a visible Playwright window — saves Google cookies"
+                        >
+                          <Theater size={10} />
+                          {pwBusy === selected.id ? 'opening...' : 'setup gemini'}
+                        </button>
+                        <button
+                          onClick={async () => {
+                            const result = await api.snapshotAccount(selected.id)
+                            if (result.ok) {
+                              alert(`Auth snapshotted: ${result.files} files captured. This account can now run in its own sandbox.`)
+                              const updated = await api.getAccounts()
+                              setAccounts(updated)
+                              setSelected(updated.find((a) => a.id === selected.id))
+                            } else {
+                              alert(result.error || 'Snapshot failed')
+                            }
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 rounded transition-colors"
+                          title="Copy ~/.claude/ into this account's sandbox dir (use after `claude auth login` outside IVE)"
+                        >
+                          <RefreshCw size={10} />
+                          snapshot ~/.claude/
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* ── Re-auth (only after setup) ───────────────── */}
                     {authStatuses[selected.id]?.has_browser_context && (
-                      <>
-                        <button
-                          onClick={() => handlePlaywrightAuth(selected, 'claude')}
-                          disabled={pwBusy === selected.id}
-                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 rounded transition-colors disabled:opacity-50"
-                          title="Re-authenticate Claude CLI using saved Playwright cookies (headless)"
-                        >
-                          <KeyRound size={10} />
-                          {pwBusy === selected.id ? 'authing...' : 'auth claude'}
-                        </button>
-                        <button
-                          onClick={() => handlePlaywrightAuth(selected, 'gemini')}
-                          disabled={pwBusy === selected.id}
-                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 rounded transition-colors disabled:opacity-50"
-                          title="Re-authenticate Gemini CLI using saved Playwright cookies (headless)"
-                        >
-                          <KeyRound size={10} />
-                          {pwBusy === selected.id ? 'authing...' : 'auth gemini'}
-                        </button>
-                      </>
+                      <div className="space-y-1">
+                        <p className="text-[11px] text-zinc-500 uppercase tracking-wide">2. Re-auth (headless)</p>
+                        <p className="text-[11px] text-zinc-600 leading-relaxed">
+                          Refresh expired tokens silently using saved cookies. Auto-rotation runs this for you when a quota resets.
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            onClick={() => handlePlaywrightAuth(selected, 'claude')}
+                            disabled={pwBusy === selected.id}
+                            className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 rounded transition-colors disabled:opacity-50"
+                            title="Re-authenticate Claude CLI using saved Playwright cookies (headless)"
+                          >
+                            <KeyRound size={10} />
+                            {pwBusy === selected.id ? 'authing...' : 'auth claude'}
+                          </button>
+                          <button
+                            onClick={() => handlePlaywrightAuth(selected, 'gemini')}
+                            disabled={pwBusy === selected.id}
+                            className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 rounded transition-colors disabled:opacity-50"
+                            title="Re-authenticate Gemini CLI using saved Playwright cookies (headless)"
+                          >
+                            <KeyRound size={10} />
+                            {pwBusy === selected.id ? 'authing...' : 'auth gemini'}
+                          </button>
+                        </div>
+                      </div>
                     )}
-                    {!selected.is_default && (
+
+                    {/* ── Dashboard / convenience ──────────────────── */}
+                    <div className="space-y-1">
+                      <p className="text-[11px] text-zinc-500 uppercase tracking-wide">Open dashboard</p>
+                      <p className="text-[11px] text-zinc-600 leading-relaxed">
+                        Just opens the provider dashboard in this account's configured browser/profile. <strong>Not auth</strong> — use Setup above for that.
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        <button
+                          onClick={async () => {
+                            try {
+                              const result = await api.openAccountBrowser(selected.id, { cli_type: 'claude' })
+                              if (!result.ok) alert(result.error || 'Failed to open browser')
+                            } catch (e) {
+                              alert('Failed: ' + e.message)
+                            }
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-zinc-700/40 hover:bg-zinc-700/60 text-zinc-300 rounded transition-colors"
+                          title="Open console.anthropic.com in this account's browser/profile"
+                        >
+                          <Globe size={10} />
+                          open claude
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const result = await api.openAccountBrowser(selected.id, { cli_type: 'gemini' })
+                              if (!result.ok) alert(result.error || 'Failed to open browser')
+                            } catch (e) {
+                              alert('Failed: ' + e.message)
+                            }
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-zinc-700/40 hover:bg-zinc-700/60 text-zinc-300 rounded transition-colors"
+                          title="Open Google sign-in in this account's browser/profile"
+                        >
+                          <Globe size={10} />
+                          open gemini
+                        </button>
+                        {selected.api_key && (
+                          <button
+                            onClick={() => handleTest(selected)}
+                            disabled={testing}
+                            className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors disabled:opacity-50"
+                            title="Make a tiny API call with this key to verify it works"
+                          >
+                            <Zap size={10} />
+                            {testing ? 'testing...' : 'test key'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* ── Account meta ─────────────────────────────── */}
+                    <div className="flex items-center gap-1 pt-1 border-t border-zinc-800">
+                      {!selected.is_default && (
+                        <button
+                          onClick={() => handleSetDefault(selected)}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 rounded transition-colors"
+                          title="Use this account by default for new sessions"
+                        >
+                          <CheckCircle size={10} />
+                          set default
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleSetDefault(selected)}
-                        className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 rounded transition-colors"
+                        onClick={() => handleDelete(selected.id)}
+                        className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] text-red-400 hover:bg-red-400/10 rounded transition-colors ml-auto"
+                        title="Delete this account row + its sandbox HOME dir"
                       >
-                        <CheckCircle size={10} />
-                        set default
+                        <Trash2 size={10} />
+                        delete
                       </button>
-                    )}
-                    <button
-                      onClick={() => handleDelete(selected.id)}
-                      className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] text-red-400 hover:bg-red-400/10 rounded transition-colors ml-auto"
-                    >
-                      <Trash2 size={10} />
-                      delete
-                    </button>
+                    </div>
                   </div>
                 )}
 

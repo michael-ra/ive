@@ -389,10 +389,15 @@ class AuthCycler:
                     rows = [dict(r) for r in await cur.fetchall()]
 
                 cli_type = session.get("cli_type", "claude")
+                # An OAuth account is usable if it either has a snapshot on
+                # disk or a Playwright browser context we can mint one from.
                 candidates = [
                     a for a in rows
                     if (a["type"] == "api_key" and a.get("api_key"))
-                    or (a["type"] == "oauth" and has_snapshot(a["id"], cli_type))
+                    or (a["type"] == "oauth" and (
+                        has_snapshot(a["id"], cli_type)
+                        or self.has_browser_context(a["id"])
+                    ))
                 ]
 
                 if not candidates:
@@ -400,16 +405,94 @@ class AuthCycler:
                     await db.commit()
                     return None
 
-                chosen = candidates[0]
+                # Walk candidates in LRU order, picking the first one whose
+                # auth we can guarantee. For OAuth accounts whose snapshot is
+                # missing or stale (>1h — OAuth access tokens often expire
+                # before then), refresh via Playwright when a context exists.
+                from cli_profiles import get_profile as _get_profile
+                import time as _time
+                _profile = _get_profile(cli_type)
+
+                def _snapshot_age_h(acc_id: str) -> float:
+                    p = ACCOUNT_HOMES_DIR / acc_id / _profile.auth_dir_name
+                    if not p.exists():
+                        return float("inf")
+                    return (_time.time() - p.stat().st_mtime) / 3600
+
+                chosen = None
+                # Track whether the chosen account's credentials are verified.
+                # When we fall back to a stale snapshot after a refresh failure,
+                # we can't honestly mark the account 'active' — the next PTY
+                # may immediately re-trip quota_exceeded or land on an expired
+                # token. Keep its prior status so the UI can still flag it.
+                chosen_verified = False
+                for c in candidates:
+                    if c["type"] == "api_key":
+                        chosen = c
+                        chosen_verified = True  # API keys don't need browser refresh
+                        break
+                    age_h = _snapshot_age_h(c["id"])
+                    has_ctx = self.has_browser_context(c["id"])
+                    if has_ctx and (age_h > 1):
+                        logger.info(
+                            "auto_failover: refreshing %s via Playwright (snapshot age %.1fh)",
+                            c["name"], age_h,
+                        )
+                        try:
+                            r = await self.playwright_auth(
+                                c["id"], cli_type=cli_type, headless=True,
+                            )
+                        except Exception as e:
+                            logger.warning("auto_failover: refresh exception for %s: %s", c["name"], e)
+                            r = {"status": "failed", "error": str(e)}
+                        if r.get("status") == "success":
+                            chosen = c
+                            chosen_verified = True
+                            break
+                        # Refresh failed but we still have a snapshot — try
+                        # it; worst case the new PTY surfaces an auth error
+                        # and the user can re-run setup. Do NOT mark verified.
+                        if age_h != float("inf"):
+                            logger.warning(
+                                "auto_failover: refresh failed for %s (%s), using stale snapshot",
+                                c["name"], r.get("error") or r.get("message"),
+                            )
+                            chosen = c
+                            chosen_verified = False
+                            break
+                        # No snapshot and refresh failed — try next candidate
+                        continue
+                    # Snapshot is fresh enough, or no context to refresh with.
+                    # Fresh enough (≤1h) is treated as verified; the prior
+                    # successful login still has time on it.
+                    if age_h != float("inf"):
+                        chosen = c
+                        chosen_verified = age_h <= 1
+                        break
+
+                if not chosen:
+                    logger.warning("auto_failover: all candidates failed for session %s", session_id)
+                    await db.commit()
+                    return None
 
                 await db.execute(
                     "UPDATE sessions SET account_id = ? WHERE id = ?",
                     (chosen["id"], session_id),
                 )
-                await db.execute(
-                    "UPDATE accounts SET last_used_at = datetime('now'), status = 'active' WHERE id = ?",
-                    (chosen["id"],),
-                )
+                if chosen_verified:
+                    await db.execute(
+                        "UPDATE accounts SET last_used_at = datetime('now'), status = 'active' WHERE id = ?",
+                        (chosen["id"],),
+                    )
+                else:
+                    # Bump last_used_at for LRU rotation but leave status alone
+                    # so the dashboard still shows whatever cooldown / error
+                    # state the account had. We don't promote to 'active'
+                    # without a successful auth verification.
+                    await db.execute(
+                        "UPDATE accounts SET last_used_at = datetime('now') WHERE id = ?",
+                        (chosen["id"],),
+                    )
                 await db.commit()
 
                 logger.info(
@@ -433,56 +516,199 @@ class AuthCycler:
     # ── Playwright: interactive setup ─────────────────────────────────
 
     async def setup_browser(self, account_id: str, cli_type: str | None = None) -> dict:
-        """Launch a visible Playwright browser for the user to log in.
+        """Run the CLI's real auth flow in a visible Playwright browser.
 
-        Opens the appropriate login page (Anthropic console for Claude,
-        Google sign-in for Gemini).  All cookies, localStorage, and session
-        state persist in a Chromium user-data directory at
-        ``~/.ive/browser_contexts/{account_id}/`` — exactly like a Chrome
-        profile.  One-time login; every future Playwright launch reuses
-        these credentials automatically.
+        Runs ``claude auth login`` (or ``gemini auth login``) inside the
+        account's sandbox HOME and intercepts the OAuth URL it generates
+        (this is whatever URL the CLI itself decides on — claude.ai for
+        Max/Pro, console.anthropic.com for API console, Google OAuth for
+        Gemini, etc.). A visible Chromium window opens at that URL using a
+        persistent context at ``~/.ive/browser_contexts/{account_id}/`` so
+        cookies survive across launches. The user logs in, the OAuth
+        callback fires, and the CLI writes auth tokens to the sandbox.
+        After this completes, headless re-auth via ``playwright_auth``
+        works because both cookies and tokens are saved.
         """
+        if account_id in self._auth_in_progress:
+            return {"ok": False, "error": "Auth already in progress for this account"}
+
         try:
             from playwright.async_api import async_playwright
         except ImportError:
             return {
+                "ok": False,
                 "error": "Playwright not installed. Run: pip3 install playwright && playwright install chromium",
             }
 
         cli = _resolve_cli(cli_type)
         auth_cfg = _CLI_AUTH[cli]
-        _, user_data_dir = _ensure_dirs(account_id)
+        self._auth_in_progress.add(account_id)
+        sandbox_home, user_data_dir = _ensure_dirs(account_id)
+
+        # Symlink shell/git/etc dotfiles into the sandbox HOME so the auth
+        # subprocess feels like a normal terminal (matches playwright_auth).
+        from account_sandbox import SYMLINK_DOTFILES
+        real_home = Path.home()
+        for dotfile in SYMLINK_DOTFILES:
+            src = real_home / dotfile
+            dst = sandbox_home / dotfile
+            if src.exists() and not dst.exists():
+                try:
+                    dst.symlink_to(src)
+                except OSError:
+                    pass
+
+        script_path, url_file = _make_url_catcher()
+        result: dict = {"account_id": account_id, "cli_type": cli}
+        proc = None
 
         try:
+            # 1. Launch the CLI's auth command with a fake $BROWSER that
+            #    captures the URL instead of opening it.
+            env = os.environ.copy()
+            env["HOME"] = str(sandbox_home)
+            env["BROWSER"] = script_path
+            if cli == "claude":
+                # Force claude config (including .credentials.json fallback)
+                # into the sandbox dir. Without this, OAuth tokens land in
+                # the shared macOS keychain entry that all accounts read
+                # from, breaking multi-account isolation.
+                from account_sandbox import claude_config_dir
+                cfg_dir = claude_config_dir(account_id)
+                cfg_dir.mkdir(parents=True, exist_ok=True)
+                env["CLAUDE_CONFIG_DIR"] = str(cfg_dir)
+
+            proc = await asyncio.create_subprocess_exec(
+                *auth_cfg["auth_cmd"],
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # 2. Wait for the URL to land in the catcher file.
+            auth_url = await _poll_file(url_file, timeout=30)
+            if not auth_url:
+                # Fallback: scan the CLI's own stdout for a URL.
+                try:
+                    stdout_data = await asyncio.wait_for(proc.stdout.read(4096), timeout=5)
+                except (asyncio.TimeoutError, Exception):
+                    stdout_data = b""
+                m = re.search(r"https://[^\s]+", stdout_data.decode(errors="replace"))
+                if m:
+                    auth_url = m.group(0)
+
+            if not auth_url:
+                proc.kill()
+                await proc.wait()
+                result["ok"] = False
+                result["error"] = (
+                    f"Could not capture OAuth URL from `{' '.join(auth_cfg['auth_cmd'])}`. "
+                    f"Make sure the CLI is installed and in $PATH."
+                )
+                return result
+
+            logger.info("setup_browser: captured OAuth URL for %s (cli=%s)", account_id, cli)
+
+            # 3. Open that URL in a visible browser. User logs in normally.
+            #    Anti-automation pages (notably console.anthropic.com's
+            #    "Authorize" button) check `navigator.webdriver` and a few
+            #    other Playwright fingerprints; without these overrides the
+            #    button click silently no-ops on some sessions.
             async with async_playwright() as p:
                 context = await p.chromium.launch_persistent_context(
                     str(user_data_dir),
                     headless=False,
-                    args=["--disable-blink-features=AutomationControlled"],
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-default-browser-check",
+                        "--no-first-run",
+                        "--disable-features=IsolateOrigins,site-per-process",
+                    ],
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    ignore_default_args=["--enable-automation"],
+                )
+                # Strip Playwright fingerprints before page scripts run.
+                await context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                    "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});"
+                    "Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});"
+                    "window.chrome = window.chrome || { runtime: {} };"
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto(auth_cfg["login_url"])
+                await page.goto(auth_url)
 
+                # 4. Wait for the auth subprocess to exit — that means the
+                #    OAuth callback fired and the CLI saved tokens.
                 try:
-                    await page.wait_for_url(
-                        auth_cfg["post_login_re"],
-                        timeout=300_000,  # 5 min
-                    )
-                    result = {
-                        "ok": True,
-                        "cli_type": cli,
-                        "message": f"Login successful — {cli} browser context saved.",
-                    }
-                except Exception:
-                    result = {
-                        "ok": False,
-                        "cli_type": cli,
-                        "message": "Login timed out (5 min). Try again.",
-                    }
+                    await asyncio.wait_for(proc.wait(), timeout=600)  # 10 min
+                    if proc.returncode == 0:
+                        result["ok"] = True
+                        if cli == "claude":
+                            from account_sandbox import has_isolated_claude_credentials
+                            isolated = has_isolated_claude_credentials(account_id)
+                            result["isolated"] = isolated
+                            if isolated:
+                                result["message"] = (
+                                    f"Login successful — {cli} authenticated, credentials "
+                                    f"saved per-account (file). Multi-account isolation works."
+                                )
+                            else:
+                                # Token went to shared macOS keychain. All accounts
+                                # share that entry, so this account's creds will be
+                                # overwritten by the next login. Surface this loudly
+                                # so the user can retry and click "Don't Allow" on
+                                # the keychain dialog to force the file fallback.
+                                result["warning"] = (
+                                    "Tokens went to the shared macOS keychain (Claude Code-credentials), "
+                                    "not this account's sandbox. All OAuth accounts will read the same "
+                                    "creds and overwrite each other.\n\n"
+                                    "To fix: delete this account, retry setup, and click \"Don't Allow\" "
+                                    "(or Cancel) when macOS asks to access the keychain. That forces "
+                                    "claude to fall back to per-account file storage."
+                                )
+                                result["message"] = f"Login completed but isolation FAILED — see warning."
+                        else:
+                            result["message"] = f"Login successful — {cli} authenticated and browser cookies saved."
+                    else:
+                        err = b""
+                        try:
+                            err = await asyncio.wait_for(proc.stderr.read(2048), timeout=2)
+                        except Exception:
+                            pass
+                        result["ok"] = False
+                        result["error"] = (
+                            f"`{' '.join(auth_cfg['auth_cmd'])}` exited {proc.returncode}: "
+                            f"{err.decode(errors='replace')[:500]}"
+                        )
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    result["ok"] = False
+                    result["error"] = "Login timed out (10 min). Try again."
 
                 await context.close()
+
         except Exception as e:
-            result = {"ok": False, "error": str(e)}
+            if proc and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            result["ok"] = False
+            result["error"] = str(e)
+        finally:
+            self._auth_in_progress.discard(account_id)
+            for f in (script_path, url_file):
+                try:
+                    os.unlink(f)
+                except OSError:
+                    pass
 
         return result
 
@@ -540,6 +766,11 @@ class AuthCycler:
             env = os.environ.copy()
             env["HOME"] = str(sandbox_home)
             env["BROWSER"] = script_path
+            if cli == "claude":
+                from account_sandbox import claude_config_dir
+                cfg_dir = claude_config_dir(account_id)
+                cfg_dir.mkdir(parents=True, exist_ok=True)
+                env["CLAUDE_CONFIG_DIR"] = str(cfg_dir)
 
             proc = await asyncio.create_subprocess_exec(
                 *auth_cfg["auth_cmd"],

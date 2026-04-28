@@ -4,7 +4,8 @@ import {
   Search, Copy, Download, Layout, LayoutGrid, History, Inbox, ListChecks,
   Kanban, GitBranch, GitCompareArrows, Crown, StickyNote, User, RotateCcw, Package,
   FlaskConical, Zap, Volume2, MessageSquareQuote, ListOrdered, Server, Sparkles,
-  Brain, MessagesSquare, ExternalLink, BookOpenCheck, Key, Telescope, Ticket
+  Brain, MessagesSquare, ExternalLink, BookOpenCheck, Key, Telescope, Ticket,
+  Newspaper, ShieldCheck, Globe
 } from 'lucide-react'
 
 export const ACTIONS = [
@@ -14,6 +15,7 @@ export const ACTIONS = [
   { id: 'restart-session', label: 'Restart Session', icon: RotateCcw, section: 'Sessions' },
   { id: 'mission-control', label: 'Mission Control', icon: LayoutGrid, section: 'View', shortcut: '⌘M' },
   { id: 'inbox', label: 'Inbox', icon: Inbox, section: 'View', shortcut: '⌘I' },
+  { id: 'briefing', label: 'Briefing — Catch Up', icon: Newspaper, section: 'View', hint: 'AI summary of what happened in a time window' },
   { id: 'plan-viewer', label: 'View Plan', icon: ListChecks, section: 'View' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', icon: ToggleLeft, section: 'View', shortcut: '⌘\\' },
   { id: 'split-view', label: 'Split View', icon: Columns, section: 'View', shortcut: '⌘D' },
@@ -33,6 +35,7 @@ export const ACTIONS = [
   { id: 'pipeline-editor', label: 'Pipeline Editor', icon: GitCompareArrows, section: 'Orchestration', shortcut: '⌘⇧L' },
   { id: 'quick-feature', label: 'Quick Feature', icon: Zap, section: 'Orchestration', shortcut: '⌘⇧N' },
   { id: 'observatory', label: 'Research Hub — Feed', icon: Telescope, section: 'Research', shortcut: '⌘⇧O' },
+  { id: 'smart-observatory', label: 'Smart Observatory (profile + targets)', icon: Telescope, section: 'Research' },
   { id: 'agent-tree', label: 'Agent Tree', icon: GitBranch, section: 'Orchestration', shortcut: '⌘T' },
   { id: 'start-commander', label: 'Start Commander', icon: Crown, section: 'Orchestration' },
   { id: 'start-documentor', label: 'Start Documentor', icon: BookOpenCheck, section: 'Orchestration' },
@@ -54,6 +57,8 @@ export const ACTIONS = [
   { id: 'sound-settings', label: 'Sound Notifications', icon: Volume2, section: 'Config' },
   { id: 'api-keys', label: 'API Keys', icon: Key, section: 'Config' },
   { id: 'invites', label: 'Invites — Share Access', icon: Ticket, section: 'Auth' },
+  { id: 'auth-sessions', label: 'Authenticated Sessions & Audit', icon: ShieldCheck, section: 'Auth', hint: 'Active joiners, IPs, mode, audit log + revoke' },
+  { id: 'runtime-controls', label: 'Tunnel & Multiplayer', icon: Globe, section: 'Auth', hint: 'Start/stop public tunnel, toggle multiplayer' },
   { id: 'code-review', label: 'Code Review', icon: GitCompareArrows, section: 'Git', shortcut: '⌘⇧G' },
   { id: 'annotate', label: 'Annotate Output', icon: MessageSquareQuote, section: 'Sessions', shortcut: '⌘⇧A' },
   { id: 'memory-search', label: 'Memory Search', icon: Brain, section: 'W2W' },

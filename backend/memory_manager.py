@@ -157,15 +157,26 @@ class MemoryManager:
         types: Optional[list[str]] = None,
         source_cli: Optional[str] = None,
         limit: int = 200,
+        include_global: bool = True,
     ) -> list[dict]:
-        """List entries, optionally filtered. Always includes global entries."""
+        """List entries, optionally filtered.
+
+        When ``workspace_id`` is supplied, ``include_global`` controls whether
+        rows with ``workspace_id = NULL`` are also returned. Defaults to True
+        so ``export_for_prompt`` keeps applying genuinely-global entries at
+        PTY start; the API surface (``/api/memory``) sets it to False so the
+        UI never silently shows entries leaked from other workspaces.
+        """
         conditions = []
         params: list = []
 
         if workspace_id:
-            # Include workspace-specific AND global entries
-            conditions.append("(workspace_id = ? OR workspace_id IS NULL)")
-            params.append(workspace_id)
+            if include_global:
+                conditions.append("(workspace_id = ? OR workspace_id IS NULL)")
+                params.append(workspace_id)
+            else:
+                conditions.append("workspace_id = ?")
+                params.append(workspace_id)
 
         if types:
             placeholders = ",".join("?" for _ in types)
@@ -196,6 +207,7 @@ class MemoryManager:
         workspace_id: Optional[str] = None,
         types: Optional[list[str]] = None,
         limit: int = 20,
+        include_global: bool = True,
     ) -> list[dict]:
         """Keyword search across name, description, and content."""
         conditions = ["(name LIKE ? OR description LIKE ? OR content LIKE ?)"]
@@ -203,7 +215,10 @@ class MemoryManager:
         params: list = [pattern, pattern, pattern]
 
         if workspace_id:
-            conditions.append("(workspace_id = ? OR workspace_id IS NULL)")
+            if include_global:
+                conditions.append("(workspace_id = ? OR workspace_id IS NULL)")
+            else:
+                conditions.append("workspace_id = ?")
             params.append(workspace_id)
 
         if types:

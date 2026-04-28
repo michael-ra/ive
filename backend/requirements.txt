@@ -3,14 +3,17 @@
 # Install:
 #   pip3 install -r backend/requirements.txt
 #
-# The embedder (fastembed) is heavy (~600MB on first model download) but is
-# loaded lazily — IVE starts fine without it; embedding-backed search just
-# falls back to keyword search until the model finishes downloading.
+# `start.sh` installs everything up front so the first run has no on-demand
+# downloads:
+#   - pip wheels listed below
+#   - Playwright Chromium browser (~150MB) via `playwright install chromium`
+#   - fastembed ONNX weights (~56MB total: BAAI/bge-small-en-v1.5 +
+#     Xenova/ms-marco-MiniLM-L-6-v2 cross-encoder reranker)
 #
-# Playwright is only needed for screenshot/live-preview/GIF features. It can
-# be installed on demand from the in-app Settings panel (which calls
-# `/api/install-screenshot-tools`), or up front via:
-#   pip3 install playwright && playwright install chromium
+# Each is gated by a stamp file under ~/.ive so they're only fetched once.
+# fastembed is loaded lazily at runtime; if pre-fetch is skipped or fails,
+# embedding-backed search falls back to keyword until the weights download.
+# Playwright is only needed for screenshot/live-preview/GIF features.
 
 aiohttp>=3.9,<4
 aiosqlite>=0.20,<1
@@ -19,3 +22,8 @@ fastembed>=0.4,<1
 # Optional but recommended — installed up front avoids the in-app install step.
 # Comment out if you don't need screenshots / live preview / GIF docs.
 playwright>=1.40,<2
+
+# Web Push (notifications to PWA-installed phones / backgrounded tabs).
+# pywebpush brings py-vapid + cryptography for VAPID keypair generation
+# and JWT signing. If absent, push.py silently no-ops.
+pywebpush>=1.14,<3

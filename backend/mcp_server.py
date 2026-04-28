@@ -24,6 +24,11 @@ def api_call(method: str, path: str, body: dict | None = None) -> dict:
     url = f"{API_URL}/api{path}"
     data = json.dumps(body).encode() if body else None
     headers = {"Content-Type": "application/json"} if body else {}
+    if COMMANDER_SESSION_ID:
+        headers["X-IVE-Session-Id"] = COMMANDER_SESSION_ID
+        headers["X-IVE-Session-Type"] = "commander"
+    if WORKSPACE_ID:
+        headers["X-IVE-Workspace-Id"] = WORKSPACE_ID
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -335,6 +340,20 @@ def tool_list_tasks(args: dict) -> str:
     return json.dumps(result, indent=2)
 
 
+def tool_get_task(args: dict) -> str:
+    """Fetch a single task with all fields + attachment file paths.
+    Dispatch prompts filter out empty fields, so Commander needs this
+    to actually see description / acceptance / labels / images on a
+    ticket it was just handed."""
+    task_id = args["task_id"]
+    task = api_call("GET", f"/tasks/{task_id}")
+    if isinstance(task, dict) and "error" not in task:
+        attachments = api_call("GET", f"/tasks/{task_id}/attachments")
+        if isinstance(attachments, list):
+            task["attachments"] = attachments
+    return json.dumps(task, indent=2)
+
+
 def tool_create_task(args: dict) -> str:
     body = {
         "workspace_id": args.get("workspace_id", WORKSPACE_ID),
@@ -600,12 +619,14 @@ def tool_save_memory(args: dict) -> str:
     content = (args.get("content") or "").strip()
     mem_type = (args.get("type") or "").strip()
     tags = args.get("tags") or []
-    ws_id = args.get("workspace_id", WORKSPACE_ID)
+    ws_id = (args.get("workspace_id") or WORKSPACE_ID or "").strip()
 
     if not name or not content:
         return json.dumps({"ok": False, "error": "name and content are required"})
     if mem_type not in _VALID_MEMORY_TYPES:
         return json.dumps({"ok": False, "error": f"type must be one of {sorted(_VALID_MEMORY_TYPES)}"})
+    if not ws_id:
+        return json.dumps({"ok": False, "error": "workspace_id is required (no WORKSPACE_ID bound on this MCP session); refusing to save a global memory entry"})
 
     existing = api_call("GET", f"/memory?workspace={urllib.parse.quote(ws_id)}")
     match_id = None
@@ -950,6 +971,24 @@ TOOLS = {
                 "workspace_id": {"type": "string"},
                 "status_filter": {"type": "string", "enum": ["all", "backlog", "todo", "in_progress", "review", "done", "blocked"], "default": "all"},
             },
+        },
+    },
+    "get_task": {
+        "handler": tool_get_task,
+        "description": (
+            "Fetch a single task by ID with all fields populated — title, description, "
+            "acceptance_criteria, labels, priority, status, scratchpad, lessons_learned, "
+            "important_notes, iteration count, AND the list of file attachments (image paths). "
+            "Call this FIRST when you receive a 'Pick up task: ...' dispatch — the dispatch "
+            "prompt only includes non-empty fields, so checking the full record is the only way "
+            "to see attached images, labels, or fields the owner filled in but you weren't shown."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+            },
+            "required": ["task_id"],
         },
     },
     "create_task": {

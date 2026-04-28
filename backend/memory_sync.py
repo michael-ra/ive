@@ -974,10 +974,50 @@ async def on_memory_file_changed(
         return
 
     source_cli = None
+    is_auto_memory_entry = False
     for prov in all_providers():
         if prov.is_memory_path(file_path):
             source_cli = prov.cli_type
+            # Distinguish a per-entry auto-memory file (e.g.
+            # ~/.claude/projects/<encoded>/memory/feedback_foo.md) from a
+            # project-level memory file (CLAUDE.md / GEMINI.md). Only the
+            # former feeds the entry-DB importer; the latter goes through
+            # the existing three-way merge sync.
+            mem_filename = prov.memory_filename
+            if mem_filename and os.path.basename(file_path) == mem_filename:
+                is_auto_memory_entry = False
+            elif "/memory/" in file_path:
+                is_auto_memory_entry = True
             break
+
+    if is_auto_memory_entry:
+        # Pull every changed entry on disk into the DB so the UI shows them
+        # without the user having to hit Import. Run inline (cheap glob +
+        # frontmatter parse) rather than via debounced sync, which is
+        # tuned for git-merge of project memory.
+        try:
+            from memory_manager import memory_manager
+            imported = await memory_manager.import_from_claude_memory(
+                workspace_path, workspace_id=workspace_id,
+            )
+            if imported > 0:
+                logger.info(
+                    "Auto-imported %d memory entry(ies) for workspace %s",
+                    imported, workspace_id[:8],
+                )
+                try:
+                    from hooks import _broadcast
+                    if _broadcast:
+                        await _broadcast({
+                            "type": "memory_entries_changed",
+                            "workspace_id": workspace_id,
+                            "imported": imported,
+                        })
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("Auto-import of memory entries failed: %s", exc)
+        return
 
     debounce_sec = settings.get("debounce_sec", 3.0)
     await sync_manager.debounced_sync(

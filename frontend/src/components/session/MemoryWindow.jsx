@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X, Search, Brain, ListChecks, MessageSquare, FileText, BookOpen, FolderOpen,
   Plus, Pencil, Trash2, RefreshCw, User, MessageCircle, Folder, ExternalLink,
-  Check, ChevronDown, Download } from 'lucide-react'
+  Check, ChevronDown, Download, Minimize2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
 
 // ── W2W Search type metadata ──────────────────────────────────────
 const SEARCH_TYPE_META = {
+  entries:   { icon: Brain,         label: 'Entries',   color: 'text-amber-400' },
   tasks:     { icon: ListChecks,    label: 'Tasks',     color: 'text-blue-400' },
   digests:   { icon: Brain,         label: 'Sessions',  color: 'text-violet-400' },
   knowledge: { icon: BookOpen,      label: 'Knowledge', color: 'text-emerald-400' },
@@ -24,6 +25,7 @@ const ENTRY_TYPE_META = {
 
 export default function MemoryWindow({ onClose }) {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId)
+  const ws = useStore((s) => s.ws)
   const [tab, setTab] = useState('entries') // 'entries' | 'search'
 
   return (
@@ -46,7 +48,7 @@ export default function MemoryWindow({ onClose }) {
         </div>
 
         {tab === 'entries'
-          ? <EntriesTab workspaceId={activeWorkspaceId} />
+          ? <EntriesTab workspaceId={activeWorkspaceId} ws={ws} />
           : <SearchTab workspaceId={activeWorkspaceId} onClose={onClose} />
         }
       </div>
@@ -58,13 +60,14 @@ export default function MemoryWindow({ onClose }) {
 //  ENTRIES TAB — memory entries CRUD + sync status
 // ══════════════════════════════════════════════════════════════════
 
-function EntriesTab({ workspaceId }) {
+function EntriesTab({ workspaceId, ws }) {
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [syncStatus, setSyncStatus] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [editing, setEditing] = useState(null) // entry id or 'new'
   const [filterType, setFilterType] = useState(null) // null = all
+  const didAutoImport = useRef(false)
 
   const loadEntries = useCallback(async () => {
     if (!workspaceId) return
@@ -81,6 +84,36 @@ function EntriesTab({ workspaceId }) {
   }, [workspaceId])
 
   useEffect(() => { loadEntries() }, [loadEntries])
+
+  // Pull any new on-disk entries (e.g. saved by Claude during a session)
+  // once per workspace open, so the user doesn't have to press Import.
+  useEffect(() => {
+    if (!workspaceId || didAutoImport.current) return
+    didAutoImport.current = true
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await api.importMemoryFromCli(workspaceId)
+        if (!cancelled && r?.imported > 0) await loadEntries()
+      } catch { /* ignore */ }
+    })()
+    return () => { cancelled = true }
+  }, [workspaceId, loadEntries])
+
+  // Stay in sync when the backend auto-imports entries from a hook event.
+  useEffect(() => {
+    if (!ws?.addEventListener) return
+    const onMsg = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data)
+        if (msg?.type === 'memory_entries_changed' && msg.workspace_id === workspaceId) {
+          loadEntries()
+        }
+      } catch { /* ignore */ }
+    }
+    ws.addEventListener('message', onMsg)
+    return () => ws.removeEventListener('message', onMsg)
+  }, [workspaceId, loadEntries, ws])
 
   const handleDelete = async (id) => {
     try {
@@ -107,6 +140,28 @@ function EntriesTab({ workspaceId }) {
       if (r?.imported > 0) await loadEntries()
     } catch { /* ignore */ }
     setSyncing(false)
+  }
+
+  const [compacting, setCompacting] = useState(false)
+  const [compactReport, setCompactReport] = useState(null)
+  const handleCompact = async () => {
+    if (!workspaceId || compacting) return
+    const eligible = entries.filter(e => (e.content || '').length >= 120)
+    if (!eligible.length) {
+      setCompactReport({ updated: 0, skipped: entries.length, results: [], note: 'All entries already terse.' })
+      return
+    }
+    if (!confirm(`Compact ${eligible.length} memory entr${eligible.length === 1 ? 'y' : 'ies'} into dense form? Original content will be replaced.`)) return
+    setCompacting(true)
+    setCompactReport(null)
+    try {
+      const r = await api.compactMemoryEntries({ workspace_id: workspaceId, style: 'dense' })
+      setCompactReport(r)
+      if (r?.updated > 0) await loadEntries()
+    } catch (e) {
+      setCompactReport({ updated: 0, skipped: 0, results: [], error: String(e?.message || e) })
+    }
+    setCompacting(false)
   }
 
   const handleSaved = async () => {
@@ -154,11 +209,41 @@ function EntriesTab({ workspaceId }) {
           title="Sync memory across CLIs">
           <RefreshCw size={11} className={syncing ? 'animate-spin' : ''} />Sync
         </button>
+        <button onClick={handleCompact} disabled={compacting || syncing}
+          className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-text-muted hover:text-text-primary hover:bg-bg-secondary transition-colors disabled:opacity-50"
+          title="Rewrite memory entries in dense form (Haiku-powered)">
+          <Minimize2 size={11} className={compacting ? 'animate-pulse' : ''} />
+          {compacting ? 'Compacting…' : 'Compact'}
+        </button>
         <button onClick={() => setEditing('new')}
           className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-accent-primary/20 text-accent-primary hover:bg-accent-primary/30 transition-colors">
           <Plus size={11} />New
         </button>
       </div>
+
+      {/* Compact report */}
+      {compactReport && (
+        <div className="px-4 py-2 border-b border-border-primary bg-amber-500/5 flex items-center gap-3 text-[11px]">
+          <Minimize2 size={11} className="text-amber-400 shrink-0" />
+          <div className="flex-1 text-text-secondary">
+            {compactReport.error
+              ? <span className="text-red-400">Compact failed: {compactReport.error}</span>
+              : <>
+                <span className="text-amber-400 font-medium">{compactReport.updated}</span> compacted
+                {compactReport.skipped > 0 && <>, <span className="text-text-faint">{compactReport.skipped}</span> skipped</>}
+                {compactReport.results?.length > 0 && (() => {
+                  const c = compactReport.results.filter(r => r.status === 'compacted')
+                  if (!c.length) return null
+                  const before = c.reduce((a, r) => a + (r.before_chars || 0), 0)
+                  const after  = c.reduce((a, r) => a + (r.after_chars || 0), 0)
+                  return before > 0 ? <span className="ml-1 text-text-faint">· {before}→{after} chars ({Math.round((1 - after/before) * 100)}% reduction)</span> : null
+                })()}
+                {compactReport.note && <span className="ml-1 text-text-faint">· {compactReport.note}</span>}
+              </>}
+          </div>
+          <button onClick={() => setCompactReport(null)} className="text-text-faint hover:text-text-primary"><X size={11} /></button>
+        </div>
+      )}
 
       {/* Editor (inline) */}
       {editing && (
@@ -317,7 +402,7 @@ function SearchTab({ workspaceId, onClose }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [activeTypes, setActiveTypes] = useState(new Set(['tasks', 'digests', 'knowledge', 'messages', 'files']))
+  const [activeTypes, setActiveTypes] = useState(new Set(['entries', 'tasks', 'digests', 'knowledge', 'messages', 'files']))
   const inputRef = useRef(null)
 
   useEffect(() => { inputRef.current?.focus() }, [])
@@ -326,9 +411,18 @@ function SearchTab({ workspaceId, onClose }) {
     if (!q.trim() || !workspaceId) return
     setLoading(true)
     try {
-      const types = [...activeTypes].join(',')
-      const r = await api.searchMemory(workspaceId, q.trim(), types)
-      setResults(r)
+      const w2wTypes = [...activeTypes].filter(t => t !== 'entries').join(',')
+      // Memory entries live in a separate table from the W2W indices, so
+      // hit both endpoints in parallel and merge into one result shape.
+      const [w2w, entries] = await Promise.all([
+        w2wTypes
+          ? api.searchMemory(workspaceId, q.trim(), w2wTypes).catch(() => ({}))
+          : Promise.resolve({}),
+        activeTypes.has('entries')
+          ? api.searchMemoryEntries(q.trim(), workspaceId).catch(() => [])
+          : Promise.resolve([]),
+      ])
+      setResults({ ...(w2w || {}), entries: Array.isArray(entries) ? entries : [] })
     } catch { setResults(null) }
     setLoading(false)
   }, [workspaceId, activeTypes])
@@ -395,6 +489,34 @@ function SearchTab({ workspaceId, onClose }) {
 
         {results && totalResults === 0 && (
           <div className="text-center text-text-faint text-[11px] py-8">No results for &ldquo;{query}&rdquo;</div>
+        )}
+
+        {/* Memory entries */}
+        {results?.entries?.length > 0 && (
+          <SearchSection type="entries">
+            {results.entries.map(e => {
+              const meta = ENTRY_TYPE_META[e.type] || ENTRY_TYPE_META.project
+              const Icon = meta.icon
+              return (
+                <div key={e.id} className="p-2 bg-bg-secondary rounded border border-border-secondary">
+                  <div className="flex items-center gap-2">
+                    <Icon size={11} className={meta.color} />
+                    <span className="text-[11px] text-text-primary font-medium">{e.name}</span>
+                    <span className={`text-[9px] px-1.5 rounded ${meta.bg} ${meta.color}`}>{meta.label}</span>
+                    {e.source_cli && e.source_cli !== 'commander' && (
+                      <span className="text-[9px] text-text-faint">{e.source_cli}</span>
+                    )}
+                  </div>
+                  {e.description && <div className="text-[10px] text-text-muted mt-1">{e.description}</div>}
+                  {e.content && (
+                    <div className="text-[10px] text-text-secondary mt-1 whitespace-pre-wrap line-clamp-3">
+                      {e.content}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </SearchSection>
         )}
 
         {/* Tasks */}

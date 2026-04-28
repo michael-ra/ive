@@ -162,6 +162,12 @@ class CommanderEvent(str, Enum):
     INVITE_REDEEMED       = "invite_redeemed"
     INVITE_BURNED         = "invite_burned"
     INVITE_REDEEM_FAILED  = "invite_redeem_failed"
+    SESSION_MINTED        = "session_minted"
+    SESSION_REVOKED       = "session_revoked"
+    DEVICE_PAIRED         = "device_paired"
+    DEVICE_UNPAIRED       = "device_unpaired"
+    MODE_VIOLATION_BLOCKED = "mode_violation_blocked"
+    BRIEF_APPROVAL_GIVEN  = "brief_approval_given"
 
 
 COMMANDER_EVENT_LABELS: dict[CommanderEvent, str] = {
@@ -271,6 +277,12 @@ COMMANDER_EVENT_LABELS: dict[CommanderEvent, str] = {
     CommanderEvent.INVITE_CREATED:       "Invite created",
     CommanderEvent.INVITE_REDEEMED:      "Invite redeemed",
     CommanderEvent.INVITE_BURNED:        "Invite revoked or auto-burned",
+    CommanderEvent.SESSION_MINTED:       "Auth session minted",
+    CommanderEvent.SESSION_REVOKED:      "Auth session revoked",
+    CommanderEvent.DEVICE_PAIRED:        "Device paired",
+    CommanderEvent.DEVICE_UNPAIRED:      "Device unpaired",
+    CommanderEvent.MODE_VIOLATION_BLOCKED: "Mode violation blocked",
+    CommanderEvent.BRIEF_APPROVAL_GIVEN: "Brief joiner gave thumbs-up",
     CommanderEvent.INVITE_REDEEM_FAILED: "Invite redemption attempt failed",
 }
 
@@ -374,6 +386,12 @@ COMMANDER_EVENT_CATEGORIES: dict[CommanderEvent, str] = {
     CommanderEvent.INVITE_CREATED:       "access",
     CommanderEvent.INVITE_REDEEMED:      "access",
     CommanderEvent.INVITE_BURNED:        "access",
+    CommanderEvent.SESSION_MINTED:       "access",
+    CommanderEvent.SESSION_REVOKED:      "access",
+    CommanderEvent.DEVICE_PAIRED:        "access",
+    CommanderEvent.DEVICE_UNPAIRED:      "access",
+    CommanderEvent.MODE_VIOLATION_BLOCKED: "access",
+    CommanderEvent.BRIEF_APPROVAL_GIVEN: "access",
     CommanderEvent.INVITE_REDEEM_FAILED: "access",
 }
 

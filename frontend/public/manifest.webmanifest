@@ -1,0 +1,20 @@
+{
+  "name": "IVE — Integrated Vibecoding Environment",
+  "short_name": "IVE",
+  "description": "Drive multiple Claude Code and Gemini CLI sessions from one browser.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

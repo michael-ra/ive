@@ -12,6 +12,7 @@ import MissionControl from './components/session/MissionControl'
 import TerminalView from './components/chat/Terminal'
 import QuickActions from './components/command/QuickActions'
 import CommandPalette from './components/command/CommandPalette'
+import FloatingCommandButton from './components/command/FloatingCommandButton'
 import { ACTIONS as CMD_ACTIONS } from './lib/commandActions'
 import SearchPanel from './components/command/SearchPanel'
 import PromptPalette from './components/prompts/PromptPalette'
@@ -25,12 +26,20 @@ import GeneralSettingsPanel from './components/settings/GeneralSettingsPanel'
 import WorkspaceSettingsPanel from './components/settings/WorkspaceSettingsPanel'
 import ApiKeysPanel from './components/settings/ApiKeysPanel'
 import InvitesPanel from './components/settings/InvitesPanel'
+import AuthSessionsPanel from './components/settings/AuthSessionsPanel'
+import RuntimeControlsPanel from './components/settings/RuntimeControlsPanel'
+import FirstLaunchOnboarding from './components/onboarding/FirstLaunchOnboarding'
+import MobileInstallPrompt from './components/mobile/MobileInstallPrompt'
+import CatchUpBanner, { touchLastSeen } from './components/catchup/CatchUpBanner'
+import CatchUpPanel from './components/catchup/CatchUpPanel'
 import BroadcastBar from './components/chat/BroadcastBar'
 import HistoryImport from './components/session/HistoryImport'
 import InboxPanel from './components/session/Inbox'
 import PlanViewer from './components/session/PlanViewer'
 import FeatureBoard from './components/board/FeatureBoard'
 import ResearchHub from './components/session/ResearchHub'
+import SmartObservatoryPanel from './components/observatory/SmartObservatoryPanel'
+import WorkspaceVisionOnboarding from './components/workspace/WorkspaceVisionOnboarding'
 import PipelineEditor from './components/pipeline/PipelineEditor'
 import QuickFeatureModal from './components/board/QuickFeatureModal'
 import SubagentTree from './components/session/SubagentTree'
@@ -91,6 +100,52 @@ import { getWorkspaceColor } from './lib/constants'
 export default function App() {
   useWebSocket()
 
+  // Load AuthContext (mode/actor_kind/label) once on boot. The ModeBadge
+  // also self-loads if it ever mounts before this fires.
+  const loadWhoami = useStore((s) => s.loadWhoami)
+  useEffect(() => { loadWhoami() }, [loadWhoami])
+
+  // First-launch owner-name onboarding. Only shows on the owner's local
+  // browser — joiners see whoami=joiner_session and we skip silently.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const me = await api.whoami()
+        const isOwner = ['owner_legacy', 'owner_device', 'localhost'].includes(me?.actor_kind)
+        if (!isOwner || cancelled) return
+        const [intro, ownerNameRow] = await Promise.all([
+          api.getAppSetting('owner_intro_completed_at'),
+          api.getAppSetting('owner_name'),
+        ])
+        if (cancelled) return
+        if (!intro?.value) {
+          setShowFirstLaunch(true)
+        } else if (ownerNameRow?.value) {
+          // Already onboarded — make sure the peer/terminal identity
+          // reflects owner_name instead of the random "Drift Lynx"
+          // generator from initIdentity().
+          const current = useStore.getState().myName
+          if (current !== ownerNameRow.value) {
+            useStore.getState().setMyName?.(ownerNameRow.value)
+          }
+        }
+      } catch { /* network/auth issue — let the user reload */ }
+    })()
+    return () => { cancelled = true }
+  }, [])
+  const [catchupOpen, setCatchupOpen] = useState(false)
+  const [catchupSeed, setCatchupSeed] = useState(null)
+  // Touch the "last seen" marker once per session so subsequent loads
+  // can detect the user was away.
+  useEffect(() => {
+    const onUnload = () => {
+      try { touchLastSeen() } catch {}
+    }
+    window.addEventListener('beforeunload', onUnload)
+    return () => window.removeEventListener('beforeunload', onUnload)
+  }, [])
+
   // Listen for custom events from sidebar buttons and notifications
   useEffect(() => {
     const handler = (e) => {
@@ -100,6 +155,7 @@ export default function App() {
       closeExclusivePanels()
       if (panel === 'feature-board') setShowBoard(true)
       if (panel === 'observatory') { setResearchHubTab('feed'); setShowResearchHub(true) }
+      if (panel === 'smart-observatory') { setShowSmartObservatory(true) }
       if (panel === 'pipeline-editor') setShowPipelineEditor(true)
       if (panel === 'agent-tree') setShowTree(true)
       if (panel === 'research') { setResearchHubTab('library'); setShowResearchHub(true) }
@@ -124,6 +180,8 @@ export default function App() {
       if (panel === 'experimental') setShowExperimental(true)
       if (panel === 'api-keys') setShowApiKeys(true)
       if (panel === 'invites') setShowInvites(true)
+      if (panel === 'auth-sessions') setShowAuthSessions(true)
+      if (panel === 'runtime-controls') setShowRuntimeControls(true)
       if (panel === 'prompts') setShowPrompts(true)
       if (panel === 'search') setShowSearch(true)
     }
@@ -329,6 +387,34 @@ export default function App() {
     return () => { cancelled = true }
   }, [viewMode, visibleTabCount, activeWorkspaceId, activeSessionId, gridLayout, activeGridTemplateId, splitMode, splitSessionId, showHome])
 
+  // Mobile-specific refit triggers: soft-keyboard show/hide and orientation
+  // change. ResizeObserver doesn't fire on visualViewport changes (the
+  // terminal's flex container keeps the same logical size), so without these
+  // dispatches the xterm renderer goes stale after the keyboard dismisses
+  // and input feels laggy until something else kicks the 1Hz safety net.
+  useEffect(() => {
+    const refit = () => window.dispatchEvent(new Event('cc-terminal-refit'))
+    let timer = null
+    const debounced = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => { refit(); setTimeout(refit, 250) }, 60)
+    }
+    const vv = window.visualViewport
+    if (vv) {
+      vv.addEventListener('resize', debounced)
+      vv.addEventListener('scroll', debounced)
+    }
+    window.addEventListener('orientationchange', debounced)
+    return () => {
+      if (timer) clearTimeout(timer)
+      if (vv) {
+        vv.removeEventListener('resize', debounced)
+        vv.removeEventListener('scroll', debounced)
+      }
+      window.removeEventListener('orientationchange', debounced)
+    }
+  }, [])
+
   const [showCommand, setShowCommand] = useState(false)
   const [showPrompts, setShowPrompts] = useState(false)
   const [promptsStartCreate, setPromptsStartCreate] = useState(false)
@@ -348,6 +434,8 @@ export default function App() {
   const [showConfig, setShowConfig] = useState(false)
   const [showResearchHub, setShowResearchHub] = useState(false)
   const [researchHubTab, setResearchHubTab] = useState('library')
+  const [showSmartObservatory, setShowSmartObservatory] = useState(false)
+  const [visionOnboardingFor, setVisionOnboardingFor] = useState(null)
   const [showDocs, setShowDocs] = useState(false)
   const [showKnowledge, setShowKnowledge] = useState(false)
   const [showPeerMessages, setShowPeerMessages] = useState(false)
@@ -371,6 +459,9 @@ export default function App() {
   const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false)
   const [showApiKeys, setShowApiKeys] = useState(false)
   const [showInvites, setShowInvites] = useState(false)
+  const [showAuthSessions, setShowAuthSessions] = useState(false)
+  const [showRuntimeControls, setShowRuntimeControls] = useState(false)
+  const [showFirstLaunch, setShowFirstLaunch] = useState(false)
   const [wsSettingsInitialId, setWsSettingsInitialId] = useState(null)
   const [showCodeReview, setShowCodeReview] = useState(false)
   const [showAnnotator, setShowAnnotator] = useState(false)
@@ -412,6 +503,7 @@ export default function App() {
     setShowAccounts(false)
     setShowConfig(false)
     setShowResearchHub(false)
+    setShowSmartObservatory(false)
     setShowDocs(false)
     setShowKnowledge(false)
     setShowPeerMessages(false)
@@ -479,6 +571,8 @@ export default function App() {
         [showWorkspaceSettings, () => setShowWorkspaceSettings(false)],
         [showApiKeys, () => setShowApiKeys(false)],
         [showInvites, () => setShowInvites(false)],
+        [showAuthSessions, () => setShowAuthSessions(false)],
+        [showRuntimeControls, () => setShowRuntimeControls(false)],
         [showCodeReview, () => setShowCodeReview(false)],
         [showGridEditor, () => setShowGridEditor(false)],
         [showScratchpad, () => setShowScratchpad(false)],
@@ -490,12 +584,12 @@ export default function App() {
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [showDistill, showQuickFeature, showAnnotator, screenshotData, livePreviewUrl, showPreviewPalette, showCommand, showPrompts, showGuidelines, showMcpServers, showBroadcast, showSearch, showMission, showHistory, showInbox, showPlan, showBoard, showPipelineEditor, showTree, showTemplates, showScratchpad, showAccounts, showShortcuts, showResearchHub, showCodeReview, showMarketplace, showQuickActionPalette, showExperimental, showSafety, showSoundSettings, showGeneralSettings, showWorkspaceSettings, showApiKeys, showInvites, showGridEditor, splitMode])
+  }, [showDistill, showQuickFeature, showAnnotator, screenshotData, livePreviewUrl, showPreviewPalette, showCommand, showPrompts, showGuidelines, showMcpServers, showBroadcast, showSearch, showMission, showHistory, showInbox, showPlan, showBoard, showPipelineEditor, showTree, showTemplates, showScratchpad, showAccounts, showShortcuts, showResearchHub, showCodeReview, showMarketplace, showQuickActionPalette, showExperimental, showSafety, showSoundSettings, showGeneralSettings, showWorkspaceSettings, showApiKeys, showInvites, showAuthSessions, showRuntimeControls, showGridEditor, splitMode])
 
   // When a modal overlay opens, pull focus away from the terminal so that
   // keyboard events (arrows, Enter, etc.) reach panel handlers instead of
   // being consumed by xterm.js.
-  const anyModalOpen = showDistill || showQuickFeature || showAnnotator || showCommand || showPrompts || showGuidelines || showMcpServers || showBroadcast || showSearch || showMission || showHistory || showInbox || showPlan || showBoard || showTree || showTemplates || showShortcuts || showAccounts || showResearchHub || showCodeReview || showGridEditor || showPreviewPalette || !!livePreviewUrl || showMarketplace || showQuickActionPalette || showExperimental || showSoundSettings || showGeneralSettings || showApiKeys || showInvites || !!screenshotData
+  const anyModalOpen = showDistill || showQuickFeature || showAnnotator || showCommand || showPrompts || showGuidelines || showMcpServers || showBroadcast || showSearch || showMission || showHistory || showInbox || showPlan || showBoard || showTree || showTemplates || showShortcuts || showAccounts || showResearchHub || showCodeReview || showGridEditor || showPreviewPalette || !!livePreviewUrl || showMarketplace || showQuickActionPalette || showExperimental || showSoundSettings || showGeneralSettings || showApiKeys || showInvites || showAuthSessions || showRuntimeControls || !!screenshotData
   useEffect(() => {
     if (anyModalOpen) {
       const active = document.activeElement
@@ -587,9 +681,11 @@ export default function App() {
       'mission-control': () => setShowMission(true),
       'import-history': () => setShowHistory(true),
       'inbox': () => setShowInbox(true),
+      'briefing': () => { setCatchupSeed(null); setCatchupOpen(true) },
       'plan-viewer': () => setShowPlan(true),
       'feature-board': () => setShowBoard(true),
       'observatory': () => { setResearchHubTab('feed'); setShowResearchHub(true) },
+      'smart-observatory': () => setShowSmartObservatory(true),
       'pipeline-editor': () => setShowPipelineEditor(true),
       'agent-tree': () => setShowTree(true),
       'manage-templates': () => setShowTemplates(true),
@@ -613,12 +709,15 @@ export default function App() {
       'workspace-settings': () => { setWsSettingsInitialId(useStore.getState().activeWorkspaceId); setShowWorkspaceSettings(true) },
       'api-keys': () => setShowApiKeys(true),
       'invites': () => setShowInvites(true),
+      'auth-sessions': () => setShowAuthSessions(true),
+      'runtime-controls': () => setShowRuntimeControls(true),
       'add-workspace': () => {
         api.browseFolder().then(({ path }) => {
           if (path) api.createWorkspace(path).then((ws) => {
             const store = useStore.getState()
             store.setWorkspaces([...store.workspaces, ws])
             store.setActiveWorkspace(ws.id)
+            setVisionOnboardingFor(ws)
           })
         }).catch(() => {})
       },
@@ -704,7 +803,7 @@ export default function App() {
 
   return (
     <div
-      className="flex h-[100dvh] overflow-hidden bg-bg-primary"
+      className="flex flex-col h-[100dvh] overflow-hidden bg-bg-primary"
       style={{
         paddingTop: 'env(safe-area-inset-top, 0px)',
         paddingBottom: 'env(safe-area-inset-bottom, 0px)',
@@ -712,16 +811,31 @@ export default function App() {
         paddingRight: 'env(safe-area-inset-right, 0px)',
       }}
     >
+      {/* Mobile PWA install prompt (iOS A2HS / Android beforeinstallprompt) */}
+      <MobileInstallPrompt />
+      <CatchUpBanner
+        onOpenPanel={(d) => {
+          setCatchupSeed(d)
+          setCatchupOpen(true)
+        }}
+      />
+      {catchupOpen && (
+        <CatchUpPanel
+          initialDigest={catchupSeed}
+          onClose={() => setCatchupOpen(false)}
+        />
+      )}
+      <div className="flex flex-1 min-h-0">
       {/* Desktop / tablet sidebar — only mounted on md+, narrower on md, full width on lg */}
       {sidebarVisible && !isMobile && (
         <div className="flex md:w-60 lg:w-72 shrink-0">
-          <Sidebar />
+          <Sidebar onWorkspaceCreated={(ws) => setVisionOnboardingFor(ws)} />
         </div>
       )}
       {/* Mobile slide-in drawer — only mounted on mobile so we don't double-instance Sidebar */}
       {isMobile && (
         <MobileDrawer open={mobileDrawerOpen} onClose={() => setMobileDrawerOpen(false)}>
-          <Sidebar />
+          <Sidebar onWorkspaceCreated={(ws) => setVisionOnboardingFor(ws)} />
         </MobileDrawer>
       )}
       <main className="flex-1 flex flex-col min-w-0">
@@ -1070,7 +1184,8 @@ export default function App() {
                 </div>
 
 
-                {/* Preferences panel */}
+                {/* Preferences panel — desktop only; cramped/irrelevant on mobile */}
+                {!isMobile && (
                 <div className="shrink-0 bg-bg-secondary/40 border border-border-secondary rounded-lg p-3 space-y-2">
                   <div className="text-[9px] text-text-faint uppercase tracking-widest font-semibold mb-1.5">Preferences</div>
 
@@ -1149,6 +1264,7 @@ export default function App() {
                     <span className="text-[10px] text-text-faint">{terminalAutoFit ? 'on' : 'off'}</span>
                   </button>
                 </div>
+                )}
               </div>
 
               {/* Sections grid */}
@@ -1213,7 +1329,11 @@ export default function App() {
         <CascadeVariableDialog />
         <StatusBar />
       </main>
+      </div>
 
+      {isMobile && (
+        <FloatingCommandButton onActivate={() => { closeExclusivePanels(); setShowCommand(true) }} />
+      )}
       {showCommand && <CommandPalette onClose={() => setShowCommand(false)} onAction={handleCommandAction} />}
       {showPrompts && <PromptPalette startInCreate={promptsStartCreate} startTab={promptsStartTab} onClose={() => { setShowPrompts(false); setPromptsStartCreate(false); setPromptsStartTab('prompts') }} />}
       {showGuidelines && <GuidelinePanel onClose={() => setShowGuidelines(false)} />}
@@ -1232,6 +1352,16 @@ export default function App() {
       {showAccounts && <AccountManager onClose={() => setShowAccounts(false)} />}
       {showConfig && <ConfigViewer onClose={() => setShowConfig(false)} />}
       {showResearchHub && <PanelBoundary onClose={() => setShowResearchHub(false)}><ResearchHub initialTab={researchHubTab} onClose={() => setShowResearchHub(false)} /></PanelBoundary>}
+      {showSmartObservatory && <PanelBoundary onClose={() => setShowSmartObservatory(false)}><SmartObservatoryPanel onClose={() => setShowSmartObservatory(false)} /></PanelBoundary>}
+      {visionOnboardingFor && (
+        <PanelBoundary onClose={() => setVisionOnboardingFor(null)}>
+          <WorkspaceVisionOnboarding
+            workspace={visionOnboardingFor}
+            onClose={() => setVisionOnboardingFor(null)}
+            onDone={() => setVisionOnboardingFor(null)}
+          />
+        </PanelBoundary>
+      )}
       {showDocs && <DocsPanel onClose={() => setShowDocs(false)} />}
       {showKnowledge && <KnowledgePanel onClose={() => setShowKnowledge(false)} />}
       {showPeerMessages && <PeerMessagesPanel onClose={() => setShowPeerMessages(false)} />}
@@ -1246,6 +1376,11 @@ export default function App() {
       {showWorkspaceSettings && <WorkspaceSettingsPanel onClose={() => setShowWorkspaceSettings(false)} initialWorkspaceId={wsSettingsInitialId} />}
       {showApiKeys && <ApiKeysPanel onClose={() => setShowApiKeys(false)} />}
       {showInvites && <InvitesPanel onClose={() => setShowInvites(false)} />}
+      {showAuthSessions && <AuthSessionsPanel onClose={() => setShowAuthSessions(false)} />}
+      {showRuntimeControls && <RuntimeControlsPanel onClose={() => setShowRuntimeControls(false)} />}
+      {showFirstLaunch && (
+        <FirstLaunchOnboarding onDone={() => setShowFirstLaunch(false)} />
+      )}
       {showCodeReview && <CodeReviewPanel onClose={() => setShowCodeReview(false)} />}
       {showDistill && (
         <DistillPanel

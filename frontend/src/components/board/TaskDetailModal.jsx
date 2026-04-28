@@ -321,15 +321,43 @@ export default function TaskDetailModal({ task, workspaceId, commanderSessionId,
 
   const handleExecute = async () => {
     await handleSave()
-    if (!commanderSessionId) { alert('No Commander session. Start one from the sidebar.'); return }
+    // Auto-start Commander if missing — owner shouldn't have to bounce
+    // through the sidebar to dispatch a ticket.
+    let targetCommanderId = commanderSessionId
+    if (!targetCommanderId) {
+      try {
+        const commander = await api.startCommander(workspaceId)
+        if (!commander?.id) { alert('Failed to start Commander.'); return }
+        targetCommanderId = commander.id
+        useStore.getState().setActiveSession(commander.id)
+        // Give the PTY a beat to spawn before the first paste lands —
+        // dispatching too early can race the Ink TUI's first render.
+        await new Promise((r) => setTimeout(r, 1500))
+      } catch (e) {
+        console.error('startCommander failed:', e)
+        alert('Failed to start Commander.')
+        return
+      }
+    }
     // Extract diagram text notes
     const diagramNotes = extractDiagramNotes(diagramData)
     const notesText = diagramNotes.length > 0
       ? `Diagram annotations:\n${diagramNotes.map((n) => `  note-${n.id}: ${n.text}`).join('\n')}`
       : ''
 
+    // Re-fetch attachments at dispatch time — the modal's `attachments`
+    // state can lag behind a just-saved Excalidraw diagram (the upload +
+    // `attachments-updated` event may not have settled before the user
+    // clicks Execute), which left the dispatch prompt with an empty
+    // "Attached images:" section even though the file existed on disk.
+    let freshAttachments = attachments
+    try {
+      const r = await fetch(`/api/tasks/${task.id}/attachments`)
+      if (r.ok) freshAttachments = await r.json()
+    } catch { /* fall back to in-memory state */ }
+
     // Include attachment file paths so the session can see images
-    const imageAttachments = attachments.filter((a) => a.path && a.filename.match(/\.(png|jpg|jpeg|gif|svg|webp)$/i))
+    const imageAttachments = freshAttachments.filter((a) => a.path && a.filename.match(/\.(png|jpg|jpeg|gif|svg|webp)$/i))
     const attachmentText = imageAttachments.length > 0
       ? `Attached images:\n${imageAttachments.map((a) => `  ${a.path}`).join('\n')}`
       : ''
@@ -337,6 +365,7 @@ export default function TaskDetailModal({ task, workspaceId, commanderSessionId,
     const prompt = [
       `Pick up task: ${title}`,
       `Task ID: ${task.id}`,
+      `IMPORTANT: Call get_task(task_id="${task.id}") FIRST to fetch the full record — description, acceptance criteria, labels, priority, attachments (image paths), iteration history. The lines below only include fields that were non-empty at dispatch time, so anything blank here may still have content on the ticket.`,
       description ? `Description: ${description}` : '',
       acceptance ? `Acceptance criteria: ${acceptance}` : '',
       scratchText ? `Text notes:\n${scratchText}` : '',
@@ -345,13 +374,14 @@ export default function TaskDetailModal({ task, workspaceId, commanderSessionId,
       `Plan first: ${planFirst ? 'yes — research and plan, then come back for refinement before implementing' : 'no — implement directly'}`,
       ralphLoop ? 'Ralph mode: ON — worker must loop (execute→verify→fix) until ALL tests/build pass. Do not accept partial completion. Inject the ralph loop system prompt into the worker session.' : '',
       deepResearch ? 'Deep research: ON — invoke the deep_research MCP tool BEFORE creating the worker session. Use the research output to enrich the worker\'s task context. The research should focus on the task description and acceptance criteria.' : '',
+      testWithAgent ? `Test with agent: ON — after the worker reports status=review, route the work to the workspace Tester for browser-automation verification. Either send_message to the existing tester session (session_type='tester') or, if none exists, create a fresh one via create_session(session_type='test_worker', name="Tester — ${title}", task_id="${task.id}"). The tester gets Playwright MCP automatically and runs read-only — it can navigate the app and screenshot but cannot edit code. Pass it the description, acceptance criteria, and the worker's result_summary. Read the tester's output and update the task accordingly: status='done' if all checks pass, status='blocked' with details if any fail.` : '',
       (task.iteration || 1) > 1 ? `This is iteration ${task.iteration} of this task (revision requested). Previous work was done by session ${task.last_agent_session_id || 'unknown'}. Build on previous work, don't start from scratch.` : '',
       assignedSession
         ? `Use session: ${sessions[assignedSession]?.name || assignedSession}`
         : 'Create new worker or assign to best-fit existing session.',
       `Status tracking: Update this task via update_task(task_id="${task.id}") — set status to "in_progress" when work begins, and "done" with a result_summary when complete.`,
     ].filter(Boolean).join('\n')
-    sendTerminalCommand(commanderSessionId, prompt)
+    sendTerminalCommand(targetCommanderId, prompt)
     await api.updateTask2(task.id, { status: 'todo' })
     useStore.getState().updateTaskInStore({ ...task, status: 'todo' })
     onClose()

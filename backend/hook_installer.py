@@ -69,6 +69,29 @@ if [ -z "$COMMANDER_SESSION_ID" ]; then
   fi
 fi
 
+# Stop events may return a decision dict that re-engages the model
+# (e.g. the reflection nudge). For those we run synchronously and forward
+# the response body to stdout — Claude Code reads stdout to honor
+# {"decision":"block","reason":...}. All other events stay fire-and-forget
+# so PostToolUse/Notification don't add latency to the CLI.
+EVENT_NAME=$(echo "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null)
+
+if [ "$EVENT_NAME" = "Stop" ] || [ "$EVENT_NAME" = "stop" ]; then
+  RESP=$(echo "$INPUT" | curl -s -X POST \\
+    "${COMMANDER_API_URL}/api/hooks/event" \\
+    -H "Content-Type: application/json" \\
+    -H "X-Commander-Session-Id: $COMMANDER_SESSION_ID" \\
+    -H "X-Commander-Workspace-Id: ${COMMANDER_WORKSPACE_ID:-}" \\
+    --max-time 5 \\
+    -d @- 2>/dev/null)
+  # Only forward bodies that look like a hook decision dict.
+  # Empty / non-decision responses → exit 0 silently (normal stop).
+  if [ -n "$RESP" ] && echo "$RESP" | jq -e 'has("decision")' >/dev/null 2>&1; then
+    printf '%s' "$RESP"
+  fi
+  exit 0
+fi
+
 echo "$INPUT" | curl -s -X POST \\
   "${COMMANDER_API_URL}/api/hooks/event" \\
   -H "Content-Type: application/json" \\

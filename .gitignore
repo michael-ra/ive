@@ -5,8 +5,10 @@ frontend/dist/
 frontend/dist/.build-hash
 dist-bundle/
 
-# Internal project docs (not for public repo)
+# Internal project docs / CLI agent briefs (not for public repo)
 CLAUDE.md
+GEMINI.md
+AGENTS.md
 PLAN.md
 W2WCOMMS.md
 

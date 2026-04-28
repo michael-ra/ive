@@ -134,14 +134,22 @@ export default function SearchPanel({ onClose }) {
 
 function highlightMatch(text, query) {
   if (!text || !query) return text
-  // Truncate long content
   const str = typeof text === 'string' ? text : JSON.stringify(text)
   const lower = str.toLowerCase()
-  const idx = lower.indexOf(query.toLowerCase())
+  const q = query.toLowerCase()
+  const idx = lower.indexOf(q)
   if (idx === -1) return str.substring(0, 200)
 
   const start = Math.max(0, idx - 60)
   const end = Math.min(str.length, idx + query.length + 60)
-  const slice = (start > 0 ? '...' : '') + str.substring(start, end) + (end < str.length ? '...' : '')
-  return slice
+  const before = (start > 0 ? '...' : '') + str.substring(start, idx)
+  const matchText = str.substring(idx, idx + query.length)
+  const after = str.substring(idx + query.length, end) + (end < str.length ? '...' : '')
+  return (
+    <>
+      {before}
+      <mark className="bg-accent text-bg-primary rounded px-0.5">{matchText}</mark>
+      {after}
+    </>
+  )
 }

@@ -14,7 +14,13 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 
-_OUTPUT_BUFFER_MAX = 256 * 1024  # 256KB rolling cache per session for late-joining viewers
+# Rolling cache per session for late-joining viewers (replay on tab remount /
+# WS reconnect). 256KB was too small for long sessions: a chatty TUI can fill
+# it in seconds with cursor-position sequences, leaving the start of the
+# stream truncated and the replay landing mid-CSI. 1MB gives us enough
+# headroom that the cache typically contains a complete screen-establishing
+# sequence even after extended streaming.
+_OUTPUT_BUFFER_MAX = 1024 * 1024  # 1MB
 
 
 class PTYSession:
@@ -171,6 +177,16 @@ class PTYSession:
     def resize(self, cols: int, rows: int):
         if self.master_fd is None:
             return
+        # Clamp into the unsigned-short range that struct.pack("HHHH") accepts.
+        # Out-of-range values raise struct.error, which previously escaped the
+        # WS dispatch loop and tore down the connection (BUG C3).
+        try:
+            cols = int(cols)
+            rows = int(rows)
+        except (TypeError, ValueError):
+            return
+        cols = max(1, min(cols, 9999))
+        rows = max(1, min(rows, 9999))
         self.cols = cols
         self.rows = rows
         try:
@@ -178,7 +194,7 @@ class PTYSession:
             fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
             if self.pid:
                 os.killpg(os.getpgid(self.pid), signal.SIGWINCH)
-        except (OSError, ProcessLookupError):
+        except (OSError, ProcessLookupError, struct.error):
             pass
 
     def terminate(self):

@@ -15,15 +15,6 @@ function maybePling(trigger) {
   if (fn) fn(s.soundVolume / 100)
 }
 
-// Per-worker cooldown for the auto-oversight nudge so a worker whose state
-// flickers can't spam the Commander with "Worker X is idle..." messages.
-const _lastNudgeAt = new Map() // session_id -> timestamp ms
-const NUDGE_COOLDOWN_MS = 30000
-// A worker only earns a Commander nudge if it has a task in one of these
-// statuses. Workers without an active task are user-driven and shouldn't
-// generate Commander noise.
-const NUDGE_ACTIVE_STATUSES = new Set(['todo', 'planning', 'in_progress', 'review'])
-
 export default function useWebSocket() {
   // Initialize multiplayer identity once on mount
   useEffect(() => { useStore.getState().initIdentity() }, [])
@@ -133,6 +124,13 @@ export default function useWebSocket() {
           const dashType = 'cc-' + data.type.replace(/_/g, '-')
           if (dashType !== 'cc-' + data.type) {
             window.dispatchEvent(new CustomEvent(dashType, { detail: data }))
+          }
+          // Surface failures as a toast so the user sees them even when ResearchHub is closed.
+          if (data.type === 'research_done' && data.status === 'failed') {
+            useStore.getState().addNotification({
+              type: 'error',
+              message: `Research failed: ${data.error || 'no findings written'}`,
+            })
           }
           return
         }
@@ -297,7 +295,6 @@ export default function useWebSocket() {
             }
             startedSessions.delete(sid)
             clearPromptBuffer(sid)
-            _lastNudgeAt.delete(sid)
             const exitStore = useStore.getState()
             exitStore.setSessionStatus(sid, 'exited')
             exitStore.setSessionPlanWaiting(sid, false)
@@ -322,14 +319,6 @@ export default function useWebSocket() {
 
           case 'replay_done': {
             useStore.getState().setSessionStatus(sid, 'idle')
-            break
-          }
-
-          case 'session_created': {
-            // New session created (e.g., by Commander via MCP) — add to store
-            if (data.session) {
-              useStore.getState().loadSessions([data.session])
-            }
             break
           }
 
@@ -404,61 +393,28 @@ export default function useWebSocket() {
 
           case 'session_idle': {
             // Emitted by hooks.py when a Stop hook fires (throttled).
-            // Triggers the oversight nudge to the Commander session.
+            // The oversight nudge into Commander is now posted server-side
+            // (see hooks._nudge_commander_for_idle_worker) so it lands
+            // exactly once per worker idle regardless of how many WS
+            // clients are connected. Here we only handle the user-facing
+            // notification + sound.
             const store = useStore.getState()
             const sess = store.sessions[sid]
             if (!sess || sess.session_type === 'commander') break
 
-            // Get workspace oversight setting
             const workspace = store.workspaces.find((w) => w.id === sess.workspace_id)
             const oversight = workspace?.human_oversight || 'approve_plans'
 
-            // Look up the active task assigned to this worker — both to gate
-            // the nudge and to pick the *right* Commander when a workspace
-            // has more than one.
-            const activeTask = Object.values(store.tasks || {}).find(
-              (t) => t.assigned_session_id === sid && NUDGE_ACTIVE_STATUSES.has(t.status)
+            const hasCommander = Object.values(store.sessions).some(
+              (s) =>
+                s.workspace_id === sess.workspace_id &&
+                s.session_type === 'commander' &&
+                s.status !== 'exited'
             )
-            const hasActiveTask = !!activeTask
 
-            // Prefer the task's own commander, fall back to any running
-            // Commander in the workspace.
-            let commander = null
-            if (activeTask && activeTask.commander_session_id) {
-              const c = store.sessions[activeTask.commander_session_id]
-              if (c && c.session_type === 'commander' && c.status !== 'exited') {
-                commander = c
-              }
-            }
-            if (!commander) {
-              commander = Object.values(store.sessions).find(
-                (s) =>
-                  s.workspace_id === sess.workspace_id &&
-                  s.session_type === 'commander' &&
-                  s.status !== 'exited'
-              )
-            }
-
-            // Per-worker cooldown to prevent nudge floods.
-            const now = Date.now()
-            const lastNudge = _lastNudgeAt.get(sid) || 0
-            const recentlyNudged = now - lastNudge < NUDGE_COOLDOWN_MS
-
-            if (commander && hasActiveTask && !recentlyNudged) {
-              _lastNudgeAt.set(sid, now)
-              // Nudge the Commander to check on this worker
-              const autoMsg = oversight === 'full_auto'
-                ? `Worker "${sess.name}" is idle. Read its output with read_session_output. If it produced a plan, approve it and proceed autonomously. If it finished a task, update the task status. Handle everything without asking the user.`
-                : oversight === 'approve_plans'
-                  ? `Worker "${sess.name}" is idle. Read its output with read_session_output. If it produced a plan, summarize it for the user and wait for their approval. If it finished a task, update the task status and report results.`
-                  : `Worker "${sess.name}" is idle. Read its output with read_session_output and report to the user. Wait for user instructions before taking any action.`
-              sendTerminalCommand(commander.id, autoMsg)
-            }
-
-            // Notify user based on oversight level
             if (store.activeSessionId !== sid) {
               maybePling('soundOnSessionDone')
-              if (oversight === 'approve_all' || (oversight === 'approve_plans' && !commander)) {
+              if (oversight === 'approve_all' || (oversight === 'approve_plans' && !hasCommander)) {
                 store.addNotification({
                   sessionId: sid,
                   type: 'session_done',

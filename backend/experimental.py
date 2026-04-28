@@ -154,7 +154,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "Recommended for: any project where AI agents install packages autonomously."
         ),
         modifies_prompt=False,
-        default_enabled=False,
+        default_enabled=True,
         category="security",
         added_in="2026-04-12",
     ),
@@ -190,7 +190,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "freedom with minimum injected context."
         ),
         modifies_prompt=True,
-        default_enabled=False,
+        default_enabled=True,
         category="hooks",
         added_in="2026-04-12",
     ),
@@ -223,7 +223,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "model throughout the conversation."
         ),
         modifies_prompt=True,
-        default_enabled=False,
+        default_enabled=True,
         category="models",
         added_in="2026-04-13",
     ),
@@ -262,7 +262,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "installs, Safety Gate checks everything else. Zero overlap."
         ),
         modifies_prompt=False,
-        default_enabled=False,
+        default_enabled=True,
         category="security",
         added_in="2026-04-16",
     ),
@@ -300,7 +300,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "Not recommended for: sessions where you want minimal system prompt."
         ),
         modifies_prompt=True,
-        default_enabled=False,
+        default_enabled=True,
         category="advisor",
         added_in="2026-04-21",
     ),
@@ -336,7 +336,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "and any workflow where agents run unattended."
         ),
         modifies_prompt=False,
-        default_enabled=False,
+        default_enabled=True,
         category="hooks",
         added_in="2026-04-22",
     ),
@@ -372,7 +372,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "of guidelines and prompts from their daily work."
         ),
         modifies_prompt=False,
-        default_enabled=False,
+        default_enabled=True,
         category="advisor",
         added_in="2026-04-22",
     ),
@@ -419,7 +419,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "where sessions always work on unrelated files."
         ),
         modifies_prompt=False,
-        default_enabled=False,
+        default_enabled=True,
         category="coordination",
         added_in="2026-04-14",
     ),
@@ -461,9 +461,88 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "who want uninterrupted long-running sessions."
         ),
         modifies_prompt=False,
-        default_enabled=False,
+        default_enabled=True,
         category="accounts",
         added_in="2026-04-24",
+    ),
+    "experimental_stop_reflection": ExperimentalFeature(
+        key="experimental_stop_reflection",
+        label="Stop-hook reflection nudge",
+        description=(
+            "When a session finishes a turn, Commander asks the agent: "
+            "'Did this turn surface anything worth save_memory / update_digest "
+            "/ coord_check_overlap? If so, do it now.' Re-engages the model "
+            "via Claude Code's Stop hook decision API."
+        ),
+        long_description=(
+            "Many of Commander's worker-to-worker tools (save_memory, "
+            "update_digest, coord_check_overlap, headsup, blocking_bulletin) "
+            "are advertised in the system prompt but rarely fire — agents "
+            "tend to stop the moment the user's literal question is answered. "
+            "This flag installs a Stop-hook reflection prompt that nudges "
+            "the model to consider those tools after every meaningful turn.\n\n"
+            "Mechanism:\n"
+            "  • At PostToolUse, Commander increments a per-session "
+            "tool_uses_since_reflection counter.\n"
+            "  • At Stop, if ≥ 3 tools fired since the last reflection AND it "
+            "has been at least 5 minutes since the last nudge, Commander "
+            "returns {\"decision\":\"block\",\"reason\":...} to Claude Code.\n"
+            "  • Claude Code re-engages the model with the reflection prompt; "
+            "the agent decides whether to call any tool.\n"
+            "  • Default action in the prompt is 'do nothing' — most turns "
+            "produce nothing worth persisting.\n\n"
+            "Tradeoffs:\n"
+            "  • Adds one extra round-trip after meaningful turns (billed at "
+            "the usual rate). Throttle keeps it to once per ~5 min per session.\n"
+            "  • Short clarifying turns (< 3 tool uses) are skipped, so chat-only "
+            "sessions are unaffected.\n"
+            "  • Gemini CLI honors the same hook-decision shape, so this also "
+            "applies to Gemini sessions.\n\n"
+            "Recommended for: anyone who wants the workspace memory pool, "
+            "session digests, and conflict-detection coverage to grow "
+            "passively from real work."
+        ),
+        modifies_prompt=False,
+        default_enabled=True,
+        category="hooks",
+        added_in="2026-04-28",
+    ),
+    "experimental_autolearn": ExperimentalFeature(
+        key="experimental_autolearn",
+        label="Autolearn (passive lesson extraction)",
+        description=(
+            "After a session ends, distills the transcript into 1-3 durable "
+            "memory entries that land in a review queue. Lets the workspace's "
+            "knowledge pool grow passively from daily work."
+        ),
+        long_description=(
+            "When enabled, Commander watches for session-ended signals "
+            "(clean exit, idle, or analysis complete) and runs a focused LLM "
+            "pass over the transcript to extract reusable insights. Results "
+            "are written to memory_entries with auto=1 and confidence scores, "
+            "so they appear in a review queue rather than the canonical pool — "
+            "you approve or reject each one.\n\n"
+            "Gate conditions:\n"
+            "  • At least 5 conversation turns\n"
+            "  • Per-session 1h debounce (no relearning the same session)\n"
+            "  • Confidence ≥ 0.7 for an entry to be kept\n"
+            "  • Cap of 3 entries per session\n\n"
+            "Flowing into:\n"
+            "  • Workspace memory pool (after approval)\n"
+            "  • Observatory project profile (as 'product chatter' signal)\n\n"
+            "⚠ Tradeoffs:\n"
+            "  • Each session-end fires a background LLM call (billed normally)\n"
+            "  • Short or trivial sessions may produce noise — use the review\n"
+            "    queue rather than auto-promoting\n"
+            "  • Privacy: transcript content is sent to the configured CLI;\n"
+            "    don't enable on sessions handling sensitive secrets\n\n"
+            "Recommended for: anyone who wants the workspace to remember more "
+            "without writing memory manually."
+        ),
+        modifies_prompt=False,
+        default_enabled=True,
+        category="advisor",
+        added_in="2026-04-28",
     ),
 }
 

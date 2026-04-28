@@ -103,6 +103,30 @@ def has_snapshot(account_id: str, cli_type: str = "claude") -> bool:
     return (ACCOUNT_HOMES_DIR / account_id / profile.auth_dir_name).exists()
 
 
+def claude_config_dir(account_id: str) -> Path:
+    """Return the per-account ``.claude`` config dir used by ``CLAUDE_CONFIG_DIR``.
+
+    Setting this env var when invoking ``claude`` (including ``claude auth login``)
+    redirects all config reads/writes — including the ``.credentials.json``
+    OAuth-token fallback — into this dir, so each account can keep its own
+    creds instead of fighting over the single shared macOS keychain entry
+    (`Claude Code-credentials`).
+    """
+    return ACCOUNT_HOMES_DIR / account_id / ".claude"
+
+
+def has_isolated_claude_credentials(account_id: str) -> bool:
+    """True iff the account has its own ``.credentials.json`` on disk.
+
+    When this is False, ``claude auth login`` either wrote the OAuth token
+    to the shared macOS keychain (which all accounts read from, so they
+    overwrite each other) or didn't complete. The setup flow surfaces this
+    so users can retry and click "Don't Allow" on the keychain dialog,
+    forcing the file fallback that makes per-account isolation work.
+    """
+    return (claude_config_dir(account_id) / ".credentials.json").exists()
+
+
 def delete_snapshot(account_id: str):
     """Delete an account's auth snapshot."""
     account_home = ACCOUNT_HOMES_DIR / account_id

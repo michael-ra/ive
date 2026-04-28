@@ -19,7 +19,7 @@ export const KEYBINDING_DEFS = [
 
   // ── Panels ──
   { id: 'featureBoard', label: 'Feature Board', section: 'Panels', defaultKey: { key: 'b', meta: true } },
-  { id: 'pipelineEditor', label: 'Pipeline Editor', section: 'Panels', defaultKey: { key: 'l', meta: true, shift: true } },
+  { id: 'pipelineEditor', label: 'Pipeline Editor', section: 'Panels', defaultKey: { key: 'L', meta: true, shift: true } },
   { id: 'missionControl', label: 'Mission Control', section: 'Panels', defaultKey: { key: 'm', meta: true } },
   { id: 'guidelines', label: 'Guidelines', section: 'Panels', defaultKey: { key: 'g', meta: true } },
   { id: 'mcpServers', label: 'MCP Servers', section: 'Panels', defaultKey: { key: 'S', meta: true, shift: true } },

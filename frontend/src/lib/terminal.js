@@ -225,7 +225,27 @@ async function _drainCommandQueue(sessionId) {
         if (!getWs()) break
         firstInBatch = false
       }
-      sendRaw(sessionId, item.processed + '\r')
+      // Multi-line content needs CLI-specific handling:
+      //   * Claude's Ink TUI auto-detects multi-line input as a paste.
+      //     The reliable path is to wrap the content in bracketed-paste
+      //     markers (\x1b[200~ ... \x1b[201~), then send a standalone \r
+      //     to submit. Heuristic timers were racy — the TUI sometimes
+      //     consumed the trailing \r as part of the paste, leaving the
+      //     message stuck in the input field. Mirrors the backend
+      //     Gemini injection in server.py.
+      //   * Gemini's TUI treats every \n as Enter (submits partial
+      //     lines), so we collapse newlines to spaces for it.
+      const isMulti = item.processed.includes('\n')
+      if (!isMulti) {
+        sendRaw(sessionId, item.processed + '\r')
+      } else if (isGeminiSession(sessionId)) {
+        sendRaw(sessionId, item.processed.replace(/\r?\n/g, ' ') + '\r')
+      } else {
+        sendRaw(sessionId, '\x1b[200~' + item.processed + '\x1b[201~')
+        await new Promise((r) => setTimeout(r, 300))
+        if (!getWs()) break
+        sendRaw(sessionId, '\r')
+      }
       await new Promise((r) => setTimeout(r, COMMAND_SPACING_MS))
     }
   } finally {
@@ -353,10 +373,42 @@ export function broadcastCommand(sessionIds, command) {
   setTimeout(() => {
     const ws2 = getWs()
     if (!ws2) return
-    ws2.send(JSON.stringify({
-      action: 'broadcast',
-      session_ids: sessionIds,
-      data: processed + '\r',
-    }))
+    const isMulti = processed.includes('\n')
+    if (!isMulti) {
+      ws2.send(JSON.stringify({
+        action: 'broadcast',
+        session_ids: sessionIds,
+        data: processed + '\r',
+      }))
+      return
+    }
+    // Multi-line: split text and \r. Claude sessions need a delay so paste
+    // auto-detect releases before the submit; Gemini needs newlines collapsed
+    // because its TUI treats \n as Enter.
+    if (claudeIds.length) {
+      ws2.send(JSON.stringify({
+        action: 'broadcast',
+        session_ids: claudeIds,
+        data: processed,
+      }))
+    }
+    if (geminiIds.length) {
+      ws2.send(JSON.stringify({
+        action: 'broadcast',
+        session_ids: geminiIds,
+        data: processed.replace(/\r?\n/g, ' ') + '\r',
+      }))
+    }
+    if (claudeIds.length) {
+      setTimeout(() => {
+        const ws3 = getWs()
+        if (!ws3) return
+        ws3.send(JSON.stringify({
+          action: 'broadcast',
+          session_ids: claudeIds,
+          data: '\r',
+        }))
+      }, 400)
+    }
   }, 300)
 }

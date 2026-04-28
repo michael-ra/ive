@@ -58,6 +58,18 @@ SOURCE_DEFAULTS = {
         "interval_hours": 12,
         "keywords": ["AI", "LLM", "Claude", "agent", "MCP", "coding", "developer tool"],
     },
+    # Smart-pipeline-only sources (legacy keyword scanner has no implementation
+    # for these; the scheduler routes them through observatory_smart.run_smart_scan).
+    "reddit": {
+        "label": "Reddit",
+        "interval_hours": 12,
+        "keywords": [],
+    },
+    "x": {
+        "label": "X / Twitter",
+        "interval_hours": 24,
+        "keywords": [],
+    },
 }
 
 # Observatorist session type
@@ -804,7 +816,26 @@ class ObservatoryScheduler:
                 workspace_id = None
 
             logger.info("Observatory: auto-scanning %s (mode=%s)", source_id, mode)
-            await run_scan(source_id, workspace_id, mode, keywords)
+
+            # Prefer the smart pipeline whenever the workspace has a profile
+            # built. Falls back to the legacy keyword scanner if the profile is
+            # missing or the smart run errors. Smart-only sources (reddit, x)
+            # always go through the smart path — the legacy path has no
+            # scanner for them.
+            ran_smart = False
+            if workspace_id:
+                try:
+                    import observatory_profile  # local import to avoid circular
+                    import observatory_smart
+                    profile = await observatory_profile.get_profile(workspace_id)
+                    if profile or source_id in ("reddit", "x"):
+                        await observatory_smart.run_smart_scan(workspace_id, source_id)
+                        ran_smart = True
+                except Exception as exc:
+                    logger.warning("smart scan failed, falling back to legacy: %s", exc)
+
+            if not ran_smart and source_id in SCANNERS:
+                await run_scan(source_id, workspace_id, mode, keywords)
 
             # Update last_scan_at
             db = await get_db()

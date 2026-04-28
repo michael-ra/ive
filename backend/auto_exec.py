@@ -212,22 +212,39 @@ async def _do_dispatch(workspace_id: str, specific_task_id: str = None):
     finally:
         await db.close()
 
-    # 5b. Double-check pipeline hasn't claimed this task in the meantime
+    # 5b. Double-check pipeline hasn't claimed this task in the meantime.
+    # The check at line ~218 used to be the only guard, but there are awaits
+    # between that check and the PTY write below — pipeline_engine.start_run
+    # could land in that gap. We re-check right before each PTY write (the
+    # check is sync; pipeline claims the task synchronously before its own
+    # awaits, so any prior context-switch will already have populated the set).
     try:
         from pipeline_engine import is_task_in_pipeline
-        if is_task_in_pipeline(task["id"]):
-            logger.debug("Auto-exec skipping task %s — pipeline claimed it", task["id"])
-            return
     except Exception:
-        pass
+        is_task_in_pipeline = None  # type: ignore
+
+    if is_task_in_pipeline and is_task_in_pipeline(task["id"]):
+        logger.debug("Auto-exec skipping task %s — pipeline claimed it", task["id"])
+        return
 
     # 6. Build prompt and send to Commander PTY
     prompt = _build_task_prompt(task)
     msg_bytes = prompt.encode("utf-8")
 
+    # Re-check pipeline ownership at the last possible moment before writing.
+    if is_task_in_pipeline and is_task_in_pipeline(task["id"]):
+        logger.debug("Auto-exec aborting task %s pre-write — pipeline claimed it", task["id"])
+        return
+
     # Use Escape-clear + delay + Enter pattern (same as send_session_input)
     _pty_mgr.write(commander_id, b"\x1b" + b"\x7f" * 20)
     await asyncio.sleep(0.15)
+    if is_task_in_pipeline and is_task_in_pipeline(task["id"]):
+        # Pipeline raced in during the post-Escape settle. Abort before we
+        # type the prompt — Commander's input field is now empty so this is
+        # a safe bail-out.
+        logger.debug("Auto-exec aborting task %s mid-write — pipeline claimed it", task["id"])
+        return
     _pty_mgr.write(commander_id, msg_bytes)
     await asyncio.sleep(0.4)
     _pty_mgr.write(commander_id, b"\r")

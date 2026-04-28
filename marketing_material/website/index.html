@@ -6,7 +6,8 @@
 <title>IVE — Humanity's Last IDE</title>
 <meta name="description" content="Control an army of AI agents from one screen. Real terminals, visual pipelines, autonomous coding. All local.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
   --cyan: #00f0ff;
@@ -16,7 +17,8 @@
   --bg2: #080814;
   --text: #e2e8f0;
   --dim: #64748b;
-  --mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  --sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
@@ -632,7 +634,7 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
 <section class="hero">
   <div class="hero-video">
     <video autoplay loop muted playsinline>
-      <source src="./ive-promo.mp4" type="video/mp4">
+      <source src="https://vjqdpsdcxgusnmemsnsq.supabase.co/storage/v1/object/public/site-assets/ive-promo.mp4" type="video/mp4">
     </video>
     <div class="hero-video-fade"></div>
   </div>
@@ -765,20 +767,20 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <circle r="3.5" fill="#d946ef"><animateMotion path="M200,200 L70,130" dur="2.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.6s" repeatCount="indefinite"/></circle>
         <!-- Worker nodes -->
         <circle cx="200" cy="60" r="20" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" repeatCount="indefinite"/></circle>
-        <text x="200" y="64" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="Inter,sans-serif">W-1</text>
+        <text x="200" y="64" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">W-1</text>
         <circle cx="330" cy="130" r="20" fill="rgba(6,182,212,0.12)" stroke="#06b6d4" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="0.5s" repeatCount="indefinite"/></circle>
-        <text x="330" y="134" text-anchor="middle" fill="#06b6d4" font-size="9" font-weight="700" font-family="Inter,sans-serif">W-2</text>
+        <text x="330" y="134" text-anchor="middle" fill="#06b6d4" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">W-2</text>
         <circle cx="330" cy="280" r="20" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="1s" repeatCount="indefinite"/></circle>
-        <text x="330" y="284" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="700" font-family="Inter,sans-serif">TEST</text>
+        <text x="330" y="284" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">TEST</text>
         <circle cx="70" cy="280" r="20" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="1.5s" repeatCount="indefinite"/></circle>
-        <text x="70" y="284" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="700" font-family="Inter,sans-serif">W-3</text>
+        <text x="70" y="284" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">W-3</text>
         <circle cx="70" cy="130" r="20" fill="rgba(217,70,239,0.12)" stroke="#d946ef" stroke-width="1.5"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="2s" repeatCount="indefinite"/></circle>
-        <text x="70" y="134" text-anchor="middle" fill="#d946ef" font-size="9" font-weight="700" font-family="Inter,sans-serif">DOC</text>
+        <text x="70" y="134" text-anchor="middle" fill="#d946ef" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">DOC</text>
         <!-- Central hub -->
         <circle cx="200" cy="200" r="40" fill="rgba(139,92,246,0.08)" stroke="rgba(139,92,246,0.2)" stroke-width="1"><animate attributeName="r" values="38;45;38" dur="4s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.6;0.3;0.6" dur="4s" repeatCount="indefinite"/></circle>
         <circle cx="200" cy="200" r="26" fill="rgba(139,92,246,0.2)" stroke="#8b5cf6" stroke-width="2"/>
         <circle cx="200" cy="200" r="10" fill="#8b5cf6"><animate attributeName="r" values="8;12;8" dur="2s" repeatCount="indefinite"/></circle>
-        <text x="200" y="230" text-anchor="middle" fill="rgba(139,92,246,0.7)" font-size="10" font-weight="800" font-family="Inter,sans-serif" letter-spacing="2">COMMANDER</text>
+        <text x="200" y="230" text-anchor="middle" fill="rgba(139,92,246,0.7)" font-size="10" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">COMMANDER</text>
       </svg>
     </div>
   </div>
@@ -823,15 +825,15 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
           <path d="M200,200 L200,40 A160,160,0,0,1,310,80 Z" fill="rgba(0,240,255,0.03)"/>
         </g>
         <circle cx="255" cy="115" r="4" fill="#3b82f6"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="0.5s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="0.5s" repeatCount="indefinite"/></circle>
-        <text x="255" y="103" text-anchor="middle" fill="rgba(59,130,246,0.5)" font-size="8" font-family="Inter,sans-serif">arXiv</text>
+        <text x="255" y="103" text-anchor="middle" fill="rgba(59,130,246,0.5)" font-size="8" font-family="'Inter',system-ui,sans-serif">arXiv</text>
         <circle cx="135" cy="270" r="4" fill="#22c55e"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="1.5s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="1.5s" repeatCount="indefinite"/></circle>
-        <text x="135" y="290" text-anchor="middle" fill="rgba(34,197,94,0.5)" font-size="8" font-family="Inter,sans-serif">GitHub</text>
+        <text x="135" y="290" text-anchor="middle" fill="rgba(34,197,94,0.5)" font-size="8" font-family="'Inter',system-ui,sans-serif">GitHub</text>
         <circle cx="310" cy="230" r="4" fill="#f59e0b"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="2.5s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="2.5s" repeatCount="indefinite"/></circle>
-        <text x="310" y="248" text-anchor="middle" fill="rgba(245,158,11,0.5)" font-size="8" font-family="Inter,sans-serif">Brave</text>
+        <text x="310" y="248" text-anchor="middle" fill="rgba(245,158,11,0.5)" font-size="8" font-family="'Inter',system-ui,sans-serif">Brave</text>
         <circle cx="160" cy="140" r="4" fill="#8b5cf6"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="3.2s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="3.2s" repeatCount="indefinite"/></circle>
-        <text x="160" y="128" text-anchor="middle" fill="rgba(139,92,246,0.5)" font-size="8" font-family="Inter,sans-serif">Scholar</text>
+        <text x="160" y="128" text-anchor="middle" fill="rgba(139,92,246,0.5)" font-size="8" font-family="'Inter',system-ui,sans-serif">Scholar</text>
         <circle cx="275" cy="300" r="4" fill="#06b6d4"><animate attributeName="opacity" values="0;0.9;0" dur="4s" begin="0.8s" repeatCount="indefinite"/><animate attributeName="r" values="3;7;3" dur="4s" begin="0.8s" repeatCount="indefinite"/></circle>
-        <text x="275" y="318" text-anchor="middle" fill="rgba(6,182,212,0.5)" font-size="8" font-family="Inter,sans-serif">DDG</text>
+        <text x="275" y="318" text-anchor="middle" fill="rgba(6,182,212,0.5)" font-size="8" font-family="'Inter',system-ui,sans-serif">DDG</text>
         <circle cx="200" cy="200" r="12" fill="rgba(0,240,255,0.15)" stroke="#00f0ff" stroke-width="1.5"/>
         <circle cx="200" cy="200" r="5" fill="#00f0ff"><animate attributeName="r" values="4;7;4" dur="2s" repeatCount="indefinite"/></circle>
       </svg>
@@ -874,20 +876,20 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <rect x="180" y="192" width="30" height="2.5" rx="1" fill="rgba(255,255,255,0.08)"/>
         <rect x="180" y="200" width="40" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
         <rect x="180" y="208" width="25" height="2.5" rx="1" fill="rgba(255,255,255,0.05)"/>
-        <text x="200" y="230" text-anchor="middle" fill="rgba(255,255,255,0.2)" font-size="8" font-family="monospace">server.py</text>
+        <text x="200" y="230" text-anchor="middle" fill="rgba(255,255,255,0.2)" font-size="8" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">server.py</text>
         <!-- Agent 1 (top) -->
         <circle cx="200" cy="60" r="22" fill="rgba(139,92,246,0.1)" stroke="#8b5cf6" stroke-width="1.5"><animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/></circle>
-        <text x="200" y="64" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="Inter,sans-serif">A-1</text>
+        <text x="200" y="64" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">A-1</text>
         <line x1="200" y1="82" x2="200" y2="158" stroke="rgba(139,92,246,0.15)" stroke-width="1.5"/>
         <circle r="3" fill="#8b5cf6"><animateMotion path="M200,82 L200,158" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/></circle>
         <!-- Agent 2 (bottom-left) -->
         <circle cx="80" cy="320" r="22" fill="rgba(0,240,255,0.1)" stroke="#00f0ff" stroke-width="1.5"><animate attributeName="opacity" values="0.6;1;0.6" dur="3s" begin="1s" repeatCount="indefinite"/></circle>
-        <text x="80" y="324" text-anchor="middle" fill="#00f0ff" font-size="9" font-weight="700" font-family="Inter,sans-serif">A-2</text>
+        <text x="80" y="324" text-anchor="middle" fill="#00f0ff" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">A-2</text>
         <line x1="95" y1="302" x2="180" y2="240" stroke="rgba(0,240,255,0.15)" stroke-width="1.5"/>
         <circle r="3" fill="#00f0ff"><animateMotion path="M95,302 L180,240" dur="2.4s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2.4s" repeatCount="indefinite"/></circle>
         <!-- Agent 3 (bottom-right) -->
         <circle cx="320" cy="320" r="22" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"><animate attributeName="opacity" values="0.6;1;0.6" dur="3s" begin="2s" repeatCount="indefinite"/></circle>
-        <text x="320" y="324" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="700" font-family="Inter,sans-serif">A-3</text>
+        <text x="320" y="324" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">A-3</text>
         <line x1="305" y1="302" x2="220" y2="240" stroke="rgba(245,158,11,0.15)" stroke-width="1.5"/>
         <circle r="3" fill="#f59e0b"><animateMotion path="M305,302 L220,240" dur="2.8s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2.8s" repeatCount="indefinite"/></circle>
         <!-- Lock icon on file -->
@@ -899,13 +901,13 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <!-- Conflict resolved indicator -->
         <g opacity="0"><animate attributeName="opacity" values="0;0;0;0;0.7;0.7" dur="5s" repeatCount="indefinite"/>
           <rect x="168" y="250" width="64" height="20" rx="4" fill="rgba(34,197,94,0.1)" stroke="rgba(34,197,94,0.3)"/>
-          <text x="200" y="264" text-anchor="middle" fill="#22c55e" font-size="7" font-weight="700" font-family="Inter,sans-serif" letter-spacing="1">RESOLVED</text>
+          <text x="200" y="264" text-anchor="middle" fill="#22c55e" font-size="7" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="1">RESOLVED</text>
         </g>
         <!-- Event bus line at bottom -->
         <line x1="40" y1="380" x2="360" y2="380" stroke="rgba(0,240,255,0.08)" stroke-width="1.5"/>
         <circle r="3" fill="#00f0ff" opacity="0.4"><animateMotion path="M40,380 L360,380" dur="3s" repeatCount="indefinite"/></circle>
         <circle r="3" fill="#8b5cf6" opacity="0.4"><animateMotion path="M360,380 L40,380" dur="4s" repeatCount="indefinite"/></circle>
-        <text x="200" y="395" text-anchor="middle" fill="rgba(0,240,255,0.3)" font-size="7" font-weight="700" font-family="Inter,sans-serif" letter-spacing="2">EVENT BUS</text>
+        <text x="200" y="395" text-anchor="middle" fill="rgba(0,240,255,0.3)" font-size="7" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">EVENT BUS</text>
       </svg>
     </div>
   </div>
@@ -942,13 +944,13 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <!-- Owner laptop -->
         <rect x="140" y="40" width="120" height="70" rx="6" fill="rgba(0,240,255,0.05)" stroke="rgba(0,240,255,0.25)" stroke-width="1.5"/>
         <rect x="155" y="55" width="90" height="40" rx="2" fill="rgba(255,255,255,0.04)"/>
-        <text x="200" y="80" text-anchor="middle" fill="rgba(0,240,255,0.7)" font-size="9" font-weight="800" font-family="Inter,sans-serif" letter-spacing="2">OWNER</text>
+        <text x="200" y="80" text-anchor="middle" fill="rgba(0,240,255,0.7)" font-size="9" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">OWNER</text>
         <rect x="130" y="110" width="140" height="6" rx="3" fill="rgba(0,240,255,0.15)"/>
         <!-- Invite token in middle -->
         <rect x="130" y="160" width="140" height="44" rx="10" fill="rgba(139,92,246,0.06)" stroke="rgba(139,92,246,0.25)" stroke-width="1.5">
           <animate attributeName="stroke-opacity" values="0.25;0.55;0.25" dur="3s" repeatCount="indefinite"/></rect>
-        <text x="200" y="180" text-anchor="middle" fill="rgba(139,92,246,0.85)" font-size="11" font-weight="700" font-family="monospace">river-jazz-stem-koi</text>
-        <text x="200" y="196" text-anchor="middle" fill="rgba(139,92,246,0.4)" font-size="7" font-weight="700" font-family="Inter,sans-serif" letter-spacing="2">ONE-SHOT INVITE</text>
+        <text x="200" y="180" text-anchor="middle" fill="rgba(139,92,246,0.85)" font-size="11" font-weight="700" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">river-jazz-stem-koi</text>
+        <text x="200" y="196" text-anchor="middle" fill="rgba(139,92,246,0.4)" font-size="7" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">ONE-SHOT INVITE</text>
         <!-- Three connecting lines down to joiners -->
         <line x1="150" y1="204" x2="80" y2="280" stroke="rgba(34,211,238,0.2)" stroke-width="1.5" stroke-dasharray="3 3"/>
         <line x1="200" y1="204" x2="200" y2="280" stroke="rgba(139,92,246,0.2)" stroke-width="1.5" stroke-dasharray="3 3"/>
@@ -958,22 +960,116 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <circle r="3" fill="#f97316"><animateMotion path="M250,204 L320,280" dur="2.8s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2.8s" repeatCount="indefinite"/></circle>
         <!-- Three joiner pills -->
         <rect x="32" y="280" width="96" height="56" rx="10" fill="rgba(34,211,238,0.06)" stroke="rgba(34,211,238,0.3)" stroke-width="1.5"/>
-        <text x="80" y="302" text-anchor="middle" fill="#22d3ee" font-size="11" font-weight="800" font-family="Inter,sans-serif" letter-spacing="2">BRIEF</text>
-        <text x="80" y="320" text-anchor="middle" fill="rgba(34,211,238,0.5)" font-size="7" font-family="Inter,sans-serif">tasks &amp; notes</text>
+        <text x="80" y="302" text-anchor="middle" fill="#22d3ee" font-size="11" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">BRIEF</text>
+        <text x="80" y="320" text-anchor="middle" fill="rgba(34,211,238,0.5)" font-size="7" font-family="'Inter',system-ui,sans-serif">tasks &amp; notes</text>
         <rect x="152" y="280" width="96" height="56" rx="10" fill="rgba(139,92,246,0.08)" stroke="rgba(139,92,246,0.4)" stroke-width="1.5"/>
-        <text x="200" y="302" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="800" font-family="Inter,sans-serif" letter-spacing="2">CODE</text>
-        <text x="200" y="320" text-anchor="middle" fill="rgba(139,92,246,0.55)" font-size="7" font-family="Inter,sans-serif">auto / plan only</text>
+        <text x="200" y="302" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">CODE</text>
+        <text x="200" y="320" text-anchor="middle" fill="rgba(139,92,246,0.55)" font-size="7" font-family="'Inter',system-ui,sans-serif">auto / plan only</text>
         <rect x="272" y="280" width="96" height="56" rx="10" fill="rgba(249,115,22,0.06)" stroke="rgba(249,115,22,0.3)" stroke-width="1.5"/>
-        <text x="320" y="302" text-anchor="middle" fill="#f97316" font-size="11" font-weight="800" font-family="Inter,sans-serif" letter-spacing="2">FULL</text>
-        <text x="320" y="320" text-anchor="middle" fill="rgba(249,115,22,0.5)" font-size="7" font-family="Inter,sans-serif">TTL-bounded</text>
+        <text x="320" y="302" text-anchor="middle" fill="#f97316" font-size="11" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">FULL</text>
+        <text x="320" y="320" text-anchor="middle" fill="rgba(249,115,22,0.5)" font-size="7" font-family="'Inter',system-ui,sans-serif">TTL-bounded</text>
         <!-- Phone icon (PWA) -->
         <g transform="translate(160,360)">
           <rect width="80" height="44" rx="8" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.15)" stroke-width="1.2"/>
           <rect x="6" y="6" width="68" height="32" rx="3" fill="rgba(0,240,255,0.04)"/>
-          <text x="40" y="28" text-anchor="middle" fill="rgba(0,240,255,0.55)" font-size="9" font-weight="700" font-family="Inter,sans-serif">PWA · PUSH</text>
+          <text x="40" y="28" text-anchor="middle" fill="rgba(0,240,255,0.55)" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif">PWA · PUSH</text>
         </g>
         <!-- Three layers label -->
-        <text x="200" y="240" text-anchor="middle" fill="rgba(255,255,255,0.25)" font-size="7" font-weight="700" font-family="Inter,sans-serif" letter-spacing="2">ROUTE GUARDS · CLI FLAGS · HOOKS</text>
+        <text x="200" y="240" text-anchor="middle" fill="rgba(255,255,255,0.25)" font-size="7" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">ROUTE GUARDS · CLI FLAGS · HOOKS</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== CATCH-UP ==================== -->
+<section class="showcase reveal" id="catchup">
+  <div class="showcase-inner">
+    <div class="showcase-text">
+      <span class="section-tag" style="color:#22c55e;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.18);">Catch-Up</span>
+      <h2 class="showcase-title">Never miss<br>anything.</h2>
+      <p class="showcase-sub">Step away for an hour or a week. When you come back, IVE hands you a 2&ndash;5 sentence prose briefing of what your agents shipped, what your team committed, and what your memory hub learned &mdash; before you even open a session.</p>
+      <ul class="showcase-list">
+        <li>
+          <div class="list-marker" style="background:#22c55e;color:#22c55e"></div>
+          <div class="list-content"><h4>Prose Briefings</h4><p>Three streams &mdash; event bus, git commits, memory hub &mdash; merged and fed to a small LLM (Haiku by default, Sonnet on demand). One paragraph that actually tells you what happened, not a wall of timestamps.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#22d3ee;color:#22d3ee"></div>
+          <div class="list-content"><h4>Activity Feed</h4><p>Below the prose: every commit with shortstat, every memory entry that changed, every pipeline that finished, every peer message that landed. Filter by workspace, scope by time, regenerate at will.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#f59e0b;color:#f59e0b"></div>
+          <div class="list-content"><h4>Stale-Session Banner</h4><p>If your last visit is more than 30 minutes old, a banner shows up automatically. One tap on Cmd-K opens a full briefing with preset ranges &mdash; 1h, 8h, 24h, 7d, 30d, or custom.</p></div>
+        </li>
+        <li>
+          <div class="list-marker" style="background:#8b5cf6;color:#8b5cf6"></div>
+          <div class="list-content"><h4>Mode-Aware</h4><p>Brief joiners get task, plan, and peer-message events only &mdash; never raw tool output. Code and Full owners see everything. Same engine, scoped per audience.</p></div>
+        </li>
+      </ul>
+    </div>
+    <div class="showcase-visual">
+      <svg viewBox="0 0 400 420" xmlns="http://www.w3.org/2000/svg">
+        <!-- Toast card (mimics in-app catch-up notification) -->
+        <rect x="30" y="30" width="340" height="200" rx="14" fill="rgba(15,23,42,0.85)" stroke="rgba(34,197,94,0.35)" stroke-width="1.5">
+          <animate attributeName="stroke-opacity" values="0.35;0.65;0.35" dur="3s" repeatCount="indefinite"/></rect>
+        <!-- Header -->
+        <circle cx="52" cy="52" r="9" fill="rgba(34,197,94,0.12)" stroke="rgba(34,197,94,0.5)" stroke-width="1.2"/>
+        <text x="52" y="56" text-anchor="middle" fill="#22c55e" font-size="11" font-weight="900" font-family="'Inter',system-ui,sans-serif">!</text>
+        <text x="70" y="50" fill="#fff" font-size="13" font-weight="700" font-family="'Inter',system-ui,sans-serif">Catch up.</text>
+        <text x="70" y="64" fill="rgba(255,255,255,0.45)" font-size="9" font-family="'Inter',system-ui,sans-serif">last 8 hours · 4 workspaces</text>
+        <!-- Prose body -->
+        <text x="50" y="92" fill="rgba(34,197,94,0.85)" font-size="10" font-weight="700" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">Catch up:</text>
+        <text x="50" y="110" fill="rgba(255,255,255,0.78)" font-size="10" font-family="'Inter',system-ui,sans-serif">Auth refactor landed with PKCE + token</text>
+        <text x="50" y="125" fill="rgba(255,255,255,0.78)" font-size="10" font-family="'Inter',system-ui,sans-serif">rotation; the TDD pipeline finished green;</text>
+        <text x="50" y="140" fill="rgba(255,255,255,0.78)" font-size="10" font-family="'Inter',system-ui,sans-serif">Sarah dropped a review on </text>
+        <text x="207" y="140" fill="#00f0ff" font-size="10" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">src/auth/pkce.ts</text>
+        <text x="290" y="140" fill="rgba(255,255,255,0.78)" font-size="10" font-family="'Inter',system-ui,sans-serif">.</text>
+        <!-- Source pills -->
+        <rect x="50" y="160" width="62" height="20" rx="10" fill="rgba(34,197,94,0.1)" stroke="rgba(34,197,94,0.3)" stroke-width="1"/>
+        <text x="81" y="174" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="1">7 EVENTS</text>
+        <rect x="120" y="160" width="62" height="20" rx="10" fill="rgba(0,240,255,0.08)" stroke="rgba(0,240,255,0.3)" stroke-width="1"/>
+        <text x="151" y="174" text-anchor="middle" fill="#00f0ff" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="1">3 COMMITS</text>
+        <rect x="190" y="160" width="62" height="20" rx="10" fill="rgba(139,92,246,0.08)" stroke="rgba(139,92,246,0.3)" stroke-width="1"/>
+        <text x="221" y="174" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="1">2 MEMORY</text>
+        <!-- Model toggle hint -->
+        <text x="50" y="208" fill="rgba(255,255,255,0.3)" font-size="8" font-weight="600" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">HAIKU · 1 CALL · 2.1s</text>
+        <!-- Connecting line down to streams -->
+        <line x1="200" y1="230" x2="200" y2="260" stroke="rgba(34,197,94,0.25)" stroke-width="1.5" stroke-dasharray="3 3"/>
+        <!-- Three input streams -->
+        <g>
+          <rect x="30" y="270" width="106" height="64" rx="10" fill="rgba(34,197,94,0.04)" stroke="rgba(34,197,94,0.25)" stroke-width="1.2"/>
+          <text x="83" y="292" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">EVENT BUS</text>
+          <text x="83" y="310" text-anchor="middle" fill="rgba(34,197,94,0.55)" font-size="8" font-family="'Inter',system-ui,sans-serif">tasks · pipelines</text>
+          <text x="83" y="322" text-anchor="middle" fill="rgba(34,197,94,0.55)" font-size="8" font-family="'Inter',system-ui,sans-serif">peer · plans</text>
+        </g>
+        <g>
+          <rect x="147" y="270" width="106" height="64" rx="10" fill="rgba(0,240,255,0.04)" stroke="rgba(0,240,255,0.25)" stroke-width="1.2"/>
+          <text x="200" y="292" text-anchor="middle" fill="#00f0ff" font-size="9" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">GIT LOG</text>
+          <text x="200" y="310" text-anchor="middle" fill="rgba(0,240,255,0.55)" font-size="8" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">+142 / -38</text>
+          <text x="200" y="322" text-anchor="middle" fill="rgba(0,240,255,0.55)" font-size="8" font-family="'Inter',system-ui,sans-serif">per workspace</text>
+        </g>
+        <g>
+          <rect x="264" y="270" width="106" height="64" rx="10" fill="rgba(139,92,246,0.04)" stroke="rgba(139,92,246,0.25)" stroke-width="1.2"/>
+          <text x="317" y="292" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">MEMORY HUB</text>
+          <text x="317" y="310" text-anchor="middle" fill="rgba(139,92,246,0.55)" font-size="8" font-family="'Inter',system-ui,sans-serif">scoped diffs</text>
+          <text x="317" y="322" text-anchor="middle" fill="rgba(139,92,246,0.55)" font-size="8" font-family="'Inter',system-ui,sans-serif">last_synced_at</text>
+        </g>
+        <!-- Range presets -->
+        <text x="200" y="362" text-anchor="middle" fill="rgba(255,255,255,0.3)" font-size="8" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="2">PRESETS</text>
+        <g font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace" font-size="9" font-weight="700">
+          <rect x="60" y="375" width="36" height="22" rx="6" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+          <text x="78" y="390" text-anchor="middle" fill="rgba(255,255,255,0.6)">1h</text>
+          <rect x="104" y="375" width="36" height="22" rx="6" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+          <text x="122" y="390" text-anchor="middle" fill="rgba(255,255,255,0.6)">8h</text>
+          <rect x="148" y="375" width="44" height="22" rx="6" fill="rgba(34,197,94,0.12)" stroke="rgba(34,197,94,0.4)" stroke-width="1.2"/>
+          <text x="170" y="390" text-anchor="middle" fill="#22c55e">24h</text>
+          <rect x="200" y="375" width="36" height="22" rx="6" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+          <text x="218" y="390" text-anchor="middle" fill="rgba(255,255,255,0.6)">7d</text>
+          <rect x="244" y="375" width="36" height="22" rx="6" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+          <text x="262" y="390" text-anchor="middle" fill="rgba(255,255,255,0.6)">30d</text>
+          <rect x="288" y="375" width="56" height="22" rx="6" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+          <text x="316" y="390" text-anchor="middle" fill="rgba(255,255,255,0.6)">custom</text>
+        </g>
       </svg>
     </div>
   </div>
@@ -1011,9 +1107,9 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <!-- Block 1 -->
         <rect x="80" y="20" width="240" height="70" rx="10" fill="rgba(217,70,239,0.06)" stroke="rgba(217,70,239,0.2)" stroke-width="1.5">
           <animate attributeName="stroke-opacity" values="0.2;0.5;0.2" dur="3s" repeatCount="indefinite"/></rect>
-        <text x="100" y="48" fill="rgba(255,255,255,0.5)" font-size="10" font-family="monospace">Research</text>
-        <text x="170" y="48" fill="#00f0ff" font-size="10" font-weight="700" font-family="monospace">{topic}</text>
-        <text x="100" y="68" fill="rgba(255,255,255,0.25)" font-size="9" font-family="monospace">and summarize findings</text>
+        <text x="100" y="48" fill="rgba(255,255,255,0.5)" font-size="10" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">Research</text>
+        <text x="170" y="48" fill="#00f0ff" font-size="10" font-weight="700" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">{topic}</text>
+        <text x="100" y="68" fill="rgba(255,255,255,0.25)" font-size="9" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">and summarize findings</text>
         <circle cx="296" cy="50" r="5" fill="rgba(217,70,239,0.3)"><animate attributeName="r" values="4;6;4" dur="2s" repeatCount="indefinite"/></circle>
         <!-- Arrow 1→2 -->
         <line x1="200" y1="90" x2="200" y2="130" stroke="rgba(255,255,255,0.1)" stroke-width="1.5" stroke-dasharray="4 4"/>
@@ -1022,9 +1118,9 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <!-- Block 2 -->
         <rect x="80" y="140" width="240" height="70" rx="10" fill="rgba(0,240,255,0.05)" stroke="rgba(0,240,255,0.2)" stroke-width="1.5">
           <animate attributeName="stroke-opacity" values="0.2;0.5;0.2" dur="3s" begin="0.5s" repeatCount="indefinite"/></rect>
-        <text x="100" y="168" fill="rgba(255,255,255,0.5)" font-size="10" font-family="monospace">Implement</text>
-        <text x="186" y="168" fill="#00f0ff" font-size="10" font-weight="700" font-family="monospace">{result}</text>
-        <text x="100" y="188" fill="rgba(255,255,255,0.25)" font-size="9" font-family="monospace">with tests and docs</text>
+        <text x="100" y="168" fill="rgba(255,255,255,0.5)" font-size="10" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">Implement</text>
+        <text x="186" y="168" fill="#00f0ff" font-size="10" font-weight="700" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">{result}</text>
+        <text x="100" y="188" fill="rgba(255,255,255,0.25)" font-size="9" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">with tests and docs</text>
         <circle cx="296" cy="170" r="5" fill="rgba(0,240,255,0.3)"><animate attributeName="r" values="4;6;4" dur="2s" begin="0.5s" repeatCount="indefinite"/></circle>
         <!-- Arrow 2→3 -->
         <line x1="200" y1="210" x2="200" y2="250" stroke="rgba(255,255,255,0.1)" stroke-width="1.5" stroke-dasharray="4 4"/>
@@ -1033,21 +1129,21 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <!-- Block 3 -->
         <rect x="80" y="260" width="240" height="70" rx="10" fill="rgba(139,92,246,0.06)" stroke="rgba(139,92,246,0.2)" stroke-width="1.5">
           <animate attributeName="stroke-opacity" values="0.2;0.5;0.2" dur="3s" begin="1s" repeatCount="indefinite"/></rect>
-        <text x="100" y="288" fill="rgba(255,255,255,0.5)" font-size="10" font-family="monospace">Review &amp; verify</text>
-        <text x="100" y="308" fill="rgba(255,255,255,0.25)" font-size="9" font-family="monospace">run tests, check coverage</text>
+        <text x="100" y="288" fill="rgba(255,255,255,0.5)" font-size="10" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">Review &amp; verify</text>
+        <text x="100" y="308" fill="rgba(255,255,255,0.25)" font-size="9" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">run tests, check coverage</text>
         <circle cx="296" cy="290" r="5" fill="rgba(139,92,246,0.3)"><animate attributeName="r" values="4;6;4" dur="2s" begin="1s" repeatCount="indefinite"/></circle>
         <!-- Loop arc -->
         <path d="M320,300 C370,300 370,50 320,50" fill="none" stroke="rgba(245,158,11,0.2)" stroke-width="1.5" stroke-dasharray="5 4"/>
         <polygon points="318,46 322,38 326,46" fill="rgba(245,158,11,0.3)"/>
-        <text x="365" y="175" fill="rgba(245,158,11,0.4)" font-size="9" font-weight="700" font-family="Inter,sans-serif" transform="rotate(90,365,175)">LOOP</text>
+        <text x="365" y="175" fill="rgba(245,158,11,0.4)" font-size="9" font-weight="700" font-family="'Inter',system-ui,sans-serif" transform="rotate(90,365,175)">LOOP</text>
         <circle r="3" fill="#f59e0b"><animateMotion path="M320,300 C370,300 370,50 320,50" dur="3s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="3s" repeatCount="indefinite"/></circle>
         <!-- @token badges -->
         <rect x="80" y="370" width="68" height="22" rx="11" fill="rgba(239,68,68,0.1)" stroke="rgba(239,68,68,0.2)"/>
-        <text x="114" y="385" text-anchor="middle" fill="#ef4444" font-size="9" font-weight="700" font-family="monospace">@ralph</text>
+        <text x="114" y="385" text-anchor="middle" fill="#ef4444" font-size="9" font-weight="700" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">@ralph</text>
         <rect x="160" y="370" width="88" height="22" rx="11" fill="rgba(59,130,246,0.1)" stroke="rgba(59,130,246,0.2)"/>
-        <text x="204" y="385" text-anchor="middle" fill="#3b82f6" font-size="9" font-weight="700" font-family="monospace">@research</text>
+        <text x="204" y="385" text-anchor="middle" fill="#3b82f6" font-size="9" font-weight="700" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">@research</text>
         <rect x="260" y="370" width="80" height="22" rx="11" fill="rgba(139,92,246,0.1)" stroke="rgba(139,92,246,0.2)"/>
-        <text x="300" y="385" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="monospace">@prompt</text>
+        <text x="300" y="385" text-anchor="middle" fill="#8b5cf6" font-size="9" font-weight="700" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">@prompt</text>
       </svg>
     </div>
   </div>
@@ -1089,7 +1185,7 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
           <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(0,240,255,0.12)" stroke-width="1.5"/>
           <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
           <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
-          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-1</text>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">session-1</text>
           <rect x="12" y="30" width="70" height="2.5" rx="1" fill="rgba(0,240,255,0.25)"/>
           <rect x="12" y="38" width="110" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
           <rect x="12" y="46" width="50" height="2.5" rx="1" fill="rgba(139,92,246,0.15)"/>
@@ -1100,7 +1196,7 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
           <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(0,240,255,0.12)" stroke-width="1.5"/>
           <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
           <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
-          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-2</text>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">session-2</text>
           <rect x="12" y="30" width="90" height="2.5" rx="1" fill="rgba(217,70,239,0.2)"/>
           <rect x="12" y="38" width="130" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
           <rect x="12" y="46" width="60" height="2.5" rx="1" fill="rgba(0,240,255,0.12)"/>
@@ -1111,7 +1207,7 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
           <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(139,92,246,0.12)" stroke-width="1.5"/>
           <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
           <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
-          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-3</text>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">session-3</text>
           <rect x="12" y="30" width="100" height="2.5" rx="1" fill="rgba(0,240,255,0.2)"/>
           <rect x="12" y="38" width="140" height="2.5" rx="1" fill="rgba(255,255,255,0.08)"/>
           <rect x="12" y="46" width="80" height="2.5" rx="1" fill="rgba(217,70,239,0.15)"/>
@@ -1123,7 +1219,7 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
           <rect width="175" height="135" rx="8" fill="rgba(255,255,255,0.025)" stroke="rgba(139,92,246,0.12)" stroke-width="1.5"/>
           <rect width="175" height="20" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="19" width="175" height="1" fill="rgba(255,255,255,0.05)"/>
           <circle cx="12" cy="10" r="3" fill="rgba(239,68,68,0.5)"/><circle cx="22" cy="10" r="3" fill="rgba(245,158,11,0.5)"/><circle cx="32" cy="10" r="3" fill="rgba(34,197,94,0.5)"/>
-          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">session-4</text>
+          <text x="50" y="14" fill="rgba(255,255,255,0.2)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">session-4</text>
           <rect x="12" y="30" width="60" height="2.5" rx="1" fill="rgba(34,197,94,0.2)"/>
           <rect x="12" y="38" width="100" height="2.5" rx="1" fill="rgba(255,255,255,0.06)"/>
           <rect x="12" y="58" width="7" height="10" rx="1" fill="rgba(34,197,94,0.5)" class="term-cursor"/>
@@ -1132,21 +1228,21 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <g opacity="0.7">
           <line x1="192" y1="60" x2="208" y2="60" stroke="rgba(245,158,11,0.3)" stroke-width="1.5" stroke-dasharray="3 3"/>
           <polygon points="197,53 200,47 203,53 200.5,53 203,63 200,63 197,63 199.5,53" fill="#f59e0b" opacity="0.5"><animate attributeName="opacity" values="0.3;0.7;0.3" dur="2s" repeatCount="indefinite"/></polygon>
-          <text x="200" y="42" text-anchor="middle" fill="rgba(245,158,11,0.4)" font-size="7" font-weight="700" font-family="Inter,sans-serif">BROADCAST</text>
+          <text x="200" y="42" text-anchor="middle" fill="rgba(245,158,11,0.4)" font-size="7" font-weight="700" font-family="'Inter',system-ui,sans-serif">BROADCAST</text>
         </g>
         <!-- Merge indicator (arrows from BL+BR converging) -->
         <g opacity="0.6">
           <line x1="150" y1="310" x2="200" y2="340" stroke="rgba(139,92,246,0.25)" stroke-width="1.5"/>
           <line x1="250" y1="310" x2="200" y2="340" stroke="rgba(139,92,246,0.25)" stroke-width="1.5"/>
           <circle cx="200" cy="340" r="8" fill="rgba(139,92,246,0.1)" stroke="#8b5cf6" stroke-width="1.5"/>
-          <text x="200" y="344" text-anchor="middle" fill="#8b5cf6" font-size="7" font-weight="700" font-family="Inter,sans-serif">M</text>
-          <text x="200" y="362" text-anchor="middle" fill="rgba(139,92,246,0.4)" font-size="8" font-weight="700" font-family="Inter,sans-serif">MERGE</text>
+          <text x="200" y="344" text-anchor="middle" fill="#8b5cf6" font-size="7" font-weight="700" font-family="'Inter',system-ui,sans-serif">M</text>
+          <text x="200" y="362" text-anchor="middle" fill="rgba(139,92,246,0.4)" font-size="8" font-weight="700" font-family="'Inter',system-ui,sans-serif">MERGE</text>
           <circle r="3" fill="#8b5cf6"><animateMotion path="M150,310 L200,340" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/></circle>
           <circle r="3" fill="#8b5cf6"><animateMotion path="M250,310 L200,340" dur="2s" begin="0.5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;0" dur="2s" begin="0.5s" repeatCount="indefinite"/></circle>
         </g>
         <!-- Grid template label -->
         <rect x="115" y="380" width="170" height="18" rx="9" fill="rgba(0,240,255,0.06)" stroke="rgba(0,240,255,0.15)"/>
-        <text x="200" y="393" text-anchor="middle" fill="rgba(0,240,255,0.5)" font-size="8" font-weight="700" font-family="Inter,sans-serif" letter-spacing="1">2x2 GRID TEMPLATE</text>
+        <text x="200" y="393" text-anchor="middle" fill="rgba(0,240,255,0.5)" font-size="8" font-weight="700" font-family="'Inter',system-ui,sans-serif" letter-spacing="1">2x2 GRID TEMPLATE</text>
       </svg>
     </div>
   </div>
@@ -1186,7 +1282,7 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <circle cx="48" cy="34" r="4" fill="rgba(239,68,68,0.5)"/><circle cx="62" cy="34" r="4" fill="rgba(245,158,11,0.5)"/><circle cx="76" cy="34" r="4" fill="rgba(34,197,94,0.5)"/>
         <!-- URL bar -->
         <rect x="92" y="26" width="200" height="16" rx="4" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.06)"/>
-        <text x="105" y="38" fill="rgba(255,255,255,0.2)" font-size="8" font-family="monospace">localhost:5173</text>
+        <text x="105" y="38" fill="rgba(255,255,255,0.2)" font-size="8" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">localhost:5173</text>
         <!-- Content: diff lines -->
         <rect x="50" y="60" width="12" height="3" rx="1" fill="rgba(34,197,94,0.4)"/>
         <rect x="68" y="60" width="140" height="3" rx="1" fill="rgba(34,197,94,0.15)"/>
@@ -1198,9 +1294,9 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <rect x="68" y="90" width="120" height="3" rx="1" fill="rgba(255,255,255,0.04)"/>
         <rect x="50" y="100" width="12" height="3" rx="1" fill="rgba(34,197,94,0.4)"/>
         <rect x="68" y="100" width="180" height="3" rx="1" fill="rgba(34,197,94,0.15)"/>
-        <text x="50" y="61" fill="rgba(34,197,94,0.3)" font-size="7" font-family="monospace">+</text>
-        <text x="50" y="71" fill="rgba(34,197,94,0.3)" font-size="7" font-family="monospace">+</text>
-        <text x="50" y="81" fill="rgba(239,68,68,0.3)" font-size="7" font-family="monospace">-</text>
+        <text x="50" y="61" fill="rgba(34,197,94,0.3)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">+</text>
+        <text x="50" y="71" fill="rgba(34,197,94,0.3)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">+</text>
+        <text x="50" y="81" fill="rgba(239,68,68,0.3)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">-</text>
         <!-- Annotation rectangle -->
         <rect x="60" y="55" width="220" height="55" rx="3" fill="none" stroke="#d946ef" stroke-width="1.5" stroke-dasharray="4 3" opacity="0">
           <animate attributeName="opacity" values="0;0;0.7;0.7;0" dur="4s" repeatCount="indefinite"/>
@@ -1212,7 +1308,7 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         <!-- Annotation text bubble -->
         <g opacity="0"><animate attributeName="opacity" values="0;0;0;0.8;0" dur="4s" repeatCount="indefinite"/>
           <rect x="280" y="130" width="80" height="28" rx="6" fill="rgba(217,70,239,0.12)" stroke="rgba(217,70,239,0.3)"/>
-          <text x="320" y="148" text-anchor="middle" fill="#d946ef" font-size="8" font-weight="600" font-family="Inter,sans-serif">Fix this logic</text>
+          <text x="320" y="148" text-anchor="middle" fill="#d946ef" font-size="8" font-weight="600" font-family="'Inter',system-ui,sans-serif">Fix this logic</text>
         </g>
         <!-- More content lines -->
         <rect x="50" y="125" width="260" height="2.5" rx="1" fill="rgba(255,255,255,0.03)"/>
@@ -1229,23 +1325,23 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
           <rect x="40" y="6" width="2" height="12" rx="1" fill="rgba(0,240,255,0.4)"><animate attributeName="height" values="4;12;4" dur="0.7s" repeatCount="indefinite"/><animate attributeName="y" values="10;6;10" dur="0.7s" repeatCount="indefinite"/></rect>
           <rect x="46" y="5" width="2" height="14" rx="1" fill="rgba(0,240,255,0.3)"><animate attributeName="height" values="8;3;8" dur="0.55s" repeatCount="indefinite"/><animate attributeName="y" values="8;11;8" dur="0.55s" repeatCount="indefinite"/></rect>
           <rect x="52" y="7" width="2" height="10" rx="1" fill="rgba(0,240,255,0.4)"><animate attributeName="height" values="6;12;6" dur="0.65s" repeatCount="indefinite"/><animate attributeName="y" values="9;6;9" dur="0.65s" repeatCount="indefinite"/></rect>
-          <text x="62" y="16" fill="rgba(0,240,255,0.4)" font-size="7" font-weight="600" font-family="Inter,sans-serif">REC</text>
+          <text x="62" y="16" fill="rgba(0,240,255,0.4)" font-size="7" font-weight="600" font-family="'Inter',system-ui,sans-serif">REC</text>
         </g>
         <!-- Terminal output annotation below -->
         <g transform="translate(30, 280)">
           <rect width="340" height="100" rx="8" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.06)"/>
           <rect width="340" height="18" rx="8" fill="rgba(255,255,255,0.03)"/><rect y="17" width="340" height="1" fill="rgba(255,255,255,0.05)"/>
-          <text x="12" y="13" fill="rgba(255,255,255,0.2)" font-size="7" font-family="monospace">Output Annotator</text>
+          <text x="12" y="13" fill="rgba(255,255,255,0.2)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">Output Annotator</text>
           <!-- Colored ownership segments -->
           <rect x="10" y="26" width="3" height="28" rx="1" fill="rgba(0,240,255,0.3)"/>
-          <text x="20" y="34" fill="rgba(255,255,255,0.15)" font-size="7" font-family="monospace">user input</text>
+          <text x="20" y="34" fill="rgba(255,255,255,0.15)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">user input</text>
           <rect x="10" y="58" width="3" height="28" rx="1" fill="rgba(139,92,246,0.3)"/>
-          <text x="20" y="66" fill="rgba(255,255,255,0.15)" font-size="7" font-family="monospace">claude response</text>
+          <text x="20" y="66" fill="rgba(255,255,255,0.15)" font-size="7" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">claude response</text>
           <!-- Annotation on output -->
           <rect x="160" y="55" width="160" height="22" rx="5" fill="rgba(139,92,246,0.08)" stroke="rgba(139,92,246,0.2)" opacity="0">
             <animate attributeName="opacity" values="0;0;0.8;0.8;0" dur="5s" begin="2s" repeatCount="indefinite"/>
           </rect>
-          <text x="240" y="70" text-anchor="middle" fill="#8b5cf6" font-size="7" font-weight="600" font-family="Inter,sans-serif" opacity="0">
+          <text x="240" y="70" text-anchor="middle" fill="#8b5cf6" font-size="7" font-weight="600" font-family="'Inter',system-ui,sans-serif" opacity="0">
             highlighted by user
             <animate attributeName="opacity" values="0;0;0.6;0.6;0" dur="5s" begin="2s" repeatCount="indefinite"/>
           </text>
@@ -1293,27 +1389,27 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
         </rect>
         <!-- Package: npm (safe) -->
         <rect x="145" y="140" width="48" height="34" rx="5" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.1)"/>
-        <text x="169" y="162" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-size="10" font-weight="600" font-family="monospace">npm</text>
+        <text x="169" y="162" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-size="10" font-weight="600" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">npm</text>
         <circle cx="205" cy="157" r="9" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" dur="3s" begin="0.8s" repeatCount="indefinite"/></circle>
         <path d="M200,157 L204,161 L212,153" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" dur="3s" begin="0.8s" repeatCount="indefinite"/></path>
         <!-- Package: pip (safe) -->
         <rect x="225" y="200" width="48" height="34" rx="5" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.1)"/>
-        <text x="249" y="222" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-size="10" font-weight="600" font-family="monospace">pip</text>
+        <text x="249" y="222" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-size="10" font-weight="600" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">pip</text>
         <circle cx="285" cy="217" r="9" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;0;1;1;0" dur="3s" begin="0.3s" repeatCount="indefinite"/></circle>
         <path d="M280,217 L284,221 L292,213" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0"><animate attributeName="opacity" values="0;0;0;1;1;0" dur="3s" begin="0.3s" repeatCount="indefinite"/></path>
         <!-- Package: malware (blocked) -->
         <rect x="130" y="260" width="68" height="34" rx="5" fill="rgba(239,68,68,0.04)" stroke="rgba(239,68,68,0.15)"/>
-        <text x="164" y="282" text-anchor="middle" fill="rgba(239,68,68,0.5)" font-size="10" font-weight="600" font-family="monospace">malware</text>
+        <text x="164" y="282" text-anchor="middle" fill="rgba(239,68,68,0.5)" font-size="10" font-weight="600" font-family="'JetBrains Mono','SF Mono',ui-monospace,monospace">malware</text>
         <g opacity="0"><animate attributeName="opacity" values="0;0;0;0;1;1" dur="3s" repeatCount="indefinite"/>
           <circle cx="210" cy="277" r="9" fill="none" stroke="#ef4444" stroke-width="1.5"/>
           <line x1="206" y1="273" x2="214" y2="281" stroke="#ef4444" stroke-width="1.5"/><line x1="214" y1="273" x2="206" y2="281" stroke="#ef4444" stroke-width="1.5"/>
           <rect x="225" y="269" width="60" height="18" rx="4" fill="rgba(239,68,68,0.15)" stroke="rgba(239,68,68,0.3)"/>
-          <text x="255" y="282" text-anchor="middle" fill="#ef4444" font-size="8" font-weight="800" font-family="Inter,sans-serif" letter-spacing="1">BLOCKED</text>
+          <text x="255" y="282" text-anchor="middle" fill="#ef4444" font-size="8" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="1">BLOCKED</text>
         </g>
         <!-- Shield glow -->
         <circle cx="200" cy="210" r="130" fill="none" stroke="rgba(239,68,68,0.04)" stroke-width="1"><animate attributeName="r" values="120;145;120" dur="4s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.2;0.05;0.2" dur="4s" repeatCount="indefinite"/></circle>
         <!-- Status -->
-        <text x="200" y="330" text-anchor="middle" fill="rgba(34,197,94,0.5)" font-size="10" font-weight="800" font-family="Inter,sans-serif" letter-spacing="3" opacity="0">PROTECTED<animate attributeName="opacity" values="0;0;0;0;0.6;0.6" dur="3s" repeatCount="indefinite"/></text>
+        <text x="200" y="330" text-anchor="middle" fill="rgba(34,197,94,0.5)" font-size="10" font-weight="800" font-family="'Inter',system-ui,sans-serif" letter-spacing="3" opacity="0">PROTECTED<animate attributeName="opacity" values="0;0;0;0;0.6;0.6" dur="3s" repeatCount="indefinite"/></text>
       </svg>
     </div>
   </div>
@@ -1393,9 +1489,10 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
 <section class="beta-banner reveal" id="beta">
   <div class="beta-orb"></div>
   <div class="beta-banner-inner">
-    <div class="beta-tag">Open Source &mdash; Live Now</div>
+    <div class="beta-tag" style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.3);color:#f59e0b;">Alpha &mdash; Open Source</div>
     <h2 class="beta-headline">Released. <span>Open Source.</span></h2>
-    <p class="beta-sub">No password. No invite list. No telemetry. Clone the repo, run <code>./start.sh</code>, command your agents.</p>
+    <p class="beta-sub">No password. No invite list. Anonymous opt-out telemetry only (<code>IVE_TELEMETRY=off</code>). Clone the repo, run <code>./start.sh</code>, command your agents.</p>
+    <p class="beta-sub" style="margin-top:14px;font-size:15px;color:#94a3b8;">This is an <strong style="color:#f59e0b;">Alpha</strong>. We&rsquo;re shipping fixes 24/7 &mdash; <a href="https://github.com/michael-ra/ive/issues" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:underline;">feedback &amp; bug reports</a> are deeply appreciated. Star the repo to follow along.</p>
 
     <div class="release-event">Apache-2.0 &mdash; <span class="open-src">github.com/michael-ra/ive</span></div>
 
@@ -1406,7 +1503,6 @@ footer p { font-size: 12px; color: #475569; letter-spacing: 1px; }
       </a>
       <a href="https://github.com/michael-ra/ive#readme" class="btn btn-ghost" target="_blank" rel="noopener">Read the README</a>
     </div>
-    <p class="beta-note" style="margin-top:24px;">Built by Michael Ramich. Free forever. No signup required.</p>
   </div>
 </section>
 

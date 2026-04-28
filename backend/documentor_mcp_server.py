@@ -21,6 +21,7 @@ import sys
 import tempfile
 import textwrap
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -43,6 +44,11 @@ def api_call(method: str, path: str, body: dict | None = None) -> dict:
     url = f"{API_URL}/api{path}"
     data = json.dumps(body).encode() if body else None
     headers = {"Content-Type": "application/json"} if data else {}
+    if SESSION_ID:
+        headers["X-IVE-Session-Id"] = SESSION_ID
+        headers["X-IVE-Session-Type"] = "documentor"
+    if WORKSPACE_ID:
+        headers["X-IVE-Workspace-Id"] = WORKSPACE_ID
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -800,10 +806,17 @@ def tool_write_doc_page(args: dict) -> str:
     if not path or not content:
         return "Error: 'path' and 'content' are required"
 
-    # Ensure path is relative to docs dir
+    # MCP-S8: defense-in-depth path-traversal guard. Even though the
+    # documentor process has shell access, refuse `../` escapes so a future
+    # locked-down documentor (MCP-only, no Bash) can't smuggle writes
+    # outside DOCS_DIR via this tool.
     if path.startswith("/"):
         path = path[1:]
-    full_path = os.path.join(DOCS_DIR, path)
+    docs_root = os.path.realpath(DOCS_DIR)
+    candidate = os.path.realpath(os.path.join(DOCS_DIR, path))
+    if candidate != docs_root and not candidate.startswith(docs_root + os.sep):
+        return f"Error: path '{path}' escapes the docs directory"
+    full_path = candidate
 
     # Add frontmatter if not present and title given
     if title and not content.startswith("---"):
@@ -1008,6 +1021,63 @@ def _write_file(path: str, content: str) -> None:
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+VALID_MEMORY_TYPES = {"user", "feedback", "project", "reference"}
+
+
+def tool_save_memory(args: dict) -> str:
+    """Persist a doc-relevant insight (style guide, gap, gotcha) to the
+    workspace memory pool. Mirrors the worker tool so the documentor can
+    capture lessons learned across documentation passes (e.g. a section
+    that always needs a custom screenshot setup, or a feature that the
+    knowledge base described differently than the code).
+    """
+    name = (args.get("name") or "").strip()
+    content = (args.get("content") or "").strip()
+    mem_type = (args.get("type") or "").strip()
+    tags = args.get("tags") or []
+
+    if not name or not content:
+        return json.dumps({"ok": False, "error": "name and content are required"})
+    if mem_type not in VALID_MEMORY_TYPES:
+        return json.dumps({
+            "ok": False,
+            "error": f"type must be one of {sorted(VALID_MEMORY_TYPES)}",
+        })
+
+    existing = api_call(
+        "GET",
+        f"/memory?workspace_id={urllib.parse.quote(WORKSPACE_ID)}",
+    )
+    match_id = None
+    if isinstance(existing, list):
+        for e in existing:
+            if (e.get("name") or "").strip().lower() == name.lower() and (
+                (e.get("workspace_id") or "") == WORKSPACE_ID
+            ):
+                match_id = e.get("id")
+                break
+
+    body = {
+        "name": name,
+        "type": mem_type,
+        "content": content,
+        "workspace_id": WORKSPACE_ID or None,
+        "tags": tags,
+        "source_cli": "documentor",
+    }
+    if match_id:
+        result = api_call("PUT", f"/memory/{match_id}", body)
+        if isinstance(result, dict) and result.get("error"):
+            return json.dumps({"ok": False, **result})
+        return json.dumps({"ok": True, "id": match_id, "updated": True})
+    result = api_call("POST", "/memory", body)
+    if isinstance(result, dict) and result.get("error"):
+        return json.dumps({"ok": False, **result})
+    if isinstance(result, dict) and result.get("id"):
+        return json.dumps({"ok": True, "id": result["id"], "created": True})
+    return json.dumps({"ok": True})
 
 
 # ── Tool registry ───────────────────────────────────────────────────
@@ -1261,6 +1331,29 @@ TOOLS: dict[str, dict] = {
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    "save_memory": {
+        "handler": tool_save_memory,
+        "description": (
+            "Persist a doc-relevant insight to the workspace memory pool. "
+            "Use this when you discover a documentation pattern, a gap "
+            "between code and docs, or a screenshot-setup gotcha worth "
+            "remembering for future doc passes. Idempotent on `name`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short title (dedup key within the workspace)."},
+                "type": {
+                    "type": "string",
+                    "enum": ["user", "feedback", "project", "reference"],
+                    "description": "user/feedback/project/reference — pick the closest fit for a documentation insight.",
+                },
+                "content": {"type": "string", "description": "The insight itself. One paragraph or a tight bullet list."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags."},
+            },
+            "required": ["name", "type", "content"],
         },
     },
 }

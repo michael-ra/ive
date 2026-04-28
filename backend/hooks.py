@@ -11,6 +11,7 @@ The script only activates when COMMANDER_SESSION_ID is set in the env,
 so standalone CLI usage is unaffected.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -102,6 +103,188 @@ _capture_proc = None
 _pending_pty_warnings: dict[str, list[dict]] = {}
 
 
+# ─── Web Push fan-out for session lifecycle ──────────────────────────
+# Push notifications fire from the Stop and Notification hook handlers
+# so a backgrounded PWA on a phone (or a locked screen) gets alerted
+# when a session needs attention. Delivery is fire-and-forget: any
+# failure (no VAPID, no subs, dead endpoint) is swallowed so a hook
+# handler never depends on push success.
+#
+# Per-tag cooldown prevents spam — a session that repeatedly toggles
+# idle/working would otherwise emit a notification per cycle.
+_push_cooldown: dict[str, float] = {}
+_PUSH_COOLDOWN_INTERVAL = 8.0  # seconds
+
+# Per-worker oversight-nudge cooldown. Lives server-side so any number of
+# connected WS clients see exactly one nudge per worker idle event — the
+# old client-side nudge fired once per browser tab, spamming Commander.
+_nudge_cooldown: dict[str, float] = {}
+_NUDGE_COOLDOWN_INTERVAL = 30.0  # seconds
+
+
+async def _lookup_session_name(session_id: str) -> str:
+    """Best-effort name lookup for push notification body. Returns the
+    session name on success, the truncated id on failure — never raises."""
+    try:
+        from db import get_db
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                "SELECT name FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = await cur.fetchone()
+            if row and row["name"]:
+                return str(row["name"])
+        finally:
+            await db.close()
+    except Exception:
+        pass
+    return f"Session {session_id[:8]}"
+
+
+def _push_notify(*, tag: str, title: str, body: str, url: str = "/") -> None:
+    """Schedule a Web Push fan-out to every owner device.
+
+    Fire-and-forget: returns immediately, swallows all errors. Per-tag
+    cooldown debounces rapid retriggering of the same logical event
+    (e.g. session bouncing through idle a few times in a row).
+    """
+    now = time.monotonic()
+    last = _push_cooldown.get(tag, 0.0)
+    if now - last < _PUSH_COOLDOWN_INTERVAL:
+        return
+    _push_cooldown[tag] = now
+
+    async def _run():
+        try:
+            import push
+            await push.send_to_owners(title=title, body=body, url=url, tag=tag)
+        except Exception as e:
+            logger.debug("Web Push fan-out failed (%s): %s", tag, e)
+
+    try:
+        asyncio.create_task(_run())
+    except RuntimeError:
+        # No running loop — should never happen in the request handler
+        # path, but defensively swallow so the hook never raises.
+        pass
+
+
+_NUDGE_TEMPLATES = {
+    "full_auto": (
+        'Worker "{name}" is idle. Read its output with read_session_output. '
+        "If it produced a plan, approve it and proceed autonomously. "
+        "If it finished a task, update the task status. "
+        "Handle everything without asking the user."
+    ),
+    "approve_plans": (
+        'Worker "{name}" is idle. Read its output with read_session_output. '
+        "If it produced a plan, summarize it for the user and wait for their approval. "
+        "If it finished a task, update the task status and report results."
+    ),
+    "approve_all": (
+        'Worker "{name}" is idle. Read its output with read_session_output and '
+        "report to the user. Wait for user instructions before taking any action."
+    ),
+}
+
+_NUDGE_ACTIVE_STATUSES = ("todo", "planning", "in_progress", "review")
+
+
+async def _nudge_commander_for_idle_worker(worker_id: str) -> None:
+    """Post a one-shot oversight nudge into the worker's Commander PTY.
+
+    Replaces the previous client-side nudge in `useWebSocket.js` which fired
+    once per browser tab — multiple tabs ⇒ duplicate nudges. Runs on the
+    backend so exactly one nudge lands per worker idle, regardless of the
+    number of connected clients.
+    """
+    if not _pty_mgr:
+        return
+    now = time.monotonic()
+    last = _nudge_cooldown.get(worker_id, 0.0)
+    if now - last < _NUDGE_COOLDOWN_INTERVAL:
+        return
+    try:
+        from db import get_db
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                "SELECT id, name, session_type, workspace_id, status FROM sessions WHERE id = ?",
+                (worker_id,),
+            )
+            worker = await cur.fetchone()
+            if not worker:
+                return
+            # Don't nudge for commander/tester/documentor self-idles.
+            if worker["session_type"] in ("commander", "tester", "documentor"):
+                return
+
+            placeholders = ",".join("?" for _ in _NUDGE_ACTIVE_STATUSES)
+            cur = await db.execute(
+                f"SELECT id, commander_session_id FROM tasks "
+                f"WHERE assigned_session_id = ? AND status IN ({placeholders}) "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (worker_id, *_NUDGE_ACTIVE_STATUSES),
+            )
+            task = await cur.fetchone()
+            if not task:
+                return  # Worker isn't actively assigned — skip nudge
+
+            commander_id = task["commander_session_id"]
+            if commander_id:
+                cur = await db.execute(
+                    "SELECT id, status FROM sessions WHERE id = ? AND session_type = 'commander'",
+                    (commander_id,),
+                )
+                row = await cur.fetchone()
+                if not row or row["status"] == "exited":
+                    commander_id = None
+
+            if not commander_id:
+                cur = await db.execute(
+                    "SELECT id FROM sessions WHERE workspace_id = ? AND session_type = 'commander' "
+                    "AND COALESCE(status, '') != 'exited' ORDER BY created_at DESC LIMIT 1",
+                    (worker["workspace_id"],),
+                )
+                row = await cur.fetchone()
+                commander_id = row["id"] if row else None
+
+            if not commander_id or not _pty_mgr.is_alive(commander_id):
+                return
+
+            cur = await db.execute(
+                "SELECT human_oversight FROM workspaces WHERE id = ?",
+                (worker["workspace_id"],),
+            )
+            row = await cur.fetchone()
+            oversight = (row["human_oversight"] if row else "approve_plans") or "approve_plans"
+        finally:
+            await db.close()
+    except Exception as e:
+        logger.debug("Nudge lookup failed for worker %s: %s", worker_id[:8], e)
+        return
+
+    template = _NUDGE_TEMPLATES.get(oversight, _NUDGE_TEMPLATES["approve_plans"])
+    message = template.format(name=worker["name"] or worker_id[:8])
+    _nudge_cooldown[worker_id] = now
+
+    try:
+        # Clear any composing buffer in the TUI before posting, mirroring
+        # the W2W warning delivery dance.
+        _pty_mgr.write(commander_id, b"\x1b" + b"\x7f" * 20)
+        await asyncio.sleep(0.15)
+        _pty_mgr.write(commander_id, message.encode("utf-8"))
+        await asyncio.sleep(0.4)
+        _pty_mgr.write(commander_id, b"\r")
+        logger.info(
+            "Nudged commander %s for idle worker %s (%s)",
+            commander_id[:8], worker_id[:8], oversight,
+        )
+    except Exception as e:
+        logger.debug("Nudge write failed: %s", e)
+
+
 def set_broadcast_fn(fn):
     """Called once at startup to inject the WebSocket broadcast function."""
     global _broadcast
@@ -181,6 +364,9 @@ def _get_state(session_id: str) -> dict:
             "last_doom_warning_at": 0.0,
             "idle_count": 0,
             "titled": False,
+            "tool_uses_since_reflection": 0,
+            "reflected_at": 0.0,
+            "auto_extracted_idle": False,
         }
     s = _hook_sessions[session_id]
     if "subagents" not in s:
@@ -193,6 +379,12 @@ def _get_state(session_id: str) -> dict:
         s["idle_count"] = 0
     if "titled" not in s:
         s["titled"] = False
+    if "tool_uses_since_reflection" not in s:
+        s["tool_uses_since_reflection"] = 0
+    if "reflected_at" not in s:
+        s["reflected_at"] = 0.0
+    if "auto_extracted_idle" not in s:
+        s["auto_extracted_idle"] = False
     return s
 
 
@@ -1027,10 +1219,76 @@ async def _generate_title(session_id: str, cli_type: str, context: str):
         logger.debug("Auto-title generation failed for %s: %s", session_id[:8], e)
 
 
+# ─── Stop reflection (Worker-to-Worker tool nudge) ──────────────────
+
+# Throttle: minimum monotonic seconds between reflections per session.
+# Bumped from 5min → 30min — the prompt was firing after virtually every
+# substantive Commander turn, which felt like spam.
+_REFLECTION_THROTTLE_SECS = 1800.0
+# Floor: only reflect when the agent did real work (≥ this many tool uses
+# since the last reflection). Keeps the prompt off short clarifying turns
+# and routine read/grep turns. Bumped from 3 → 12.
+_REFLECTION_MIN_TOOL_USES = 12
+_REFLECTION_CACHE_TTL = 30.0
+_reflection_enabled_cache: dict[str, float] = {}
+
+
+async def _is_stop_reflection_enabled() -> bool:
+    """Check whether the Stop hook reflection prompt is enabled (cached 30s)."""
+    cached_ts = _reflection_enabled_cache.get("ts", 0.0)
+    if time.monotonic() - cached_ts < _REFLECTION_CACHE_TTL:
+        return bool(_reflection_enabled_cache.get("enabled", True))
+    try:
+        from db import get_db
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                "SELECT value FROM app_settings WHERE key = 'experimental_stop_reflection'"
+            )
+            row = await cur.fetchone()
+            # Default ON — only disabled when explicitly "off"
+            enabled = not (row and row["value"] == "off")
+            _reflection_enabled_cache["enabled"] = enabled
+            _reflection_enabled_cache["ts"] = time.monotonic()
+            return enabled
+        finally:
+            await db.close()
+    except Exception:
+        return True
+
+
+_REFLECTION_PROMPT = (
+    "[Commander reflection] Before you stop, take one quiet moment.\n"
+    "\n"
+    "Did this turn surface anything worth saving for future you, your peers, "
+    "or the workspace? Specifically — and only call a tool if the answer is yes:\n"
+    "\n"
+    "  • Durable user preference, project decision, or non-obvious gotcha "
+    "→ save_memory (type=user/feedback/project/reference).\n"
+    "  • Concrete progress, current focus, files touched, or a discovery another "
+    "agent should know about → update_digest.\n"
+    "  • You're about to keep editing the same files in the next turn → "
+    "coord_check_overlap to see if a peer is touching them.\n"
+    "  • A peer agent is about to step on a footgun you just hit → headsup.\n"
+    "  • A live blocker that would waste anyone else's turn until resolved → "
+    "blocking_bulletin.\n"
+    "\n"
+    "Default action: do nothing. Most turns don't need any of these. "
+    "If you do call a tool, keep it terse — one entry, factual, no narration."
+)
+
+
 # ─── Event handlers ──────────────────────────────────────────────────
 
 async def _handle_stop(session_id: str, payload: dict):
-    """Claude finished responding — definitive 'idle' signal."""
+    """Claude finished responding — definitive 'idle' signal.
+
+    Returns an optional decision dict. When the reflection prompt fires,
+    we return ``{"decision": "block", "reason": ...}`` so Claude Code
+    re-engages the model with the prompt instead of fully stopping. The
+    HTTP layer (``handle_hook_event``) propagates the dict as the response
+    body, which is the contract Claude's Stop hook honors.
+    """
     s = _get_state(session_id)
     s["state"] = "idle"
     s["tool_stack"].clear()
@@ -1044,6 +1302,25 @@ async def _handle_stop(session_id: str, payload: dict):
     if now - s["last_idle_at"] >= _IDLE_THROTTLE_INTERVAL:
         s["last_idle_at"] = now
         await _broadcast({"type": "session_idle", "session_id": session_id})
+        # Web Push: alert owners' phones / backgrounded tabs that the
+        # session is done. Fire-and-forget — gated by VAPID/subs presence
+        # and a per-session cooldown so a flaky session can't spam.
+        try:
+            name = await _lookup_session_name(session_id)
+            _push_notify(
+                tag=f"idle:{session_id}",
+                title="Session done",
+                body=f"{name} finished",
+                url="/",
+            )
+        except Exception as e:
+            logger.debug("Push notify (stop) failed: %s", e)
+        # Server-side oversight nudge — replaces the per-tab client nudge
+        # so multiple WS clients don't each post into Commander.
+        try:
+            asyncio.create_task(_nudge_commander_for_idle_worker(session_id))
+        except RuntimeError:
+            pass
 
     # Permission question detection — check if the session stopped because
     # it asked "Want me to implement this?" instead of just doing it.
@@ -1097,6 +1374,43 @@ async def _handle_stop(session_id: str, payload: dict):
         await _maybe_auto_title(session_id)
     except Exception as e:
         logger.debug("Auto-title check failed: %s", e)
+
+    # Idle-trigger auto knowledge extraction (mirrors the clean-exit path
+    # in server._maybe_auto_extract_knowledge but for sessions that stay alive).
+    # Fires at most once per Stop, and once per session per "idle window" —
+    # PreToolUse resets the flag so the next idle after more work can fire again.
+    try:
+        if not s.get("auto_extracted_idle"):
+            s["auto_extracted_idle"] = True
+            from server import _maybe_auto_extract_knowledge
+            import asyncio as _ke_aio
+            _ke_aio.create_task(_maybe_auto_extract_knowledge(session_id, 0))
+    except Exception as e:
+        logger.debug("Idle auto-extract dispatch failed: %s", e)
+
+    # Stop-reflection: nudge the agent to call save_memory / update_digest /
+    # coord_check_overlap when the turn produced something worth persisting.
+    # Throttled by both wall time and tool-use count so we never spam after
+    # short clarifying turns.
+    try:
+        if not await _is_stop_reflection_enabled():
+            return None
+        tool_uses = int(s.get("tool_uses_since_reflection", 0))
+        last_reflected = float(s.get("reflected_at", 0.0))
+        if tool_uses < _REFLECTION_MIN_TOOL_USES:
+            return None
+        if last_reflected and (now - last_reflected) < _REFLECTION_THROTTLE_SECS:
+            return None
+        s["reflected_at"] = now
+        s["tool_uses_since_reflection"] = 0
+        logger.info(
+            "Stop reflection firing for session %s (tool_uses=%d)",
+            session_id[:8], tool_uses,
+        )
+        return {"decision": "block", "reason": _REFLECTION_PROMPT}
+    except Exception as e:
+        logger.debug("Stop reflection decision failed: %s", e)
+        return None
 
 
 def _extract_options(payload: dict) -> list[dict]:
@@ -1198,6 +1512,10 @@ async def _handle_notification(session_id: str, payload: dict):
         if now - s["last_idle_at"] >= _IDLE_THROTTLE_INTERVAL:
             s["last_idle_at"] = now
             await _broadcast({"type": "session_idle", "session_id": session_id})
+            try:
+                asyncio.create_task(_nudge_commander_for_idle_worker(session_id))
+            except RuntimeError:
+                pass
         # Server-side cascade advancement
         try:
             from cascade_runner import on_session_idle
@@ -1240,6 +1558,23 @@ async def _handle_notification(session_id: str, payload: dict):
         "context": _get_recent_output(session_id),
         "source": "hook",
     })
+
+    # Web Push: alert owners that input is needed. Different tag than the
+    # idle path so an "input needed" right after "session done" still
+    # surfaces (cooldown is per-tag).
+    try:
+        name = await _lookup_session_name(session_id)
+        body_text = (message or tool_name or "Input needed").strip()
+        if len(body_text) > 120:
+            body_text = body_text[:117] + "…"
+        _push_notify(
+            tag=f"prompt:{session_id}",
+            title=f"{name} needs input",
+            body=body_text,
+            url="/",
+        )
+    except Exception as e:
+        logger.debug("Push notify (prompting) failed: %s", e)
 
 
 async def _handle_pre_tool_use(session_id: str, payload: dict):
@@ -1305,6 +1640,13 @@ async def _handle_post_tool_use(session_id: str, payload: dict):
     tool_name = payload.get("tool_name", "unknown")
     if s["tool_stack"]:
         s["tool_stack"].pop()
+    # Track work-done-since-last-reflection. The reflection nudge is a
+    # no-op on turns that didn't really do anything, so we count tool uses
+    # instead of just trusting Stop frequency.
+    s["tool_uses_since_reflection"] = s.get("tool_uses_since_reflection", 0) + 1
+    # New work means a fresh idle window — let auto-knowledge fire again
+    # at the next Stop.
+    s["auto_extracted_idle"] = False
 
     agent_id = payload.get("agent_id")
     agent_type = payload.get("agent_type")
@@ -2072,13 +2414,22 @@ async def handle_hook_event(request: web.Request) -> web.Response:
         return web.json_response({})
 
     handler = _EVENT_HANDLERS.get(event_name)
+    handler_decision: dict | None = None
     if handler:
         try:
-            await handler(session_id, payload)
+            result = await handler(session_id, payload)
+            if isinstance(result, dict) and result:
+                handler_decision = result
         except Exception as e:
             logger.exception(f"Hook handler error for {event_name}: {e}")
     else:
-        logger.debug(f"Unhandled hook event: {event_name} for session {session_id[:8]}")
+        # BUG L3: previously we silently 200'd unknown events, leaving no
+        # observable trace for debugging hook drift between CLI versions.
+        # Log at info+ so operators can see the unknown name in logs.
+        logger.info(
+            "Unhandled hook event %r for session %s (payload keys: %s)",
+            event_name or "<missing>", session_id[:8], list(payload.keys())[:8],
+        )
 
     # Dispatch to plugin hook scripts attached to this session
     try:
@@ -2086,6 +2437,12 @@ async def handle_hook_event(request: web.Request) -> web.Response:
     except Exception as e:
         logger.warning(f"Plugin hook dispatch error: {e}")
 
+    # If a canonical handler returned a Claude Code hook decision dict
+    # (e.g. Stop reflection's {"decision":"block","reason":...}), pass it
+    # through to the CLI as the response body — that is the contract the
+    # CLI honors to re-engage the model.
+    if handler_decision is not None:
+        return web.json_response(handler_decision)
     return web.json_response({})
 
 

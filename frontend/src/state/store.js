@@ -6,6 +6,33 @@ import { hasVariables } from '../lib/cascadeVariables'
 import { uuid } from '../lib/uuid'
 
 const useStore = create((set, get) => ({
+  // ─── Auth context (PR 2/3) — who am I, in what mode? ────
+  // Populated on app boot via api.whoami(). Listened to by ModeBadge,
+  // route guards in the UI, and the active-sessions panel.
+  currentAuth: null,                  // { actor_kind, mode, brief_subscope, label, expires_at } | null
+  activeJoinerSessions: [],
+  loadWhoami: async () => {
+    try {
+      const ctx = await api.whoami()
+      set({ currentAuth: ctx })
+    } catch {
+      set({ currentAuth: null })
+    }
+  },
+  loadAuthSessions: async () => {
+    try {
+      const r = await api.listAuthSessions()
+      set({ activeJoinerSessions: Array.isArray(r?.sessions) ? r.sessions : [] })
+    } catch {}
+  },
+  revokeAuthSession: async (id) => {
+    try {
+      await api.revokeAuthSession(id)
+      const r = await api.listAuthSessions()
+      set({ activeJoinerSessions: Array.isArray(r?.sessions) ? r.sessions : [] })
+    } catch {}
+  },
+
   // ─── CLI Profiles (loaded from /api/cli-info/features) ────
   cliProfiles: {},
   loadCliProfiles: (profiles) => set({ cliProfiles: profiles }),

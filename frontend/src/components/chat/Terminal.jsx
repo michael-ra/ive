@@ -598,7 +598,19 @@ export default function TerminalView({ sessionId }) {
     const doResize = () => {
       fitWithMinimum()
       const ws = useStore.getState().ws
-      if (ws?.readyState === WebSocket.OPEN && term.cols > 0 && term.rows > 0) {
+      // Skip the WS send until start_pty has been sent. ResizeObserver,
+      // IntersectionObserver, and the cc-terminal-refit listener all fire on
+      // mount, but start_pty is deferred by 2 frames + 200ms so layout can
+      // settle before measuring. Backend WS messages are processed serially,
+      // so any resize arriving before start_pty hits is_alive() → False and
+      // replies "Session not running", which then renders as a red error
+      // line in the xterm buffer.
+      if (
+        ws?.readyState === WebSocket.OPEN
+        && term.cols > 0
+        && term.rows > 0
+        && startedSessions.has(sessionId)
+      ) {
         ws.send(JSON.stringify({
           action: 'resize',
           session_id: sessionId,
@@ -638,7 +650,13 @@ export default function TerminalView({ sessionId }) {
     // Refit immediately on grid layout / workspace changes (dispatched by App.jsx).
     // Bypasses the 200ms debounce in sendResize since the event is already
     // appropriately timed (double-rAF from the grid refit effect).
-    const refitListener = () => doResize()
+    // Also bump activity so the 1Hz safety net runs for ~3s after a refit —
+    // the most common refit trigger is a tab becoming active (isActive effect
+    // dispatches cc-terminal-refit), and a freshly-revealed terminal whose
+    // last write was minutes ago needs the safety net to cover slow opacity
+    // transitions and renderer resync without us having to stagger a dozen
+    // explicit forceRefresh timeouts here.
+    const refitListener = () => { bumpActivity(); doResize() }
     window.addEventListener('cc-terminal-refit', refitListener)
 
     // IntersectionObserver: detect when this terminal transitions from

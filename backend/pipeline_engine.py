@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _pty_manager = None
 _broadcast_fn = None
+_pty_start_fn = None  # async (session_id) → None; injected from server.py to start PTYs for auto-created sessions (BUG H6)
 
 # In-memory tracking for fast lookup — guarded by _state_lock
 _session_to_run: dict[str, str] = {}        # session_id → run_id
@@ -40,6 +41,15 @@ _state_lock = asyncio.Lock()                 # protects all dicts above
 
 ADVANCE_DELAY_S = 1.5
 DEFAULT_MAX_ITERATIONS = 20
+
+
+class PipelineVariableError(ValueError):
+    """Raised when a pipeline run references unknown {variable} placeholders."""
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(f"unknown variables: {', '.join(missing)}")
+
 
 # Sensible defaults per session_type — used when stage has no explicit agent_config
 SESSION_TYPE_DEFAULTS = {
@@ -61,6 +71,13 @@ def set_pty_manager(mgr):
 def set_broadcast_fn(fn):
     global _broadcast_fn
     _broadcast_fn = fn
+
+
+def set_pty_start_fn(fn):
+    """Inject server.py's _autostart_session_pty so the engine can boot PTYs
+    for sessions it auto-creates without forcing a circular import."""
+    global _pty_start_fn
+    _pty_start_fn = fn
 
 
 # ── CRUD for Pipeline Definitions ───────────────────────────────────
@@ -241,9 +258,17 @@ async def start_run(
     # Drop empty user overrides so task defaults show through
     merged_vars = {k: v for k, v in merged_vars.items() if v}
 
-    run_id = str(uuid.uuid4())
     stages = defn.get("stages", [])
     transitions = defn.get("transitions", [])
+
+    # BUG M10: validate that every {var} in stage prompts has a binding,
+    # otherwise the literal "{var}" reaches the agent and looks like a typo.
+    referenced = _collect_referenced_variables(stages)
+    missing = sorted(v for v in referenced if v not in merged_vars)
+    if missing:
+        raise PipelineVariableError(missing)
+
+    run_id = str(uuid.uuid4())
 
     # Find entry stages (no incoming transitions)
     target_ids = {t["target"] for t in transitions}
@@ -262,33 +287,46 @@ async def start_run(
             "output_summary": None,
         }
 
+    # Claim the task BEFORE the DB commit so any concurrent auto_exec
+    # dispatch sees the pipeline ownership immediately. If the commit
+    # fails we discard the claim — better to drop a transient claim than
+    # leave the DB committed without the in-memory marker (which would
+    # let auto_exec double-dispatch).
+    if task_id:
+        async with _state_lock:
+            _pipeline_task_ids.add(task_id)
+
     db = await get_db()
     try:
-        await db.execute(
-            """INSERT INTO pipeline_runs
-               (id, pipeline_id, workspace_id, task_id, status,
-                current_stages, iteration, max_iterations,
-                variables, stage_history, trigger_type)
-               VALUES (?, ?, ?, ?, 'running', ?, 1, ?, ?, ?, ?)""",
-            (
-                run_id, pipeline_id, ws_id, task_id,
-                json.dumps([s["id"] for s in entry_stages]),
-                DEFAULT_MAX_ITERATIONS,
-                json.dumps(merged_vars),
-                json.dumps(stage_history),
-                trigger_type,
-            ),
-        )
-        await db.commit()
+        try:
+            await db.execute(
+                """INSERT INTO pipeline_runs
+                   (id, pipeline_id, workspace_id, task_id, status,
+                    current_stages, iteration, max_iterations,
+                    variables, stage_history, trigger_type)
+                   VALUES (?, ?, ?, ?, 'running', ?, 1, ?, ?, ?, ?)""",
+                (
+                    run_id, pipeline_id, ws_id, task_id,
+                    json.dumps([s["id"] for s in entry_stages]),
+                    DEFAULT_MAX_ITERATIONS,
+                    json.dumps(merged_vars),
+                    json.dumps(stage_history),
+                    trigger_type,
+                ),
+            )
+            await db.commit()
+        except Exception:
+            # Roll back the in-memory claim if persistence failed.
+            if task_id:
+                async with _state_lock:
+                    _pipeline_task_ids.discard(task_id)
+            raise
     finally:
         await db.close()
 
     run = await get_run(run_id)
     async with _state_lock:
         _active_runs[run_id] = run
-        # Track task so auto_exec skips it while pipeline handles it
-        if task_id:
-            _pipeline_task_ids.add(task_id)
 
     await bus.emit(CommanderEvent.PIPELINE_STARTED, {
         "pipeline_id": pipeline_id,
@@ -309,6 +347,15 @@ async def start_run(
 
 
 async def pause_run(run_id: str) -> Optional[dict]:
+    # BUG M11: previously this UPDATE silently no-op'd on terminal-state
+    # runs and the caller still got 200 with the stale row, so they
+    # couldn't tell "paused" from "ignored because already failed". Reject
+    # explicitly when the run is not running.
+    run = await get_run(run_id)
+    if not run:
+        return None
+    if run["status"] != "running":
+        return {"_pause_no_op": True, **run}
     db = await get_db()
     try:
         await db.execute(
@@ -318,7 +365,6 @@ async def pause_run(run_id: str) -> Optional[dict]:
         await db.commit()
     finally:
         await db.close()
-    # Cancel any pending timers
     run = await get_run(run_id)
     if run:
         async with _state_lock:
@@ -329,8 +375,17 @@ async def pause_run(run_id: str) -> Optional[dict]:
 
 async def resume_run(run_id: str) -> Optional[dict]:
     run = await get_run(run_id)
-    if not run or run["status"] != "paused":
-        return run
+    if not run:
+        return None
+    status = run["status"]
+    if status != "paused":
+        # BUG M11: signal "ignored, was not paused" via sentinel so the
+        # REST handler can return 409 instead of 200 with stale state.
+        # Terminal states (cancelled/completed/failed) are an even harder
+        # rejection — a finished run cannot be brought back to life.
+        # We still use the same sentinel for backwards compatibility with
+        # the REST handler that pops _resume_no_op.
+        return {"_resume_no_op": True, **run}
     db = await get_db()
     try:
         await db.execute(
@@ -395,6 +450,23 @@ async def get_run(run_id: str) -> Optional[dict]:
         cur = await db.execute("SELECT * FROM pipeline_runs WHERE id = ?", (run_id,))
         row = await cur.fetchone()
         return _deserialize_run(dict(row)) if row else None
+    finally:
+        await db.close()
+
+
+async def delete_run(run_id: str) -> bool:
+    """Hard-delete a run row. Cancels in-flight state first so callers don't
+    leak timers/mappings. Mirrors cascade_runs which already had DELETE."""
+    run = await get_run(run_id)
+    if not run:
+        return False
+    if run["status"] in ("running", "paused"):
+        await cancel_run(run_id)
+    db = await get_db()
+    try:
+        cur = await db.execute("DELETE FROM pipeline_runs WHERE id = ?", (run_id,))
+        await db.commit()
+        return cur.rowcount > 0
     finally:
         await db.close()
 
@@ -1077,14 +1149,37 @@ async def _auto_create_session(
     type_label = session_type.capitalize() if session_type != "worker" else "Worker"
     name = f"Pipeline {type_label} ({cli_label})"
 
+    # Commander-typed pipeline stages need the orchestrator system prompt,
+    # the tool deny-list, and the builtin-commander MCP attached — otherwise
+    # the auto-created session is a bare Claude with no delegation tools and
+    # no enforcement, so it falls back to implementing inline.
+    extra_system_prompt = None
+    extra_disallowed = None
+    attach_commander_mcp = False
+    if session_type == "commander":
+        try:
+            from config import COMMANDER_SYSTEM_PROMPT, COMMANDER_DISALLOWED_TOOLS
+            extra_system_prompt = COMMANDER_SYSTEM_PROMPT
+            extra_disallowed = json.dumps(COMMANDER_DISALLOWED_TOOLS)
+            attach_commander_mcp = True
+        except Exception as _e:
+            logger.warning("Pipeline: could not load Commander config: %s", _e)
+
     await db.execute(
         """INSERT INTO sessions
            (id, workspace_id, name, model, permission_mode, effort,
-            session_type, cli_type, auto_approve_mcp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+            session_type, cli_type, auto_approve_mcp,
+            system_prompt, disallowed_tools)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
         (session_id, workspace_id, name, model, permission_mode, effort,
-         session_type, resolved_cli),
+         session_type, resolved_cli, extra_system_prompt, extra_disallowed),
     )
+    if attach_commander_mcp:
+        await db.execute(
+            "INSERT OR IGNORE INTO session_mcp_servers "
+            "(session_id, mcp_server_id, auto_approve_override) VALUES (?, ?, 1)",
+            (session_id, "builtin-commander"),
+        )
     await db.commit()
 
     logger.info("Pipeline: auto-created %s %s session %s", resolved_cli, session_type, session_id[:8])
@@ -1093,6 +1188,16 @@ async def _auto_create_session(
         cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         session = dict(await cur.fetchone())
         await _broadcast_fn({"type": "session_created", "session": session})
+
+    # BUG H6: previously the row was inserted but no PTY was ever started, so
+    # the very next stage failed the is_alive check. Boot the PTY now via the
+    # injected hook (set_pty_start_fn). Without it the auto-create silently
+    # leaves the run unable to advance.
+    if _pty_start_fn:
+        try:
+            await _pty_start_fn(session_id)
+        except Exception as e:
+            logger.warning("Pipeline auto-start PTY failed for %s: %s", session_id[:8], e)
 
     return session_id
 
@@ -1107,6 +1212,25 @@ async def _capture_output_summary(session_id: str) -> str:
         return ""
     except Exception:
         return ""
+
+
+_VAR_RE = None
+
+
+def _collect_referenced_variables(stages: list[dict]) -> set[str]:
+    """Find every {var} placeholder referenced in any stage prompt template."""
+    import re
+    global _VAR_RE
+    if _VAR_RE is None:
+        _VAR_RE = re.compile(r'\{([a-zA-Z_]\w*)\}')
+    seen: set[str] = set()
+    for s in stages or []:
+        tpl = s.get("prompt_template") or ""
+        if not tpl:
+            continue
+        for m in _VAR_RE.findall(tpl):
+            seen.add(m)
+    return seen
 
 
 def _build_prompt(stage: dict, run: dict) -> str:
@@ -1237,7 +1361,7 @@ async def _trigger_matches(
     filters = trigger.get("filters", {})
 
     if ttype == "board_column":
-        if event_name != str(CommanderEvent.TASK_STATUS_CHANGED):
+        if event_name != CommanderEvent.TASK_STATUS_CHANGED.value:
             return False
         target_column = config.get("column", "")
         new_status = payload.get("new_status", "")
@@ -1297,7 +1421,7 @@ async def _broadcast_run(run: Optional[dict]):
 PRESETS = {
     "research-loop": {
         "name": "Research Loop",
-        "description": "Research -> Plan -> Implement -> Test -> Loop. The full CI/CD agent cycle.",
+        "description": "Research -> Plan -> Implement -> Test -> Document -> Loop. The full CI/CD agent cycle, ending with docs once tests pass.",
         "stages": [
             {
                 "id": "research", "name": "Research", "type": "agent",
@@ -1331,14 +1455,22 @@ PRESETS = {
                            "pass_keywords": ["pass", "passed", "success", "all tests"],
                            "fail_keywords": ["fail", "failed", "error", "broken"]},
             },
+            {
+                "id": "document", "name": "Document", "type": "agent",
+                "session_type": "documentor",
+                "prompt_template": "Document the just-shipped changes for {topic}. Capture screenshots of new UI, record GIF workflows for new flows, and update the docs site. Use the documentor MCP tools (screenshot_page, record_workflow, update_docs_manifest, build_docs).",
+                "position": {"x": 1280, "y": 200}, "config": {"icon": "book-open"},
+                "agent_config": {"model": "sonnet", "permission_mode": "auto", "effort": "high"},
+            },
         ],
         "transitions": [
             {"id": "t1", "source": "research", "target": "plan", "condition": "always", "label": ""},
             {"id": "t2", "source": "plan", "target": "implement", "condition": "always", "label": ""},
             {"id": "t3", "source": "implement", "target": "test", "condition": "always", "label": ""},
             {"id": "t4", "source": "test", "target": "evaluate", "condition": "always", "label": ""},
-            {"id": "t5", "source": "evaluate", "target": "research", "condition": "on_pass", "label": "Next cycle", "condition_config": {}},
+            {"id": "t5", "source": "evaluate", "target": "document", "condition": "on_pass", "label": "Document", "condition_config": {}},
             {"id": "t6", "source": "evaluate", "target": "implement", "condition": "on_fail", "label": "Retry", "condition_config": {}},
+            {"id": "t7", "source": "document", "target": "research", "condition": "always", "label": "Next cycle"},
         ],
         "triggers": [],
     },
@@ -1611,6 +1743,31 @@ async def ensure_presets():
     """Create or update built-in preset pipelines."""
     db = await get_db()
     try:
+        # BUG L9: older code paths inserted presets with preset_key=NULL, so
+        # repeat startups accumulated duplicates. Backfill preset_key on
+        # legacy rows by matching on name (the only stable identifier we
+        # had at the time) and then delete any extra duplicates that share
+        # the same preset_key, keeping the oldest.
+        for key, preset in PRESETS.items():
+            await db.execute(
+                """UPDATE pipeline_definitions
+                   SET preset_key = ?
+                   WHERE preset_key IS NULL AND preset = 1 AND name = ?""",
+                (key, preset["name"]),
+            )
+            # Keep oldest, delete the rest
+            await db.execute(
+                """DELETE FROM pipeline_definitions
+                   WHERE preset_key = ?
+                     AND id NOT IN (
+                         SELECT id FROM pipeline_definitions
+                         WHERE preset_key = ?
+                         ORDER BY created_at ASC, id ASC
+                         LIMIT 1
+                     )""",
+                (key, key),
+            )
+
         for key, preset in PRESETS.items():
             cur = await db.execute(
                 "SELECT id FROM pipeline_definitions WHERE preset_key = ?", (key,)

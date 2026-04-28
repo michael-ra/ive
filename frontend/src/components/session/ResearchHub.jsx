@@ -51,7 +51,7 @@ const PHASE_LABEL = {
 }
 
 const statusColor = (s) =>
-  s === 'complete' || s === 'completed' ? 'text-green-400' : s === 'in_progress' ? 'text-amber-400' : 'text-text-faint'
+  s === 'complete' || s === 'completed' ? 'text-green-400' : s === 'in_progress' ? 'text-amber-400' : s === 'failed' ? 'text-red-400' : 'text-text-faint'
 
 // ── Component ───────────────────────────────────────────────────────
 
@@ -221,11 +221,14 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
     const onDone = (e) => {
       loadEntries(); loadJobs()
       const eid = e?.detail?.entry_id
+      const status = e?.detail?.status || 'done'
+      const err = e?.detail?.error
       if (eid && selected?.id === eid) api.getResearchEntry(eid).then(setSelected).catch(() => {})
       if (eid) {
+        const line = err ? `Research ${status}: ${err}` : `Research ${status}`
         setProgressLog((prev) => ({
           ...prev,
-          [eid]: [...(prev[eid] || []), { ts: ts(), line: `Research ${e?.detail?.status || 'done'}`, done: true }],
+          [eid]: [...(prev[eid] || []), { ts: ts(), line, done: true, failed: status === 'failed' }],
         }))
       }
       setActiveJobId(null)
@@ -871,7 +874,7 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
                         <div key={i} className={`flex gap-2 ${l.done ? 'text-green-400' : l.start ? 'text-cyan-400' : 'text-text-muted'}`}>
                           <span className="text-text-faint shrink-0">{l.ts}</span>
                           {l.phase && <span className="text-text-faint shrink-0 w-3 text-center">{PHASE_ICON[l.phase] || '·'}</span>}
-                          <span className={l.line.startsWith('Tool:') ? 'text-amber-400/80' : l.phase === 'steer' ? 'text-pink-400' : l.phase === 'awaiting' ? 'text-amber-300' : ''}>{l.line}</span>
+                          <span className={l.failed ? 'text-red-400' : l.line.startsWith('Tool:') ? 'text-amber-400/80' : l.phase === 'steer' ? 'text-pink-400' : l.phase === 'awaiting' ? 'text-amber-300' : ''}>{l.line}</span>
                         </div>
                       )) : <div className="text-text-faint">Waiting for progress...</div>}
                       <div ref={progressEndRef} />
@@ -971,7 +974,7 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
                       }`}>
                       <div className="flex items-center gap-1.5">
                         <span className={`text-[10px] font-medium ${statusColor(entry.status)}`}>
-                          {entry.status === 'complete' || entry.status === 'completed' ? '✓' : entry.status === 'in_progress' ? '◉' : '○'}
+                          {entry.status === 'complete' || entry.status === 'completed' ? '✓' : entry.status === 'in_progress' ? '◉' : entry.status === 'failed' ? '✗' : '○'}
                         </span>
                         <span className="text-xs text-text-primary truncate flex-1">{entry.topic}</span>
                         {entry.status === 'pending' && (
@@ -1053,7 +1056,7 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
                                   <div key={i} className={`flex gap-2 ${l.done ? 'text-green-400' : l.start ? 'text-cyan-400' : 'text-text-muted'}`}>
                                     <span className="text-text-faint shrink-0">{l.ts}</span>
                                     {l.phase && <span className="text-text-faint shrink-0 w-3 text-center">{PHASE_ICON[l.phase] || '·'}</span>}
-                                    <span className={l.line.startsWith('Tool:') ? 'text-amber-400/80' : l.phase === 'steer' ? 'text-pink-400' : ''}>{l.line}</span>
+                                    <span className={l.failed ? 'text-red-400' : l.line.startsWith('Tool:') ? 'text-amber-400/80' : l.phase === 'steer' ? 'text-pink-400' : ''}>{l.line}</span>
                                   </div>
                                 )) : <div className="text-text-faint">Waiting for progress events...</div>}
                                 <div ref={progressEndRef} />

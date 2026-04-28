@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, FolderOpen, MessageSquare, ChevronDown, ChevronRight, Trash2, Search, Crown, Kanban, GitCompareArrows, GripVertical, Shield, Server, Check, GitMerge, FlaskConical, BookOpenCheck, FileText, Pencil, Copy, ClipboardCopy, Square, ExternalLink, Download, Telescope, Archive, ArchiveRestore, Sparkles, Settings } from 'lucide-react'
+import { Plus, FolderOpen, MessageSquare, ChevronDown, ChevronRight, Trash2, Search, Crown, Kanban, GitCompareArrows, GripVertical, Shield, Server, Check, GitMerge, FlaskConical, BookOpenCheck, FileText, Pencil, Copy, ClipboardCopy, Square, ExternalLink, Download, Telescope, Archive, ArchiveRestore, Sparkles, Settings, CopyPlus } from 'lucide-react'
 import MergeDialog from '../session/MergeDialog'
+import ModeBadge from '../auth/ModeBadge'
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
 import { sendTerminalCommand } from '../../lib/terminal'
@@ -11,9 +12,20 @@ function SessionContextMenu({ x, y, session, onClose }) {
   const menuRef = useRef(null)
 
   useEffect(() => {
-    const handler = () => onClose()
-    window.addEventListener('click', handler)
-    return () => window.removeEventListener('click', handler)
+    const clickHandler = () => onClose()
+    const keyHandler = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('click', clickHandler)
+    window.addEventListener('keydown', keyHandler, true)
+    return () => {
+      window.removeEventListener('click', clickHandler)
+      window.removeEventListener('keydown', keyHandler, true)
+    }
   }, [onClose])
 
   // Clamp menu position so it doesn't overflow the viewport
@@ -93,11 +105,23 @@ function SessionContextMenu({ x, y, session, onClose }) {
     onClose()
   }
 
+  const handleClone = async () => {
+    try {
+      const cloned = await api.cloneSession(session.id)
+      if (cloned?.id) {
+        useStore.getState().loadSessions([cloned])
+        useStore.getState().openSession(cloned.id)
+      }
+    } catch { /* silent */ }
+    onClose()
+  }
+
   const isRunning = session.status === 'running'
 
   const items = [
     { icon: ExternalLink, label: 'Open', action: handleOpen },
     { icon: Pencil, label: 'Rename', action: handleRename },
+    { icon: CopyPlus, label: 'Clone', action: handleClone },
     null, // separator
     { icon: ClipboardCopy, label: 'Copy output', action: handleCopyOutput },
     { icon: Copy, label: 'Copy last message', action: handleCopyMessages },
@@ -782,7 +806,7 @@ function NewSessionForm({ workspaceId, onClose }) {
   )
 }
 
-export default function Sidebar() {
+export default function Sidebar({ onWorkspaceCreated } = {}) {
   const workspaces = useStore((s) => s.workspaces)
   const sessions = useStore((s) => s.sessions)
   const activeSessionId = useStore((s) => s.activeSessionId)
@@ -914,6 +938,7 @@ export default function Sidebar() {
       setNewPath('')
       setShowAddWs(false)
       setExpanded((p) => ({ ...p, [ws.id]: true }))
+      onWorkspaceCreated?.(ws)
     } catch (err) {
       console.error('Failed to create workspace:', err)
     }
@@ -988,6 +1013,7 @@ export default function Sidebar() {
             </svg>
             <span className="text-[11px] font-extrabold font-mono text-text-secondary uppercase tracking-[0.15em]">IVE</span>
             {appVersion && <span className="text-[9px] font-mono text-text-faint/50">v{appVersion}</span>}
+            <ModeBadge compact />
           </div>
           <div className="flex items-center gap-0.5">
             <MailboxPill position="below" />

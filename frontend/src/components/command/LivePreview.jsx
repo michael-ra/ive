@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Camera, ExternalLink, X, Loader2, RefreshCw, Maximize2, Minimize2, Mic, StickyNote, Trash2, Zap, ChevronRight, Download, Paperclip, Search, Server } from 'lucide-react'
 import useStore from '../../state/store'
 import { api, rewriteLocalPreviewUrl, demoApi, localPreviewUrl } from '../../lib/api'
+import useMediaQuery from '../../hooks/useMediaQuery'
 import DemoPanel from './DemoPanel'
 
 export default function LivePreview({ url: initialUrl, taskId: initialTaskId, onScreenshot, onClose }) {
@@ -25,12 +26,17 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
   const [subscriberId, setSubscriberId] = useState(null)
   const [driverDeniedAt, setDriverDeniedAt] = useState(0)
   const isDriver = !shared || (driverId !== null && driverId === subscriberId)
+  const isMobile = useMediaQuery('(max-width: 767px)')
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
   const urlInputRef = useRef(null)
   const wsRef = useRef(null)
   const imgCache = useRef(new Image())
   const lastMouseMove = useRef(0)
+  // Touch-pointer tracking: tap → click, drag → wheel scroll. Without this,
+  // tapping the canvas on a phone does nothing (canvas only handled mouse
+  // events) and scrolling wasn't possible at all over a tunnel.
+  const touchPointer = useRef(null) // { startX, startY, lastX, lastY, moved }
 
   // ── Voice annotation state ──────────────────────────────
   const [notes, setNotes] = useState([])
@@ -287,6 +293,90 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
       },
     }))
   }, [previewId])
+
+  // ── Touch handling ──────────────────────────────────────
+  // Touch events run alongside the existing mouse-event path; calling
+  // preventDefault on touchstart suppresses the synthetic mousedown/up
+  // that iOS/Android otherwise fire after a tap, so we don't double-send.
+  // Tap → synthesize click; single-finger drag → wheel scroll (Playwright's
+  // mouse driver has no native touch path).
+  const TAP_SLOP = 8
+  const sendWheelDelta = useCallback((clientX, clientY, dx, dy) => {
+    if (!previewId || !wsRef.current || !canvasRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const scaleX = canvasRef.current.width / rect.width
+    const scaleY = canvasRef.current.height / rect.height
+    wsRef.current.send(JSON.stringify({
+      action: 'preview_input',
+      preview_id: previewId,
+      event: {
+        type: 'wheel',
+        x: Math.round((clientX - rect.left) * scaleX),
+        y: Math.round((clientY - rect.top) * scaleY),
+        deltaX: dx, deltaY: dy,
+        altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+      },
+    }))
+  }, [previewId])
+
+  const sendSyntheticMouse = useCallback((type, clientX, clientY) => {
+    if (!previewId || !wsRef.current || !canvasRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const scaleX = canvasRef.current.width / rect.width
+    const scaleY = canvasRef.current.height / rect.height
+    wsRef.current.send(JSON.stringify({
+      action: 'preview_input',
+      preview_id: previewId,
+      event: {
+        type,
+        x: Math.round((clientX - rect.left) * scaleX),
+        y: Math.round((clientY - rect.top) * scaleY),
+        button: 'left', clickCount: 1,
+        altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+      },
+    }))
+  }, [previewId])
+
+  const onTouchStart = useCallback((e) => {
+    if (e.touches.length !== 1) return
+    e.preventDefault()
+    const t = e.touches[0]
+    touchPointer.current = {
+      startX: t.clientX, startY: t.clientY,
+      lastX: t.clientX, lastY: t.clientY,
+      moved: false,
+    }
+    ensureDriver()
+  }, [ensureDriver])
+
+  const onTouchMove = useCallback((e) => {
+    if (e.touches.length !== 1) return
+    const t = touchPointer.current
+    if (!t) return
+    e.preventDefault()
+    const touch = e.touches[0]
+    const dxFromStart = touch.clientX - t.startX
+    const dyFromStart = touch.clientY - t.startY
+    if (!t.moved && Math.hypot(dxFromStart, dyFromStart) < TAP_SLOP) return
+    t.moved = true
+    // Finger up = page scrolls down → invert deltas.
+    const dx = t.lastX - touch.clientX
+    const dy = t.lastY - touch.clientY
+    t.lastX = touch.clientX
+    t.lastY = touch.clientY
+    if (dx || dy) sendWheelDelta(touch.clientX, touch.clientY, dx, dy)
+  }, [sendWheelDelta])
+
+  const onTouchEnd = useCallback((e) => {
+    const t = touchPointer.current
+    touchPointer.current = null
+    if (!t) return
+    e.preventDefault()
+    if (!t.moved) {
+      sendSyntheticMouse('mousedown', t.lastX, t.lastY)
+      sendSyntheticMouse('mouseup', t.lastX, t.lastY)
+    }
+  }, [sendSyntheticMouse])
 
   const sendKeyEvent = useCallback((type, e) => {
     if (!previewId || !wsRef.current) return
@@ -599,10 +689,11 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
     <div className="fixed inset-0 z-50 flex flex-col bg-black/80">
       {/* ── Toolbar ──────────────────────────────────────── */}
       <div
-        className={`flex items-center gap-2 px-3 py-2 bg-[#111118]/95 border-b border-zinc-800 backdrop-blur-sm transition-all ${
+        className={`flex items-center gap-2 px-3 py-2 bg-[#111118]/95 border-b border-zinc-800 backdrop-blur-sm transition-all overflow-x-auto ${
           toolbarCollapsed ? 'opacity-30 hover:opacity-100 h-8' : ''
         }`}
         onMouseEnter={() => toolbarCollapsed && setToolbarCollapsed(false)}
+        style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top, 0px))' }}
       >
         <Camera size={14} className="text-indigo-400 shrink-0" />
         <span className="text-[11px] text-zinc-400 font-mono shrink-0">Preview</span>
@@ -634,7 +725,7 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
           ref={urlInputRef} type="text" value={currentUrl}
           onChange={(e) => setCurrentUrl(e.target.value)}
           onKeyDown={handleUrlKeyDown}
-          className="flex-1 min-w-0 px-2.5 py-1 text-[11px] font-mono bg-zinc-900 border border-zinc-700 rounded text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-indigo-500/50"
+          className="flex-1 min-w-[140px] px-2.5 py-1 text-[11px] font-mono bg-zinc-900 border border-zinc-700 rounded text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-indigo-500/50"
           placeholder="URL"
         />
 
@@ -643,10 +734,25 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
         </button>
 
         <button onClick={handleCapture} disabled={capturing || needsInstall}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium bg-indigo-600/25 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 rounded transition-colors disabled:opacity-50">
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium bg-indigo-600/25 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 rounded transition-colors disabled:opacity-50 shrink-0">
           {capturing ? <Loader2 size={12} className="animate-spin" /> : <Camera size={12} />}
-          {capturing ? 'Capturing...' : 'Screenshot'}
-          <kbd className="text-[9px] text-indigo-400/50 bg-indigo-900/30 px-1 py-0.5 rounded">⌘↵</kbd>
+          <span className="hidden sm:inline">{capturing ? 'Capturing...' : 'Screenshot'}</span>
+          <kbd className="text-[9px] text-indigo-400/50 bg-indigo-900/30 px-1 py-0.5 rounded hidden sm:inline">⌘↵</kbd>
+        </button>
+
+        {/* Tap-to-record mic toggle — replaces hold-⌘R for touch devices.
+            Click once to start recording, click again to stop and save the
+            note. Works on desktop too as a click-friendly alternative. */}
+        <button
+          onClick={() => (recording ? stopRecording() : startRecording())}
+          className={`flex items-center justify-center p-1.5 rounded border transition-colors shrink-0 ${
+            recording
+              ? 'bg-red-500/25 border-red-500/40 text-red-300 animate-pulse'
+              : 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:text-zinc-200'
+          }`}
+          title={recording ? 'Stop recording' : 'Record voice note'}
+        >
+          <Mic size={13} />
         </button>
 
         {/* Demo badge + Pull Latest */}
@@ -773,9 +879,14 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
               ref={canvasRef}
               className="absolute inset-0 w-full h-full bg-white cursor-default"
               tabIndex={0}
+              style={{ touchAction: 'none' }}
               onMouseDown={(e) => { e.preventDefault(); sendMouseEvent('mousedown', e) }}
               onMouseUp={(e) => sendMouseEvent('mouseup', e)}
               onMouseMove={(e) => sendMouseEvent('mousemove', e)}
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
+              onTouchCancel={onTouchEnd}
               onWheel={(e) => { e.preventDefault(); sendWheelEvent(e) }}
               onKeyDown={(e) => sendKeyEvent('keydown', e)}
               onKeyUp={(e) => sendKeyEvent('keyup', e)}
@@ -795,18 +906,30 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
           )}
         </div>
 
-        {/* ── Demo panel (right sidebar) ────────────────── */}
+        {/* ── Demo panel (right sidebar; full-width drawer on mobile) ── */}
         {demoOpen && wsId && (
-          <DemoPanel
-            workspaceId={wsId}
-            onClose={() => setDemoOpen(false)}
-            onPreviewUrl={(u) => { setCurrentUrl(u); doNavigate(u) }}
-          />
+          <div
+            className={
+              isMobile
+                ? 'absolute inset-0 z-30 flex [&>*]:w-full [&>*]:!w-full'
+                : 'contents'
+            }
+          >
+            <DemoPanel
+              workspaceId={wsId}
+              onClose={() => setDemoOpen(false)}
+              onPreviewUrl={(u) => { setCurrentUrl(u); doNavigate(u) }}
+            />
+          </div>
         )}
 
-        {/* ── Notes panel (right sidebar) ───────────────── */}
+        {/* ── Notes panel (right sidebar; full-width drawer on mobile) ── */}
         {notesOpen && (
-          <div className="w-[280px] bg-[#0c0c12] border-l border-zinc-800 flex flex-col shrink-0">
+          <div className={`bg-[#0c0c12] border-l border-zinc-800 flex flex-col shrink-0 ${
+            isMobile
+              ? 'absolute inset-y-0 right-0 left-0 z-30 border-l-0'
+              : 'w-[280px]'
+          }`}>
             {/* Panel header */}
             <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800">
               <StickyNote size={12} className="text-amber-400" />

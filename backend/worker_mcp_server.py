@@ -26,6 +26,16 @@ def api_call(method: str, path: str, body: dict | None = None) -> dict | list:
     url = f"{API_URL}/api{path}"
     data = json.dumps(body).encode() if body else None
     headers = {"Content-Type": "application/json"} if body else {}
+    # Identify the caller so the backend can apply per-session scoping
+    # (task ownership, planner-only routes, workspace pinning). The headers
+    # come from env injected at PTY start; see _autostart_session_pty and
+    # the start_pty path in server.py.
+    if SESSION_ID:
+        headers["X-IVE-Session-Id"] = SESSION_ID
+    if SESSION_TYPE:
+        headers["X-IVE-Session-Type"] = SESSION_TYPE
+    if WORKSPACE_ID:
+        headers["X-IVE-Workspace-Id"] = WORKSPACE_ID
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -59,11 +69,16 @@ def tool_get_my_tasks(args: dict) -> str:
 
 
 def tool_get_my_task(args: dict) -> str:
-    """Get full details of an assigned task."""
+    """Get full details of an assigned task, including attachments."""
     task_id = args["task_id"]
     task = _is_my_task(task_id)
     if not task:
         return json.dumps({"error": "Task not found or not assigned to this session"})
+    # Pull attachments separately — image paths land here so the worker
+    # can actually read referenced screenshots/diagrams.
+    attachments = api_call("GET", f"/tasks/{task_id}/attachments")
+    if isinstance(attachments, list):
+        task["attachments"] = attachments
     return json.dumps(task, indent=2)
 
 
@@ -304,6 +319,11 @@ def tool_save_memory(args: dict) -> str:
         return json.dumps({
             "ok": False,
             "error": f"type must be one of {sorted(VALID_MEMORY_TYPES)}",
+        })
+    if not (WORKSPACE_ID or "").strip():
+        return json.dumps({
+            "ok": False,
+            "error": "WORKSPACE_ID not bound on this worker; refusing to save a global memory entry",
         })
 
     # Idempotent on `name` within this workspace: look up first, update if
@@ -582,6 +602,27 @@ TOOLS = {
             "required": ["task_id"],
         },
     },
+    "search_memory": {
+        "handler": tool_search_memory,
+        "description": (
+            "USE THIS BEFORE you start coding. The workspace's accumulated playbook lives "
+            "here — past tasks with lessons learned, session digests, knowledge base entries, "
+            "peer messages, and file activity. If a peer hit the same gotcha last week, the "
+            "answer is searchable right now. Trigger checklist: (1) before editing an "
+            "unfamiliar module — what conventions has this codebase settled on? (2) before "
+            "picking an approach — was this rejected by a previous worker? (3) before "
+            "asking the user — has the user already answered this for someone else? Returns "
+            "results grouped by type with relevance scores."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for. Semantic matching for tasks/digests/knowledge, keyword for messages/files."},
+                "types": {"type": "string", "description": "Comma-separated types to search: tasks,digests,knowledge,messages,files. Default: all."},
+            },
+            "required": ["query"],
+        },
+    },
     "save_memory": {
         "handler": tool_save_memory,
         "description": (
@@ -666,27 +707,8 @@ W2W_COMMS_TOOLS = {
 }
 
 W2W_CONTEXT_TOOLS = {
-    "search_memory": {
-        "handler": tool_search_memory,
-        "description": (
-            "USE THIS BEFORE you start coding. The workspace's accumulated playbook lives "
-            "here — past tasks with lessons learned, session digests, knowledge base entries, "
-            "peer messages, and file activity. If a peer hit the same gotcha last week, the "
-            "answer is searchable right now. Trigger checklist: (1) before editing an "
-            "unfamiliar module — what conventions has this codebase settled on? (2) before "
-            "picking an approach — was this rejected by a previous worker? (3) before "
-            "asking the user — has the user already answered this for someone else? Returns "
-            "results grouped by type with relevance scores."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "What to search for. Semantic matching for tasks/digests/knowledge, keyword for messages/files."},
-                "types": {"type": "string", "description": "Comma-separated types to search: tasks,digests,knowledge,messages,files. Default: all."},
-            },
-            "required": ["query"],
-        },
-    },
+    # search_memory is now in base TOOLS — every worker should be able to
+    # query its own workspace's memory regardless of W2W context-sharing.
     "find_similar_sessions": {
         "handler": tool_find_similar_sessions,
         "description": (

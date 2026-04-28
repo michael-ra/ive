@@ -900,6 +900,70 @@ CREATE TABLE IF NOT EXISTS observatory_sources (
     PRIMARY KEY (workspace_id, source)
 );
 
+-- ─── Observatory: prose-based project profile (per workspace) ────────
+-- The profile is a JSON dict of markdown strings. Nothing here is
+-- keyword-matched — every downstream LLM call consumes the prose as
+-- context. Sections cover identity, interests, current_stack,
+-- competitors, audience, tone, dismissal_patterns.
+CREATE TABLE IF NOT EXISTS observatory_profiles (
+    workspace_id TEXT PRIMARY KEY,
+    profile TEXT NOT NULL DEFAULT '{}',
+    last_recalibration_notes TEXT DEFAULT '',
+    inputs_hash TEXT,
+    generated_at TEXT,
+    user_edited_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ─── Observatory: curated search-target list (LLM-aggregated) ────────
+-- Sub-sources the LLM has decided are worth scanning: subreddits, GitHub
+-- topics, Product Hunt categories, X hashtags, search-query strings.
+-- Persists across scans; the planner reads the existing list, scores
+-- yields, proposes additions, and retires low-signal targets.
+CREATE TABLE IF NOT EXISTS observatory_search_targets (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    source TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    value TEXT NOT NULL,
+    rationale TEXT,
+    status TEXT DEFAULT 'active',
+    added_by TEXT,
+    hit_count INTEGER DEFAULT 0,
+    yield_count INTEGER DEFAULT 0,
+    signal_score REAL DEFAULT 0.5,
+    last_scanned_at TEXT,
+    last_yielded_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(workspace_id, source, target_type, value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_observatory_targets_lookup
+    ON observatory_search_targets(workspace_id, source, status);
+
+-- ─── Observatory: aggregated insights memory ─────────────────────────
+-- Distilled, deduped facts the LLM derives from findings over time:
+-- competitors observed, recurring user pain points, feature gaps,
+-- already-shipped integrations the scanner should stop re-flagging.
+-- Each insight has a strength score and evidence pointing back to the
+-- source findings.
+CREATE TABLE IF NOT EXISTS observatory_insights (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    insight_type TEXT NOT NULL,        -- 'competitor' | 'pain_point' | 'feature_gap' | 'integration_done'
+    name TEXT NOT NULL,                -- short canonical name (LLM dedupes against this)
+    summary TEXT NOT NULL,             -- 1-2 sentence prose
+    evidence TEXT DEFAULT '[]',        -- JSON array of finding_ids
+    strength REAL DEFAULT 0.5,         -- 0..1, smoothed; grows with corroborating findings
+    last_seen_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_observatory_insights_lookup
+    ON observatory_insights(workspace_id, insight_type, strength DESC);
+
 CREATE TABLE IF NOT EXISTS research_schedules (
     id TEXT PRIMARY KEY,
     workspace_id TEXT,
@@ -935,6 +999,102 @@ CREATE TABLE IF NOT EXISTS invites (
 );
 CREATE INDEX IF NOT EXISTS idx_invites_hash ON invites(token_hash);
 CREATE INDEX IF NOT EXISTS idx_invites_active ON invites(redeemed_at, burned_at, expires_at);
+
+-- ─── PR 2: per-row joiner sessions ─────────────────────────────────────
+-- A row per active bearer/cookie. Owner-equivalent rows mint via the
+-- legacy AUTH_TOKEN bootstrap or (future) Ed25519 device pairing; joiner
+-- rows mint via invite redemption. Sliding TTL clamped by hard_cap_at.
+CREATE TABLE IF NOT EXISTS joiner_sessions (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,           -- SHA-256 of cookie value
+    invite_id TEXT REFERENCES invites(id) ON DELETE SET NULL,
+    label TEXT,
+    mode TEXT NOT NULL,                        -- 'brief' | 'code' | 'full'
+    brief_subscope TEXT,
+    actor_kind TEXT NOT NULL,                  -- 'owner_legacy' | 'owner_device' | 'joiner_session'
+    device_id TEXT,                            -- (PR2-future) FK to devices(id)
+    created_at TEXT DEFAULT (datetime('now')),
+    last_used_at TEXT DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,                  -- slides each request, capped at hard_cap_at
+    hard_cap_at TEXT NOT NULL,                 -- created_at + 90d
+    revoked_at TEXT,
+    last_ip TEXT,
+    last_user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_joiner_sessions_hash ON joiner_sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_joiner_sessions_active
+    ON joiner_sessions(revoked_at, expires_at);
+
+-- ─── PR 2: Owner device pairing (Ed25519) ────────────────────────────
+-- A device row represents a hardware-bound public key (browser/phone)
+-- that the owner has authorized. Pair-init records the pubkey and
+-- issues a challenge nonce; pair-complete verifies a signature over
+-- the nonce and mints an `actor_kind='owner_device'` joiner_sessions
+-- row tied to this device. Revoking a device cascades joiner_sessions
+-- rows minted for it.
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    public_key TEXT NOT NULL,                  -- Ed25519 pubkey, base64url (raw 32 bytes)
+    fingerprint TEXT NOT NULL UNIQUE,          -- SHA-256(pubkey_bytes) hex
+    user_agent TEXT,
+    paired_at TEXT DEFAULT (datetime('now')),
+    last_seen_at TEXT DEFAULT (datetime('now')),
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_devices_fingerprint ON devices(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_devices_active ON devices(revoked_at);
+
+CREATE TABLE IF NOT EXISTS device_challenges (
+    nonce TEXT PRIMARY KEY,                    -- 32 bytes base64url
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    issued_at TEXT DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,                  -- issued_at + 5 min
+    consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_device_challenges_device
+    ON device_challenges(device_id, consumed_at);
+
+-- ─── PR 4: Web Push subscriptions ────────────────────────────────────
+-- One row per (actor, browser endpoint). When the catchup digest
+-- detects a >Nh absence (or owner taps "Send to phone"), we POST a
+-- push to the endpoint with VAPID headers. No subscription = silent.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id TEXT PRIMARY KEY,
+    actor_kind TEXT NOT NULL,                  -- 'owner_legacy' | 'owner_device' | 'joiner_session'
+    actor_id TEXT,                             -- joiner_sessions.id, or NULL for owner_legacy
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    user_agent TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    UNIQUE(actor_kind, actor_id, endpoint)
+);
+CREATE INDEX IF NOT EXISTS idx_push_subs_actor
+    ON push_subscriptions(actor_kind, actor_id);
+
+-- ─── Audit log: every authenticated mutation by joiners + owner ──────
+-- Records who did what, when, from where. Owner-only readable via
+-- GET /api/audit. The frontend Auth Sessions panel drills in by actor_id.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id TEXT PRIMARY KEY,
+    actor_kind TEXT NOT NULL,                  -- 'owner_legacy' | 'owner_device' | 'joiner_session' | 'anon'
+    actor_id TEXT,                             -- joiner_sessions.id for joiners; NULL for owner_legacy
+    actor_label TEXT,                          -- joiner_sessions.label snapshot (denormalized — labels can change)
+    mode TEXT,                                 -- 'brief' | 'code' | 'full' | NULL for owner_legacy
+    method TEXT NOT NULL,                      -- HTTP method
+    path TEXT NOT NULL,                        -- request path
+    status INTEGER,                            -- response status
+    ip TEXT,
+    user_agent TEXT,
+    summary TEXT,                              -- short JSON: target id, name, action verb
+    ts TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_actor
+    ON audit_log(actor_kind, actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_ts
+    ON audit_log(ts);
 
 -- ─── Performance indexes for high-frequency queries ──────────────────
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace
@@ -1333,6 +1493,14 @@ async def init_db():
             # 0..1 score for how durable/non-obvious the insight is.
             "ALTER TABLE memory_entries ADD COLUMN auto INTEGER DEFAULT 0",
             "ALTER TABLE memory_entries ADD COLUMN confidence REAL DEFAULT 1.0",
+            # Observatory smart pipeline: per-finding triage verdict + reasoning,
+            # voice-of-customer extraction blob, page extraction provenance.
+            "ALTER TABLE observatory_findings ADD COLUMN verdict TEXT",
+            "ALTER TABLE observatory_findings ADD COLUMN triage_reason TEXT",
+            "ALTER TABLE observatory_findings ADD COLUMN voice TEXT DEFAULT '{}'",
+            "ALTER TABLE observatory_findings ADD COLUMN extracted_url TEXT",
+            "ALTER TABLE observatory_findings ADD COLUMN extracted_chars INTEGER DEFAULT 0",
+            "ALTER TABLE observatory_findings ADD COLUMN target_id TEXT",
             # W2W: Blocking bulletins — peer messages that pause the sender
             # until a reply arrives (used by `blocking_bulletin` MCP tool).
             # `blocking=1` means the sender is awaiting a reply; a peer
@@ -1347,6 +1515,10 @@ async def init_db():
             "ALTER TABLE workspaces ADD COLUMN demo_port INTEGER DEFAULT 0",
             # Auto-extract workspace knowledge from completed sessions on clean exit
             "ALTER TABLE workspaces ADD COLUMN auto_knowledge_enabled INTEGER DEFAULT 0",
+            # PR 2: per-row identity on each session (who started it / what mode)
+            "ALTER TABLE sessions ADD COLUMN owner_actor_kind TEXT",
+            "ALTER TABLE sessions ADD COLUMN owner_actor_id TEXT",
+            "ALTER TABLE sessions ADD COLUMN owner_mode TEXT",
         ):
             try:
                 await db.execute(ddl)
@@ -1470,6 +1642,48 @@ async def init_db():
                    (id, name, url, enabled, is_builtin, last_sync_status, order_index)
                    VALUES (?, ?, ?, 1, 1, 'never', ?)""",
                 (reg.get("id") or str(uuid.uuid4()), reg["name"], reg["url"], idx),
+            )
+
+        # One-shot backfill: flip workspaces.auto_knowledge_enabled from 0→1.
+        # The column was added with DEFAULT 0; the runtime default is now 1.
+        # Stamp-gated so users who explicitly turned it off after this runs
+        # don't get re-flipped.
+        try:
+            cur = await db.execute(
+                "SELECT value FROM app_settings WHERE key = '_migr_auto_knowledge_default_on'"
+            )
+            row = await cur.fetchone()
+            if not row:
+                await db.execute(
+                    "UPDATE workspaces SET auto_knowledge_enabled = 1 "
+                    "WHERE auto_knowledge_enabled = 0 OR auto_knowledge_enabled IS NULL"
+                )
+                await db.execute(
+                    "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                    ("_migr_auto_knowledge_default_on", "done"),
+                )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "auto_knowledge_enabled backfill skipped: %s", exc
+            )
+
+        # Seed experimental feature flags from the registry. INSERT OR IGNORE
+        # preserves any flag the user has explicitly toggled (row already
+        # present with "on" or "off"); only flags that have never been touched
+        # get the registry's default_enabled value written.
+        try:
+            from experimental import EXPERIMENTAL_FEATURES
+            for feat in EXPERIMENTAL_FEATURES.values():
+                await db.execute(
+                    "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+                    (feat.key, "on" if feat.default_enabled else "off"),
+                )
+        except Exception as exc:
+            # Don't let a registry import error block server startup.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to seed experimental flags: %s", exc
             )
 
         await db.commit()

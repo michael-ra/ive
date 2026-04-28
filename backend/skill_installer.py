@@ -138,53 +138,67 @@ async def uninstall_skill(
 
 def list_installed_skills(
     workspace_path: str | None = None,
-    scope: str = "project",
+    scope: str = "all",
 ) -> list[dict]:
     """Scan disk for installed skills across all CLIs.
+
+    scope=="all" scans both user (~/.claude/skills, ~/.gemini/extensions/skills)
+    and project (<workspace>/.claude/skills, ...) directories. The previous
+    default of "project" silently returned [] whenever the caller did not
+    supply a workspace_path because _skill_base raised ValueError that the
+    outer except swallowed (BUG H7).
 
     Returns a list of skill dicts with name, path, installed_for (which CLIs),
     and parsed frontmatter.
     """
-    skills_by_name = {}  # slug → skill dict
+    if scope == "all":
+        scopes_to_scan = ["user"]
+        if workspace_path:
+            scopes_to_scan.append("project")
+    else:
+        scopes_to_scan = [scope]
 
-    for cli in PROFILES:
-        try:
-            base = _skill_base(cli, workspace_path, scope)
-            if not base.exists():
-                continue
+    skills_by_key = {}  # (slug, scope) → skill dict
 
-            for skill_dir in sorted(base.iterdir()):
-                if not skill_dir.is_dir():
+    for scan_scope in scopes_to_scan:
+        for cli in PROFILES:
+            try:
+                base = _skill_base(cli, workspace_path, scan_scope)
+                if not base.exists():
                     continue
-                skill_md = skill_dir / "SKILL.md"
-                if not skill_md.exists():
-                    continue
 
-                slug = skill_dir.name
-                if slug not in skills_by_name:
-                    # Parse frontmatter
-                    text = skill_md.read_text(encoding="utf-8", errors="replace")
-                    meta = _parse_frontmatter_meta(text)
-                    has_scripts = (skill_dir / "scripts").is_dir()
-                    has_references = (skill_dir / "references").is_dir()
+                for skill_dir in sorted(base.iterdir()):
+                    if not skill_dir.is_dir():
+                        continue
+                    skill_md = skill_dir / "SKILL.md"
+                    if not skill_md.exists():
+                        continue
 
-                    skills_by_name[slug] = {
-                        "slug": slug,
-                        "name": meta.get("name", slug),
-                        "description": meta.get("description", ""),
-                        "license": meta.get("license", ""),
-                        "compatibility": meta.get("compatibility", ""),
-                        "has_scripts": has_scripts,
-                        "has_references": has_references,
-                        "installed_for": [],
-                        "scope": scope,
-                    }
+                    slug = skill_dir.name
+                    key = (slug, scan_scope)
+                    if key not in skills_by_key:
+                        text = skill_md.read_text(encoding="utf-8", errors="replace")
+                        meta = _parse_frontmatter_meta(text)
+                        has_scripts = (skill_dir / "scripts").is_dir()
+                        has_references = (skill_dir / "references").is_dir()
 
-                skills_by_name[slug]["installed_for"].append(cli)
-        except Exception as e:
-            log.warning("Failed to scan %s skills: %s", cli, e)
+                        skills_by_key[key] = {
+                            "slug": slug,
+                            "name": meta.get("name", slug),
+                            "description": meta.get("description", ""),
+                            "license": meta.get("license", ""),
+                            "compatibility": meta.get("compatibility", ""),
+                            "has_scripts": has_scripts,
+                            "has_references": has_references,
+                            "installed_for": [],
+                            "scope": scan_scope,
+                        }
 
-    return list(skills_by_name.values())
+                    skills_by_key[key]["installed_for"].append(cli)
+            except Exception as e:
+                log.warning("Failed to scan %s skills (scope=%s): %s", cli, scan_scope, e)
+
+    return list(skills_by_key.values())
 
 
 async def sync_skill(

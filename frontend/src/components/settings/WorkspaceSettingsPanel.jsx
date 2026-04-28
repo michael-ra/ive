@@ -523,7 +523,7 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
                         auto-extract distills durable insights from each completed session into the knowledge base.
                       </p>
 
-                      <Field label="Auto-Extract Knowledge" hint="LLM-extract insights when a session exits cleanly">
+                      <Field label="Auto-Extract Knowledge" hint="LLM-extract insights when a session goes idle or exits cleanly">
                         <button
                           onClick={() => updateField(ws.id, 'auto_knowledge_enabled', form.auto_knowledge_enabled ? 0 : 1)}
                           className={`flex items-center gap-2 px-3 py-1.5 rounded text-[11px] font-mono border transition-colors w-full ${
@@ -537,15 +537,16 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
                           <span className="flex-1" />
                           <span className="text-[10px] opacity-60">
                             {form.auto_knowledge_enabled
-                              ? 'Sessions auto-contribute knowledge on clean exit'
+                              ? 'Sessions auto-contribute knowledge on idle + clean exit'
                               : 'Knowledge is only added manually or via MCP tool'}
                           </span>
                         </button>
                         {form.auto_knowledge_enabled ? (
                           <p className="text-[10px] text-text-faint mt-1">
-                            On clean session exit (5+ turns, non-worktree, non-orchestrator),
-                            an LLM pass extracts up to 5 high-signal entries into the knowledge base,
+                            Fires on Stop-hook idle and on clean exit (5+ turns, non-worktree, non-orchestrator).
+                            An LLM pass extracts up to 5 high-signal entries into the knowledge base,
                             tagged <span className="font-mono">auto:&lt;session_id&gt;</span>.
+                            Each idle window fires at most once; resets when the agent runs more tools.
                             Disable if you want manual curation only.
                           </p>
                         ) : null}

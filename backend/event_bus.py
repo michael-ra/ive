@@ -360,6 +360,8 @@ class EventBus:
         session_id: Optional[str] = None,
         task_id: Optional[str] = None,
         since_id: Optional[int] = None,
+        since_iso: Optional[str] = None,
+        until_iso: Optional[str] = None,
     ) -> list[dict]:
         """Query the audit log with optional filters. Returns newest first."""
         sql = "SELECT * FROM commander_events WHERE 1=1"
@@ -379,6 +381,12 @@ class EventBus:
         if since_id is not None:
             sql += " AND id > ?"
             params.append(since_id)
+        if since_iso is not None:
+            sql += " AND created_at >= ?"
+            params.append(since_iso)
+        if until_iso is not None:
+            sql += " AND created_at <= ?"
+            params.append(until_iso)
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(min(max(limit, 1), 1000))
 
