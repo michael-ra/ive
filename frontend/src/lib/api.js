@@ -555,6 +555,11 @@ export const api = {
   },
   createMemoryEntry: (data) =>
     request('/memory', { method: 'POST', body: JSON.stringify(data) }),
+  autofillVision: (transcript, opts = {}) =>
+    request('/vision/autofill', {
+      method: 'POST',
+      body: JSON.stringify({ transcript, ...opts }),
+    }),
   updateMemoryEntry: (id, data) =>
     request(`/memory/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteMemoryEntry: (id) =>

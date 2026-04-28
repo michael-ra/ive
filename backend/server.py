@@ -7555,6 +7555,63 @@ async def create_memory_entry(request: web.Request) -> web.Response:
     return web.json_response(entry, status=201)
 
 
+async def autofill_vision(request: web.Request) -> web.Response:
+    """POST /api/vision/autofill — route a free-form transcript into the
+    four vision-modal fields via a single LLM call.
+
+    Used by WorkspaceVisionOnboarding when the user dictates a product
+    description: the browser does speech-to-text via Web Speech API,
+    posts the transcript here, and we ask Claude/Gemini (whichever CLI
+    is installed) to extract the four structured fields.
+
+    No API key needed — uses whatever auth the local CLI has.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    transcript = (body.get("transcript") or "").strip()
+    if not transcript:
+        return web.json_response({"error": "no transcript"}, status=400)
+
+    cli = body.get("cli") or "claude"
+    model = body.get("model")  # None = CLI default
+
+    system = (
+        "You receive a free-form description of a software product (often "
+        "spoken aloud then auto-transcribed, so expect filler words and "
+        "loose grammar). Extract these four fields and return ONLY valid "
+        "JSON with EXACTLY these keys: "
+        '{"vision","audience","competitors","differentiator"}. '
+        "Use an empty string for any field the description doesn't cover — "
+        "do not invent details. Keep each field concise (1–3 sentences). "
+        "Strip filler ('um', 'like', 'you know'). Tighten phrasing but "
+        "preserve the speaker's specific terms (product names, jargon)."
+    )
+
+    try:
+        from llm_router import llm_call_json
+        result = await llm_call_json(
+            cli=cli, model=model, prompt=transcript, system=system, timeout=45
+        )
+    except Exception as e:
+        logger.warning("autofill_vision LLM call failed: %s", e)
+        return web.json_response({"error": str(e)}, status=500)
+
+    # Defensive normalize — guarantee the four keys exist as strings even
+    # if the LLM returned partial / malformed JSON.
+    if not isinstance(result, dict):
+        result = {}
+    safe = {
+        "vision":         str(result.get("vision") or ""),
+        "audience":       str(result.get("audience") or ""),
+        "competitors":    str(result.get("competitors") or ""),
+        "differentiator": str(result.get("differentiator") or ""),
+    }
+    return web.json_response(safe)
+
+
 async def update_memory_entry(request: web.Request) -> web.Response:
     """PUT /api/memory/{id} — update an entry."""
     from memory_manager import memory_manager
@@ -16625,6 +16682,10 @@ def create_app() -> web.Application:
     app.router.add_post("/api/memory", create_memory_entry)
     app.router.add_put("/api/memory/{id}", update_memory_entry)
     app.router.add_delete("/api/memory/{id}", delete_memory_entry)
+
+    # Vision-modal voice autofill — extracts the four onboarding fields
+    # from a free-form transcript via the local CLI (no API key needed).
+    app.router.add_post("/api/vision/autofill", autofill_vision)
 
     app.router.add_post("/api/workspaces/{id}/commander", create_commander)
     app.router.add_get("/api/workspaces/{id}/commander", get_commander)
