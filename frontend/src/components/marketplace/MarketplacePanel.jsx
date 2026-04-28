@@ -433,7 +433,7 @@ function RegistriesTab({ registries, onChange }) {
 
 // ─── Main panel ──────────────────────────────────────────────────────────
 
-export default function MarketplacePanel({ onClose, initialTab }) {
+export default function MarketplacePanel({ onClose, initialTab, suggestedSkills }) {
   // Four tabs: locally installed, remote catalog, skills catalog, registry settings.
   const [tab, setTab] = useState(initialTab || 'local') // local | marketplace | skills | settings
   const [plugins, setPlugins] = useState([])
@@ -771,6 +771,42 @@ export default function MarketplacePanel({ onClose, initialTab }) {
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto">
+                {suggestedSkills?.length > 0 && !query && skillFilter === 'all' && (
+                  <div className="border-b border-amber-500/20 bg-amber-500/5">
+                    <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-amber-500/10">
+                      <Zap size={10} className="text-amber-400" />
+                      <span className="text-[10px] font-mono text-amber-400 font-medium uppercase tracking-wider">Suggested for you</span>
+                    </div>
+                    {suggestedSkills.map((s, i) => (
+                      <div
+                        key={i}
+                        className="group px-4 py-2.5 border-b border-amber-500/10 last:border-0 hover:bg-amber-500/10 cursor-pointer transition-colors"
+                        onClick={() => {
+                          const match = skills.find((sk) => sk.name === s.name) || s
+                          setSelectedSkill(match)
+                        }}
+                      >
+                        <div className="flex items-start gap-2">
+                          <Zap size={12} className="text-amber-400 mt-0.5 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs text-amber-300 font-mono font-medium">{s.name}</span>
+                            {s.description && (
+                              <p className="text-[11px] text-text-muted font-mono mt-0.5 line-clamp-1 leading-relaxed">{s.description}</p>
+                            )}
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleInstallSkill(s) }}
+                            disabled={busy}
+                            className="shrink-0 opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded transition-colors disabled:opacity-30"
+                          >
+                            <Download size={9} />
+                            install
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {skillsLoading ? (
                   <div className="px-4 py-10 text-xs text-text-faint text-center">
                     <RefreshCw size={16} className="animate-spin mx-auto mb-2 text-text-muted" />

@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Globe, X, Loader2, AlertCircle, Copy, Check, Users, AlertTriangle } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
+import { Globe, X, Loader2, AlertCircle, Copy, Check, Users, AlertTriangle, QrCode } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 
 export default function RuntimeControlsPanel({ onClose }) {
@@ -73,8 +74,19 @@ export default function RuntimeControlsPanel({ onClose }) {
     }
   }
 
-  const copyUrl = async () => {
+  // URL embedded in the QR — includes the legacy token so a phone scan
+  // lands authenticated without the visitor having to paste it. The
+  // legacy auth path accepts `?token=…`. If no token is set (rare —
+  // tunnel-start auto-generates one), the bare URL still works locally.
+  const qrUrl = useMemo(() => {
     const url = status?.tunnel?.url
+    if (!url) return null
+    const token = status?.tunnel?.token
+    return token ? `${url}?token=${encodeURIComponent(token)}` : url
+  }, [status])
+
+  const copyUrl = async () => {
+    const url = qrUrl
     if (!url) return
     try {
       await navigator.clipboard.writeText(url)
@@ -149,18 +161,38 @@ export default function RuntimeControlsPanel({ onClose }) {
                 </div>
 
                 {status.tunnel.running && status.tunnel.url && (
-                  <div className="mt-3 bg-zinc-900 border border-zinc-800 rounded p-2 flex items-center gap-2">
-                    <code className="text-[11px] text-zinc-200 flex-1 break-all font-mono">
-                      {status.tunnel.url}
-                    </code>
-                    <button
-                      onClick={copyUrl}
-                      className="text-[10px] flex items-center gap-1 px-1.5 py-1 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
-                    >
-                      {copied ? <Check size={10} /> : <Copy size={10} />}
-                      {copied ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
+                  <>
+                    <div className="mt-3 bg-zinc-900 border border-zinc-800 rounded p-2 flex items-center gap-2">
+                      <code className="text-[11px] text-zinc-200 flex-1 break-all font-mono">
+                        {status.tunnel.url}
+                      </code>
+                      <button
+                        onClick={copyUrl}
+                        title={status.tunnel.token ? 'Copy URL (includes auth token)' : 'Copy URL'}
+                        className="text-[10px] flex items-center gap-1 px-1.5 py-1 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                      >
+                        {copied ? <Check size={10} /> : <Copy size={10} />}
+                        {copied ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    {qrUrl && (
+                      <div className="mt-3 bg-zinc-900 border border-zinc-800 rounded p-3 flex items-center gap-3">
+                        <div className="bg-white p-1.5 rounded">
+                          <QRCodeSVG value={qrUrl} size={120} level="M" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-zinc-200 text-[12px] font-medium flex items-center gap-1.5">
+                            <QrCode size={12} /> Scan to open on phone
+                          </div>
+                          <div className="text-zinc-500 text-[11px] mt-1 leading-relaxed">
+                            {status.tunnel.token
+                              ? 'QR includes your auth token — scanning lands the visitor signed in. Treat the QR like a password.'
+                              : 'QR opens the public URL. Visitor will need to enter the auth token separately.'}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {status.tunnel.running && (

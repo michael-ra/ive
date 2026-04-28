@@ -320,6 +320,7 @@ export default function App() {
     const handleOpenMarketplace = (e) => {
       closeExclusivePanels()
       setMarketplaceTab(e.detail?.tab || null)
+      setMarketplaceSuggestedSkills(e.detail?.suggestedSkills || null)
       setShowMarketplace(true)
     }
     window.addEventListener('open-distill-result', handleOpenDistillResult)
@@ -456,6 +457,7 @@ export default function App() {
   const [livePreviewTaskId, setLivePreviewTaskId] = useState(null)
   const [showMarketplace, setShowMarketplace] = useState(false)
   const [marketplaceTab, setMarketplaceTab] = useState(null)
+  const [marketplaceSuggestedSkills, setMarketplaceSuggestedSkills] = useState(null)
   const [showQuickActionPalette, setShowQuickActionPalette] = useState(false)
   const [showExperimental, setShowExperimental] = useState(false)
   const [showSafety, setShowSafety] = useState(false)
@@ -516,7 +518,7 @@ export default function App() {
     setShowPeerMessages(false)
     setShowMemory(false)
     setShowShortcuts(false)
-    setShowMarketplace(false); setMarketplaceTab(null)
+    setShowMarketplace(false); setMarketplaceTab(null); setMarketplaceSuggestedSkills(null)
     setShowQuickActionPalette(false)
     setShowExperimental(false)
     setShowSafety(false)
@@ -1377,7 +1379,7 @@ export default function App() {
       {showPeerMessages && <PeerMessagesPanel onClose={() => setShowPeerMessages(false)} />}
       {showMemory && <MemoryWindow onClose={() => setShowMemory(false)} />}
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
-      {showMarketplace && <MarketplacePanel onClose={() => { setShowMarketplace(false); setMarketplaceTab(null) }} initialTab={marketplaceTab} />}
+      {showMarketplace && <MarketplacePanel onClose={() => { setShowMarketplace(false); setMarketplaceTab(null); setMarketplaceSuggestedSkills(null) }} initialTab={marketplaceTab} suggestedSkills={marketplaceSuggestedSkills} />}
       {showQuickActionPalette && <QuickActionPalette onClose={() => setShowQuickActionPalette(false)} />}
       {showExperimental && <ExperimentalPanel onClose={() => setShowExperimental(false)} />}
       {showSafety && <SafetyPanel onClose={() => setShowSafety(false)} />}

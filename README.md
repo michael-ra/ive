@@ -52,7 +52,7 @@ cd ive
 Open [http://localhost:5173](http://localhost:5173). That's it.
 
 > **Want to code from your phone or share with a friend?** 
-> Run `npx ive --tunnel` to boot a public-tunneled instance accessible from anywhere.
+> Generate secure invites and toggle tunnels directly inside the app, or boot a public instance instantly with `npx ive --tunnel`.
 
 ---
 

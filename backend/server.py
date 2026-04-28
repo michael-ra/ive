@@ -14247,10 +14247,15 @@ async def runtime_status_handler(request: web.Request) -> web.Response:
             "enabled": _TUNNEL_MODE,
             "running": proc_alive,
             "url": _runtime_tunnel_url if proc_alive else None,
+            # Surface the auth token so the runtime-controls UI can render
+            # a QR that lands the visitor authenticated. Owner-only handler
+            # so the token never leaks to a joiner.
+            "token": (AUTH_TOKEN if proc_alive and AUTH_TOKEN else None),
         },
         "multiplayer": {
             "enabled": _MULTIPLAYER_MODE,
         },
+        "cloudflared_installed": bool(__import__("shutil").which("cloudflared")),
     })
 
 
@@ -14260,15 +14265,34 @@ async def runtime_tunnel_start_handler(request: web.Request) -> web.Response:
     Mints a Cloudflare quick tunnel pointing at the local bind port. Sets
     _TUNNEL_MODE so the auth middleware stops blanket-trusting localhost
     (cloudflared connects as 127.0.0.1)."""
-    global _TUNNEL_MODE, _runtime_tunnel_url
+    global _TUNNEL_MODE, _runtime_tunnel_url, AUTH_TOKEN
     ctx = get_auth(request)
     if not ctx.is_owner:
         return web.json_response({"error": "owner only"}, status=403)
     if _tunnel_proc and _tunnel_proc.returncode is None:
         return web.json_response({
             "ok": True, "running": True, "url": _runtime_tunnel_url,
+            "token": AUTH_TOKEN or None,
             "message": "tunnel already running",
         })
+    # Pre-flight: cloudflared must be installed.
+    import shutil as _shutil
+    if not _shutil.which("cloudflared"):
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "cloudflared is not installed. Install with: brew install cloudflare/cloudflare/cloudflared",
+            },
+            status=500,
+        )
+    # Auto-generate an AUTH_TOKEN if none exists. Without one, flipping
+    # _TUNNEL_MODE = True would leave the public URL completely open
+    # (the auth middleware short-circuits to owner_legacy when no token
+    # is configured). We mint one on first runtime tunnel-up so the
+    # owner can ship invites instead of a bare URL.
+    if not AUTH_TOKEN:
+        AUTH_TOKEN = _generate_token()
+        logger.info("Auto-generated AUTH_TOKEN for runtime tunnel")
     bind_port = int(os.environ.get("PORT") or 5111)
     # Engage tunnel mode BEFORE spawning so a request that races in
     # via cloudflared doesn't sneak past the localhost-trust path.
@@ -14277,11 +14301,14 @@ async def runtime_tunnel_start_handler(request: web.Request) -> web.Response:
     if not url:
         _TUNNEL_MODE = False
         return web.json_response(
-            {"ok": False, "error": "failed to start cloudflared (is it installed?)"},
+            {
+                "ok": False,
+                "error": "cloudflared started but no tunnel URL was emitted within 60s. Check network access and try again.",
+            },
             status=500,
         )
     _runtime_tunnel_url = url
-    return web.json_response({"ok": True, "running": True, "url": url})
+    return web.json_response({"ok": True, "running": True, "url": url, "token": AUTH_TOKEN})
 
 
 async def runtime_tunnel_stop_handler(request: web.Request) -> web.Response:
@@ -14589,10 +14616,18 @@ _PREVIEW_PROXY_STRIP_REQ_HEADERS = {
     "host", "connection", "keep-alive", "proxy-authenticate",
     "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade",
 }
-# Response headers we drop because aiohttp's StreamResponse manages framing.
+# Response headers we drop because aiohttp's StreamResponse manages framing,
+# OR because they would block embedding the proxied dev server in IVE's
+# same-origin iframe (LivePreview). The CSP middleware also force-overwrites
+# the security headers on /preview/* paths, but stripping at the proxy
+# level keeps the response object clean so a downstream handler doesn't
+# accidentally read the upstream values.
 _PREVIEW_PROXY_STRIP_RESP_HEADERS = {
     "content-length", "content-encoding", "transfer-encoding", "connection",
     "keep-alive",
+    "x-frame-options",
+    "content-security-policy",
+    "content-security-policy-report-only",
 }
 
 
@@ -14611,6 +14646,19 @@ async def proxy_localhost(request: web.Request) -> web.StreamResponse:
     `text/html` responses a `<base href="/preview/<port>/">` tag is injected
     so root-relative URLs resolve back through the proxy.
     """
+    # Live-gated on the runtime flags so toggling tunnel/multiplayer at
+    # runtime actually opens up the preview proxy without restart. The
+    # disabled-mode handler is still mounted as a fallback when neither
+    # tunnel nor multiplayer was set at boot AND no client session has
+    # one — see route registration below.
+    if not (_TUNNEL_MODE or _MULTIPLAYER_MODE):
+        return web.json_response(
+            {
+                "error": "preview proxy is disabled — enable tunnel or multiplayer "
+                         "from Settings → Tunnel & Multiplayer first",
+            },
+            status=403,
+        )
     port_str = request.match_info.get("port", "")
     try:
         port = int(port_str)
@@ -14655,10 +14703,15 @@ async def proxy_localhost(request: web.Request) -> web.StreamResponse:
 
     session: aiohttp.ClientSession = request.app.get("preview_proxy_session")
     if session is None:
-        return web.json_response(
-            {"error": "preview proxy session not initialized"},
-            status=500,
+        # Lazily create the upstream session — it's only built at startup
+        # when --tunnel/--multiplayer was set at boot, but a runtime toggle
+        # can flip the flags later. Build on first preview request so that
+        # works without a server restart.
+        session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=_PREVIEW_PROXY_TIMEOUT),
+            auto_decompress=False,
         )
+        request.app["preview_proxy_session"] = session
 
     # Stream the request body so large uploads don't buffer in memory.
     has_body = request.method not in {"GET", "HEAD", "OPTIONS"}
@@ -16945,11 +16998,12 @@ def create_app() -> web.Application:
     app.router.add_post("/api/hooks/pipeline-result", handle_pipeline_result)
 
     # ── Cloudflare-tunnel-aware preview proxy ─────────────────────
-    # Only mounted when running with --tunnel or --multiplayer; in
-    # single-player local mode collaborators always reach localhost
-    # dev servers directly so the proxy is unnecessary (and we register
-    # a no-op 404 to make that explicit).
-    if _TUNNEL_MODE or _MULTIPLAYER_MODE:
+    # Always mount the proxy routes. The handler itself is live-gated
+    # on the _TUNNEL_MODE / _MULTIPLAYER_MODE flags so toggling either
+    # at runtime opens up preview without a restart. In single-player
+    # local mode the gate returns 403 and collaborators reach localhost
+    # dev servers directly.
+    if True:
         for method in ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"):
             app.router.add_route(
                 method,
@@ -17084,23 +17138,69 @@ async def _start_cloudflare_tunnel(port: int):
         stderr=asyncio.subprocess.PIPE,
     )
 
-    # cloudflared prints the tunnel URL to stderr
+    # cloudflared logs the URL on stderr in current versions, but earlier
+    # builds wrote it to stdout. Read both in parallel so we work across
+    # versions and survive any future format change. Also detect the
+    # subprocess exiting early (binary missing libs, port conflict, etc.)
+    # so we don't sit on a 60s timeout when the proc is already dead.
     import re
     url_pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-    deadline = asyncio.get_event_loop().time() + 30
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            line = await asyncio.wait_for(_tunnel_proc.stderr.readline(), timeout=2)
-        except asyncio.TimeoutError:
-            continue
-        if not line:
-            break
-        text = line.decode("utf-8", errors="replace")
-        m = url_pattern.search(text)
-        if m:
-            return m.group(0)
+    found_url: list[str] = []
 
-    logger.warning("Could not detect cloudflared tunnel URL within 30s")
+    async def _scan(stream):
+        if stream is None:
+            return
+        while True:
+            line = await stream.readline()
+            if not line:
+                return
+            text = line.decode("utf-8", errors="replace")
+            m = url_pattern.search(text)
+            if m:
+                found_url.append(m.group(0))
+                return
+
+    scan_stderr = asyncio.create_task(_scan(_tunnel_proc.stderr))
+    scan_stdout = asyncio.create_task(_scan(_tunnel_proc.stdout))
+    proc_wait = asyncio.create_task(_tunnel_proc.wait())
+
+    try:
+        done, pending = await asyncio.wait(
+            {scan_stderr, scan_stdout, proc_wait},
+            timeout=60,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # Give a brief grace period after first completion for the URL line
+        # to land if it wasn't the one that triggered FIRST_COMPLETED.
+        if not found_url and pending:
+            done2, _ = await asyncio.wait(pending, timeout=5)
+            done = done | done2
+    finally:
+        for t in (scan_stderr, scan_stdout, proc_wait):
+            if not t.done():
+                t.cancel()
+
+    if found_url:
+        return found_url[0]
+
+    # Either the timeout fired or cloudflared exited without printing a URL.
+    if _tunnel_proc and _tunnel_proc.returncode is not None:
+        logger.warning(
+            "cloudflared exited early with code %s — check `cloudflared --version` and network access",
+            _tunnel_proc.returncode,
+        )
+    else:
+        logger.warning("Could not detect cloudflared tunnel URL within 60s")
+        # Kill the zombie so a retry can start fresh.
+        try:
+            _tunnel_proc.terminate()
+            await asyncio.wait_for(_tunnel_proc.wait(), timeout=3)
+        except Exception:
+            try:
+                _tunnel_proc.kill()
+            except Exception:
+                pass
+    _tunnel_proc = None
     return None
 
 

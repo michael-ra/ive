@@ -389,7 +389,7 @@ function Toast({ notif }) {
     const skills = notif.skills || []
     const indexBuilding = notif.indexBuilding
     const handleOpenSkills = () => {
-      window.dispatchEvent(new CustomEvent('open-marketplace', { detail: { tab: 'skills' } }))
+      window.dispatchEvent(new CustomEvent('open-marketplace', { detail: { tab: 'skills', suggestedSkills: skills } }))
       dismiss()
     }
     return (
