@@ -199,6 +199,10 @@ IVE_TELEMETRY=off ./start.sh
 
 IVE is open source and early. Bug reports, new CLI profiles, docs improvements, weird edge cases — all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+---
+
+> **Experimental alpha release.** Things move fast and will occasionally break — schema, APIs, and UI are still in flux. Pin a commit if you need stability, and expect rough edges. Feedback welcome.
+
 <p align="center">
   Built by the IVE community.
 </p>
