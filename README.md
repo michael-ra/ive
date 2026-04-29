@@ -14,7 +14,6 @@
   <a href="https://ive.dev">Website</a> ·
   <a href="https://ive.dev/docs">Docs</a> ·
   <a href="https://github.com/michael-ra/ive/stargazers">GitHub Stars</a> ·
-  <a href="https://x.com/vibe2vibe">Twitter</a> ·
   <a href="https://discord.gg/ive">Discord</a>
 </p>
 
@@ -29,7 +28,7 @@ Prompt away!
 ### 👋 Human Quickstart
 **1. Clone the repository and run the setup script:**
 ```bash
-git clone https://github.com/vibe2vibe/ive.git
+git clone https://github.com/michael-ra/ive.git
 cd ive
 ./start.sh
 ```
