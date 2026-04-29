@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "IVE frontend — React + Vite + xterm.js UI for the Integrated Vibecoding Environment",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "author": "Michael Ramich",
   "homepage": "https://github.com/michael-ra/ive#readme",
   "bugs": {
