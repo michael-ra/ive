@@ -36,13 +36,11 @@ A few load-bearing conventions:
 
 Short, imperative-mood subject line ("Fix banner output buffering", "Add pipeline cooldown guard"). Body optional but encouraged for non-trivial changes — explain *why*, not *what*.
 
-Do not add `Co-Authored-By` lines.
-
 ## PR process
 
 1. Fork, branch off `main`.
 2. Make your change. Run the app locally and confirm both backend and frontend start cleanly.
-3. If you touched backend logic with tests in `backend/tests/`, run them.
+3. **Dogfood it.** If you have IVE running, point its built-in *Tester* session (or fire off a *TDD Loop* / *Review Loop* pipeline preset) at your branch — that's the same harness we use on `main`. Otherwise, run `python3 -m pytest backend/tests/` for backend changes.
 4. Open a PR against `main` with a clear description of the change and any relevant screenshots / clips for UI work.
 5. Be responsive to review feedback — reviews tend to be quick.
 
