@@ -34,7 +34,6 @@ for arg in "$@"; do
       echo "  ./start.sh                        # Dev mode (backend + Vite frontend)"
       echo "  ./start.sh --multiplayer           # Production mode with auth"
       echo "  ./start.sh --tunnel                # Production mode + Cloudflare tunnel"
-      echo "  npx ive --tunnel                   # Same via npx"
       exit 0
       ;;
     --multiplayer) MULTIPLAYER=true; PASSTHROUGH_ARGS+=("$arg") ;;

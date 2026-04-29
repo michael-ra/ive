@@ -16,7 +16,7 @@
   <a href="https://github.com/michael-ra/ive/stargazers">GitHub Stars</a>
 </p>
 
-> **🌤️ Want to skip the local setup?** Boot a public-tunneled instance accessible from anywhere in seconds with `npx ive --tunnel`!
+> **🌤️ Want a public URL?** Toggle the tunnel in the UI, or boot with `./start.sh --tunnel`.
 
 ---
 
@@ -33,9 +33,9 @@ cd ive
 ```
 
 **2. [Optional] Want to collaborate or code from your phone?**
-Generate secure invites and toggle tunnels directly inside the app, or boot with a public tunnel instantly:
+Generate secure invites and toggle the tunnel directly inside the app, or boot with a public tunnel instantly:
 ```bash
-npx ive --tunnel
+./start.sh --tunnel
 ```
 
 **3. Open your browser:**

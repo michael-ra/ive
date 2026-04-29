@@ -12,7 +12,7 @@ You need three things on your `$PATH`:
 |------|---------|-----|
 | **git** | any modern | Cloning the repo and worktree-based features |
 | **Python** | 3.11+ | Backend (aiohttp + sqlite + PTY orchestration) |
-| **Node.js** | 20+ | Frontend (Vite 8 + React 19) and the `npx ive` launcher |
+| **Node.js** | 20+ | Frontend (Vite 8 + React 19) |
 
 That's it. Everything else either ships in the repo or is installed
 automatically the first time `./start.sh` runs. The first launch prints a
@@ -116,26 +116,12 @@ Press `Ctrl+C` to shut down both processes cleanly.
 ./start.sh --token MYTOKEN     # Set the auth token (auto-generated otherwise)
 ```
 
-## npx alternative
-
-If you'd rather not clone the repo first, the npm-published launcher does
-both steps in one:
-
-```bash
-npx ive                # Clones (or updates) and runs in --multiplayer mode
-npx ive --tunnel       # Same, plus a public Cloudflare tunnel
-```
-
-The launcher writes its working copy to `~/.ive/repo`. Subsequent runs
-do `git pull` instead of re-cloning.
-
 ## What lives where
 
 | Path | Contents |
 |------|----------|
 | `~/.ive/data.db` | SQLite database (workspaces, sessions, tasks, memory, …) |
 | `~/.ive/token` | Auth token used in `--multiplayer` and `--tunnel` modes |
-| `~/.ive/repo` | Working copy used by `npx ive` (only created if you use npx) |
 | `~/.ive/venv` | Private Python venv (only created when system pip is externally-managed) |
 | `~/.ive/.deps-checked.<hash>` | Stamp from the dependency check; delete to re-run |
 | `~/.ive/.playwright-installed` | Stamp marking that Chromium is downloaded |
