@@ -24,9 +24,18 @@ All endpoints return JSON. Successful responses contain the requested data direc
 
 ## Authentication
 
-The API is local-only — no authentication required. It binds to `127.0.0.1` by default.
+By default IVE binds to `127.0.0.1` and treats every localhost request as Owner / Full mode. No token needed — you're trusted on your own machine.
 
-To expose on the network, set `COMMANDER_HOST=0.0.0.0` (not recommended for production).
+When [Sharing](../guide/sharing/modes) is set to **Local** or **Tunnel**, every non-localhost request must carry an auth identity:
+
+| Identity | Header / cookie | How to get it |
+|----------|-----------------|---------------|
+| Joiner session | `Authorization: Bearer <token>` or `ive_session` cookie | Redeem an [invite](../guide/sharing/invites) |
+| Legacy owner token | `Authorization: Bearer <AUTH_TOKEN>` or `?token=` (LAN only) | Set via `AUTH_TOKEN` env var |
+
+Joiner sessions carry a **mode** — `brief`, `code`, or `full` — that clamps which routes return 200 vs 403. See [Joiner Sessions](../guide/sharing/joiner-sessions) for the rules.
+
+Owner-only endpoints (e.g. `/api/api-keys`, `/api/runtime/mode`, `/api/invite/*`) require `mode=full` and return 403 to anyone else.
 
 ## Rate limiting
 
@@ -45,6 +54,19 @@ Default: **100 requests per 60 seconds** globally. Configurable via server setti
 | [Plugins](./plugins) | Plugin registry, install/uninstall, skills |
 | [Settings](./settings) | App settings, events, subscriptions |
 | [WebSocket](./websocket) | Real-time PTY and control protocol |
+
+### Collaboration & runtime
+
+These groups don't yet have dedicated reference pages — endpoints live alongside their guide topic for now.
+
+| Surface | Endpoints |
+|---------|-----------|
+| [Sharing modes](../guide/sharing/modes) | `GET/PUT /api/runtime/mode`, tunnel start/stop |
+| [Invites](../guide/sharing/invites) | `POST /api/invite/create`, `GET /api/invites`, `POST /api/invite/{id}/revoke`, `POST /api/invite/redeem`, `GET /join` |
+| [Joiner sessions](../guide/sharing/joiner-sessions) | `GET /api/whoami`, `GET /api/sessions/auth`, `POST /api/sessions/auth/{id}/revoke`, `POST /api/auth/logout` |
+| [Push notifications](../guide/mobile/push) | `POST /api/push/subscribe`, `POST /api/push/unsubscribe`, `GET /api/push/vapid-pubkey` |
+| [Catch-up briefing](../guide/sessions/catchup) | `GET /api/catchup` |
+| [API keys](../guide/settings/api-keys) | `GET /api/api-keys`, `PUT /api/api-keys`, `POST /api/api-keys/test` (owner-only) |
 
 ## WebSocket
 

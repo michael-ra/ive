@@ -1,26 +1,52 @@
 ---
-title: Screenshots & Annotations
+title: Screenshots, Annotations & Walkthroughs
 ---
 
-# Screenshots & Annotations
+# Screenshots, Annotations & Walkthroughs
 
-Commander includes a screenshot capture and annotation system for sharing visual context with sessions.
+IVE has three different ways to send visual context to a session: a one-shot screenshot, an annotated image, or a recorded walkthrough with your voice on top. Pick whichever fits the level of detail you want to convey.
 
 ![Visual Collaboration](/visual-collaboration.svg)
 
 ## Preview Palette (⌘P)
 
-The Preview Palette opens a URL or takes a screenshot of any webpage.
+The Preview Palette opens a URL or grabs a screenshot of any webpage.
 
-1. Press **⌘P**
-2. Enter a URL
-3. Choose **Preview** (open in panel) or **Screenshot** (capture)
+1. Press **⌘P**.
+2. Enter a URL.
+3. Pick **Preview** (open in panel) or **Screenshot** (one-shot capture).
 
-The captured image appears in the palette and can be annotated or sent to the active session.
+The captured image appears in the palette, where you can annotate it or send it straight to the active session.
 
-## Screenshot Annotator
+## Live Preview (the voice walkthrough story)
 
-The Screenshot Annotator lets you mark up captured images with drawing tools before sending them to a session.
+The Live Preview panel renders a real-time browser preview of any URL — typically the dev server you're working on. It's where the more interesting flows live.
+
+### One-shot screenshot — ⌘↵
+
+While the Live Preview is open, press **⌘↵** to grab the current frame. The screenshot lands in the Image Annotator (see below).
+
+### Hold-to-record voice walkthrough — ⌘R
+
+This is the killer flow. **Hold ⌘R** while you talk over the live preview. IVE records:
+
+1. The screen as a video clip.
+2. Your microphone as voice-over audio.
+3. The Web Speech API transcript so the voice gets dropped into the session as text too.
+
+Release ⌘R to stop. IVE assembles the clip and pastes it into the terminal as a context attachment, with the transcript inline. The session sees both — the image / video AND your spoken intent — so you don't have to type out what you wanted iterated.
+
+::: tip
+This is the fastest way to give a session feedback on a UI. Open the live preview, hold ⌘R, point and talk: "the button on the right needs a softer shadow, and the modal should close when you click outside". The agent gets a 5-second clip plus that transcript verbatim.
+:::
+
+### Browser support
+
+The voice transcript uses the Web Speech API. Chrome / Edge / Safari are all supported; Firefox transcript may be empty (the audio still gets captured).
+
+## Image Annotator
+
+When you screenshot from any source (Preview Palette, Live Preview, paste from clipboard), the Image Annotator opens before send.
 
 ### Drawing tools
 
@@ -33,7 +59,7 @@ The Screenshot Annotator lets you mark up captured images with drawing tools bef
 
 ### Colors
 
-8 colors available: red, yellow, blue, green, white, black, orange, purple.
+8 colors: red, yellow, blue, green, white, black, orange, purple.
 
 ### Keyboard shortcuts
 
@@ -41,35 +67,35 @@ The Screenshot Annotator lets you mark up captured images with drawing tools bef
 |-----|--------|
 | ⌘Z | Undo |
 | ⌘⇧Z | Redo |
+| Esc | Cancel and discard |
 
 ### Sending to session
 
-After annotating, click **Send to Session** — the annotated image is pasted into the terminal as a context attachment.
+Click **Send to Session** — the annotated image is pasted into the terminal as a context attachment. The agent receives the image with annotations baked into the pixels.
 
-## Terminal Annotation (⌘⇧A)
+## Terminal Annotator (⌘⇧A)
 
-Annotate specific segments of terminal output:
+Annotate specific segments of terminal output instead of an external screenshot.
 
-1. Press **⌘⇧A**
-2. Select a region of terminal output
-3. Add a comment
-4. The annotation is preserved with the session
+1. Press **⌘⇧A** while in a session.
+2. The terminal switches to selection mode — segments are highlighted by ownership (Claude vs you).
+3. Click a segment, add a comment.
+4. The annotation is preserved with the session and shows on hover.
+
+Use this when you want to point at a specific tool call, error, or output line and add context without taking a separate screenshot.
 
 ## Image from Clipboard
 
-Paste an image directly into a session:
+Paste an image directly into a session with **⌘V** while focused on the terminal. IVE detects the clipboard image, opens the Image Annotator, and lets you mark it up before sending.
+
+You can also paste programmatically:
 
 ```bash
 POST /api/paste-image
 ```
 
-Or use **⌘V** in the terminal when a screenshot is on your clipboard.
-
-## Live Preview
-
-The Live Preview panel shows a real-time browser preview of a URL, useful for checking web app output while Claude works.
-
 ## Related
 
 - [Terminal](./terminal/overview) — main terminal view
-- [API: Screenshots](../api/sessions) — screenshot endpoints
+- [Keyboard Shortcuts](./keyboard-shortcuts) — full shortcut reference
+- [API: Screenshots](../api/sessions) — programmatic capture

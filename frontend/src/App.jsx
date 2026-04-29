@@ -350,6 +350,11 @@ export default function App() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId)
   const viewingSubagent = useStore((s) => s.viewingSubagent)
 
+  // Below 768px the layout clamps to a single terminal — grid / split / custom
+  // templates are unusable on phone-width screens. Declared here (not in the
+  // mobile-state block below) so it can gate `hasSplit` and `effectiveViewMode`.
+  const isMobile = useMediaQuery('(max-width: 767px)')
+
   // Tabs filtered by the project/workspace scope toggle in SessionTabs.
   // Used everywhere the grid view enumerates tabs so the same filter applies to
   // built-in layouts and to custom template cell assignments.
@@ -357,8 +362,12 @@ export default function App() {
     ? openTabs.filter((id) => sessions[id]?.workspace_id === activeWorkspaceId)
     : openTabs
 
-  // Split is visually active when the split session differs from the active tab
-  const hasSplit = splitMode && splitSessionId && splitSessionId !== activeSessionId && !!sessions[splitSessionId]
+  // Split is visually active when the split session differs from the active tab.
+  // Mobile clamps to single-terminal view — split / grid / custom templates
+  // are all unusable on phone-width screens, so we pretend they're off.
+  const hasSplit = !isMobile && splitMode && splitSessionId && splitSessionId !== activeSessionId && !!sessions[splitSessionId]
+  const effectiveViewMode = isMobile ? 'tabs' : viewMode
+  const effectiveGridTemplateId = isMobile ? null : activeGridTemplateId
 
   // Auto-close split if split session was removed
   useEffect(() => {
@@ -396,10 +405,18 @@ export default function App() {
   // terminal's flex container keeps the same logical size), so without these
   // dispatches the xterm renderer goes stale after the keyboard dismisses
   // and input feels laggy until something else kicks the 1Hz safety net.
+  // Also tracks visualViewport.height so the root container can shrink to sit
+  // flush above the soft keyboard — `100dvh` does not react to keyboard.
+  const [vvHeight, setVvHeight] = useState(null)
   useEffect(() => {
     const refit = () => window.dispatchEvent(new Event('cc-terminal-refit'))
     let timer = null
+    const update = () => {
+      const vv = window.visualViewport
+      setVvHeight(vv ? vv.height : null)
+    }
     const debounced = () => {
+      update()
       if (timer) clearTimeout(timer)
       timer = setTimeout(() => { refit(); setTimeout(refit, 250) }, 60)
     }
@@ -407,6 +424,7 @@ export default function App() {
     if (vv) {
       vv.addEventListener('resize', debounced)
       vv.addEventListener('scroll', debounced)
+      update()
     }
     window.addEventListener('orientationchange', debounced)
     return () => {
@@ -477,8 +495,9 @@ export default function App() {
   const [screenshotData, setScreenshotData] = useState(null) // { imageUrl, sourceUrl }
 
   // ── Mobile responsive state ───────────────────────────────────
-  // Below 768px the sidebar collapses behind a hamburger button into a slide-in drawer.
-  const isMobile = useMediaQuery('(max-width: 767px)')
+  // `isMobile` itself is declared earlier (it gates layout decisions); only
+  // mobile-only UI state lives here. Below 768px the sidebar collapses behind
+  // a hamburger button into a slide-in drawer.
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
   // Auto-close drawer when leaving mobile breakpoint to avoid stuck-open state
   useEffect(() => { if (!isMobile && mobileDrawerOpen) setMobileDrawerOpen(false) }, [isMobile, mobileDrawerOpen])
@@ -626,7 +645,9 @@ export default function App() {
 
   // Toggle split view: pair the active tab with its right neighbor (or left as fallback).
   // Single source of truth — used by both the ⌘D shortcut and the command palette.
+  // No-op on mobile — split-view layout is hidden on phone-width screens.
   const toggleSplitView = useCallback(() => {
+    if (isMobile) return
     const store = useStore.getState()
     if (store.splitMode) {
       useStore.setState({ splitMode: false, splitSessionId: null })
@@ -635,7 +656,7 @@ export default function App() {
     const idx = store.openTabs.indexOf(store.activeSessionId)
     const nextId = store.openTabs[idx + 1] || store.openTabs[idx - 1]
     if (nextId) useStore.setState({ splitMode: true, splitSessionId: nextId })
-  }, [])
+  }, [isMobile])
 
   useKeyboard({
     onCommandPalette: () => { closeExclusivePanels(); setShowCommand(true) },
@@ -809,8 +830,13 @@ export default function App() {
 
   return (
     <div
-      className="flex flex-col h-[100dvh] overflow-hidden bg-bg-primary"
+      className="flex flex-col overflow-hidden bg-bg-primary"
       style={{
+        // On mobile, bind to visualViewport.height so the layout shrinks when
+        // the soft keyboard opens — `100dvh` stays the full screen height and
+        // would let the keyboard cover the terminal input. Desktop falls back
+        // to 100dvh, which is the right behavior there.
+        height: isMobile && vvHeight ? `${vvHeight}px` : '100dvh',
         paddingTop: 'env(safe-area-inset-top, 0px)',
         paddingBottom: 'env(safe-area-inset-bottom, 0px)',
         paddingLeft: 'env(safe-area-inset-left, 0px)',
@@ -893,9 +919,9 @@ export default function App() {
 
         {openTabs.length > 0 && !showHome ? (
           <div className="flex-1 flex min-h-0">
-          {viewMode === 'grid' && activeGridTemplateId && (() => {
+          {effectiveViewMode === 'grid' && effectiveGridTemplateId && (() => {
             /* ─── Custom Grid Template ─── */
-            const activeTpl = gridTemplates.find((t) => t.id === activeGridTemplateId)
+            const activeTpl = gridTemplates.find((t) => t.id === effectiveGridTemplateId)
             if (!activeTpl) return null
             const totalRows = Math.max(1, ...activeTpl.cells.map((c) => (c.row || 1) + (c.rowSpan || 1) - 1))
             const tplAssignments = activeTpl.cell_assignments || {}
@@ -998,8 +1024,8 @@ export default function App() {
               scrollback, renderer state, and avoiding remount/refit races.
               Custom grid templates (above) are separate because they iterate
               cells rather than sessions. */}
-          {!(viewMode === 'grid' && activeGridTemplateId) && (() => {
-            const isGrid = viewMode === 'grid'
+          {!(effectiveViewMode === 'grid' && effectiveGridTemplateId) && (() => {
+            const isGrid = effectiveViewMode === 'grid'
             // Compute built-in grid layout styles
             let gridStyle = {}
             let gridNonFocusCounter = 0

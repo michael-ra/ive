@@ -18,6 +18,10 @@ Instead of juggling multiple terminal windows, IVE gives you:
 - **Research engine** — self-hosted deep research with web search and source citation
 - **MCP integration** — attach MCP servers per-session, manage them from a UI
 - **Broadcast & orchestration** — send prompts to multiple sessions at once, chain them with cascades
+- **Sharing & multiplayer** — hand a friend a [4-word invite](./sharing/invites) and they land in your agent army with [clamped access](./sharing/joiner-sessions)
+- **Mobile** — [install IVE to your phone's home screen](./mobile/install) and code from anywhere with push notifications
+- **Voice walkthroughs** — [hold ⌘R](./screenshots) to record screen + voice over the live preview, paste straight into the session
+- **Catch-up briefing** — [step away for a week](./sessions/catchup), come back to a 2–5 sentence summary of everything that shipped
 
 ## Architecture overview
 

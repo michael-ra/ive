@@ -1,17 +1,18 @@
 {
   "name": "ive",
   "version": "1.0.0",
+  "private": true,
   "description": "Integrated Vibecoding Environment — control multiple Claude Code & Gemini CLI sessions from one browser UI",
-  "homepage": "https://github.com/vibe2vibe/ive#readme",
+  "homepage": "https://github.com/michael-ra/ive#readme",
   "bugs": {
-    "url": "https://github.com/vibe2vibe/ive/issues"
+    "url": "https://github.com/michael-ra/ive/issues"
   },
   "bin": {
     "ive": "./start.sh"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/vibe2vibe/ive.git"
+    "url": "https://github.com/michael-ra/ive.git"
   },
   "keywords": [
     "claude-code",
@@ -25,8 +26,5 @@
     "vibecoding"
   ],
   "author": "Michael Ramich",
-  "license": "Apache-2.0",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.104.1"
-  }
+  "license": "Apache-2.0"
 }

@@ -76,7 +76,7 @@ rm -f ~/.ive/.deps-checked.*
 ## Quickstart — clone and go
 
 ```bash
-git clone https://github.com/vibe2vibe/ive.git
+git clone https://github.com/michael-ra/ive.git
 cd ive
 ./start.sh
 ```

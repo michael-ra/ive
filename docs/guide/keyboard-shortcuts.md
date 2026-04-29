@@ -54,6 +54,23 @@ Shortcuts are configurable — open the Shortcuts panel (⌘⇧K) to remap any b
 | ⌘U | Usage (opens claude.ai/settings/usage) |
 | ⌘1–9 | Switch to tab N |
 
+## Visual collaboration
+
+| Shortcut | Action |
+|----------|--------|
+| ⌘P | Preview Palette (open URL or screenshot) |
+| ⌘↵ | One-shot screenshot (in Live Preview) |
+| ⌘R *(hold)* | Voice walkthrough — record screen + mic, paste into session on release |
+| ⌘⇧A | Annotate terminal output |
+| ⌘V | Paste image from clipboard into terminal |
+
+## Sharing & Mobile
+
+| Shortcut | Action |
+|----------|--------|
+| ⌘K → "Sharing" | Open the Sharing panel (mode, invites, joiners) |
+| ⌘K → "Briefing" | Open the Catch-up briefing |
+
 ## Terminal navigation
 
 | Shortcut | Action |

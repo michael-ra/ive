@@ -3,6 +3,7 @@ import { X, Pencil, Copy, Download, Trash2, Globe, FolderOpen, LayoutGrid, Colum
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
 import { getWorkspaceColor } from '../../lib/constants'
+import useMediaQuery from '../../hooks/useMediaQuery'
 
 function ContextMenu({ x, y, session, onClose }) {
   const menuRef = useRef(null)
@@ -155,6 +156,10 @@ export default function SessionTabs() {
   const [dropIdx, setDropIdx] = useState(null)
   const [now, setNow] = useState(Date.now())
   const [showLayoutMenu, setShowLayoutMenu] = useState(false)
+  // Mobile clamps to single-terminal view — hide the grid/tabs toggle and the
+  // layout dropdown so users can't activate a multi-terminal layout that the
+  // App.jsx render path will refuse to honor anyway.
+  const isMobile = useMediaQuery('(max-width: 767px)')
   const scrollRef = useRef(null)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
@@ -244,7 +249,8 @@ export default function SessionTabs() {
           {tabScope === 'project' ? <Globe size={14} /> : <FolderOpen size={14} />}
         </button>
 
-        {/* Grid/tabs view toggle */}
+        {/* Grid/tabs view toggle — hidden on mobile (single-terminal only) */}
+        {!isMobile && (
         <button
           data-chrome-button
           onClick={() => {
@@ -257,9 +263,10 @@ export default function SessionTabs() {
         >
           <LayoutGrid size={14} />
         </button>
+        )}
 
-        {/* Grid layout dropdown (only visible in grid mode) */}
-        {viewMode === 'grid' && (() => {
+        {/* Grid layout dropdown (only visible in grid mode + non-mobile) */}
+        {!isMobile && viewMode === 'grid' && (() => {
           const builtins = [
             { id: 'equal',       icon: Grid2x2,  label: 'Equal grid' },
             { id: 'focusRight',  icon: Columns2, label: 'Focus left · stack right' },

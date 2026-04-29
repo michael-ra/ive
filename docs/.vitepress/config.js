@@ -40,6 +40,22 @@ export default defineConfig({
             { text: 'Cloning & Merging', link: '/guide/sessions/cloning' },
             { text: 'Mission Control', link: '/guide/sessions/mission-control' },
             { text: 'Inbox', link: '/guide/sessions/inbox' },
+            { text: 'Catch-up Briefing', link: '/guide/sessions/catchup' },
+          ],
+        },
+        {
+          text: 'Sharing & Multiplayer',
+          items: [
+            { text: 'Sharing Modes', link: '/guide/sharing/modes' },
+            { text: 'Invites & QR Codes', link: '/guide/sharing/invites' },
+            { text: 'Joiner Sessions & Modes', link: '/guide/sharing/joiner-sessions' },
+          ],
+        },
+        {
+          text: 'Mobile',
+          items: [
+            { text: 'Install (PWA)', link: '/guide/mobile/install' },
+            { text: 'Push Notifications', link: '/guide/mobile/push' },
           ],
         },
         {
@@ -107,6 +123,8 @@ export default defineConfig({
             { text: 'General', link: '/guide/settings/general' },
             { text: 'Sounds', link: '/guide/settings/sounds' },
             { text: 'Accounts', link: '/guide/settings/accounts' },
+            { text: 'API Keys', link: '/guide/settings/api-keys' },
+            { text: 'Safety Gate (AVCP) & Auto Auth Cycling', link: '/guide/settings/safety' },
             { text: 'Experimental', link: '/guide/settings/experimental' },
           ],
         },
