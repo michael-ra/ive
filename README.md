@@ -51,9 +51,7 @@ Open [http://localhost:5173](http://localhost:5173). That's it. IVE handles its 
 
 ---
 
-<img src="docs/screenshots/landing/section-changes.png" alt="What Changes" width="100%">
-
-At a glance — **one grid** · **stacked plans** · **token-saving output styles** · **mobile PWA** · **invites without keys** · **multi-agent coordination** · **voice-over previews** · **catch-up briefings** · **autonomous RALPH loops** · **install-time supply-chain shield** · **trend radar**.
+<img src="docs/screenshots/landing/section-changes.png" alt="What Changes — at a glance: one grid, stacked plans, token-saving output styles, mobile PWA, invites without keys, multi-agent coordination, voice-over previews, catch-up briefings, autonomous RALPH loops, install-time supply-chain shield, trend radar" width="100%">
 
 - **One grid, every session.** State, scroll, name, ownership — all tracked. The "which window had the auth fix" problem goes away.
 - **Stack your plans.** Claude Max, Gemini Ultra, raw API keys, whatever you've got. When a session hits `quota_exceeded`, IVE rotates to the next account and keeps going. The agent doesn't notice; the PR still ships.
