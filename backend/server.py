@@ -17006,10 +17006,13 @@ def create_app() -> web.Application:
     app.router.add_post("/api/observatory/findings/{id}/promote", promote_observatory_finding)
     app.router.add_post("/api/workspaces/{id}/observatorist", create_observatorist)
 
-    # System-wide API key management
-    app.router.add_get("/api/api-keys", list_api_keys)
-    app.router.add_put("/api/api-keys", save_api_key)
-    app.router.add_post("/api/api-keys/test", test_api_key)
+    # System-wide API key management — owner / Full only. Brief and Code
+    # joiners get a 403 so the README promise ("your API keys never leave
+    # your machine") holds end-to-end: even the 4-char preview, the
+    # configured-which-keys map, and the test/probe surface are all gated.
+    app.router.add_get("/api/api-keys", _g(list_api_keys, "full"))
+    app.router.add_put("/api/api-keys", _g(save_api_key, "full"))
+    app.router.add_post("/api/api-keys/test", _g(test_api_key, "full"))
 
     app.router.add_get("/api/workspaces/{id}/test-queue", list_test_queue)
     app.router.add_post("/api/workspaces/{id}/test-queue", enqueue_test)
