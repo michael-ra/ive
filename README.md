@@ -20,7 +20,7 @@
 
 <img src="docs/screenshots/landing/section-pitch.png" alt="Why IVE" width="100%">
 
-Six terminals open. Three Claude Code, two Gemini, one Commander session running workers. A friend jumps in from their phone to triage the Feature Board. A pipeline fires the moment a ticket lands in *In Progress*. Sonnet hits its quota mid-sentence and IVE rotates to your next account without dropping a keystroke. You go get coffee. Nothing stops.
+IVE is a local browser workspace for running many AI coding CLIs in parallel. Real persistent PTYs for Claude Code, Gemini CLI, and whichever CLI ships next — with quota-rotation across accounts, shared memory between agents, visual pipelines, 4-word teammate invites, mobile PWA, supply-chain scanning, and a 9,000+ skill marketplace built in.
 
 If you've ever run more than one AI CLI at a time, you know the rest: lost context, four tabs open, "wait, which window had the auth fix?", and a quota you blew through twice over.
 
