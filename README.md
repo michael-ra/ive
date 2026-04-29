@@ -151,6 +151,12 @@ IVE_TELEMETRY=off ./start.sh
 **How do I contribute?**
 Check out [CONTRIBUTING.md](CONTRIBUTING.md) to get started!
 
+---
+
+<img src="docs/screenshots/landing/pillar-skills.png" alt="Fully extendable. Plugin system. Marketplace, MCP servers, and 9,000+ skills." width="100%">
+
+---
+
 <p align="center">
   Built out of frustration about current coding tools. By IVE community, for everyone.<br>
 </p>
