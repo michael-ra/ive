@@ -5,7 +5,7 @@ Thanks for your interest in IVE. The project is small and moves fast — patches
 ## Dev setup
 
 ```bash
-git clone https://github.com/vibe2vibe/ive.git
+git clone https://github.com/michael-ra/ive.git
 cd ive
 ./start.sh
 ```
@@ -16,7 +16,7 @@ For full prerequisites (Python 3.11+, Node 18+, screenshot tooling, OS notes), s
 
 ## Project layout &amp; conventions
 
-The canonical description of the codebase, including the three-layer CLI abstraction, event bus, hook-based state detection, and the full file map, lives in [`CLAUDE.md`](CLAUDE.md). Read it before sending non-trivial changes.
+For the architecture overview (three-layer CLI abstraction, event bus, hook-based state detection, file map), see the [README](README.md#under-the-hood) and the docs at [`docs/guide/introduction.md`](docs/guide/introduction.md). Read those before sending non-trivial changes.
 
 A few load-bearing conventions:
 
