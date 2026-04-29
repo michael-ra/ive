@@ -20,11 +20,13 @@
 
 <img src="docs/screenshots/landing/section-pitch.png" alt="Why IVE" width="100%">
 
-IVE is a local browser workspace for running many AI coding CLIs in parallel. Real persistent PTYs for Claude Code, Gemini CLI, and whichever CLI ships next — with quota-rotation across accounts, shared memory between agents, visual pipelines, 4-word teammate invites, mobile PWA, supply-chain scanning, and a 9,000+ skill marketplace built in.
+IVE is a local browser workspace for running many AI coding CLIs in parallel — Claude Code, Gemini CLI, and whichever ships next. Real persistent PTYs, auto-rotation across accounts when you hit a quota, shared memory between agents, auto-distilled learnings from every session, mobile PWA, 900+ skills and plugins to extend it, supply-chain attacks blocked on autopilot, and collaboration with friends without the git-merge hell. Want a custom code workflow? Meet pipelines — drag-and-drop autonomous agent graphs that just run. Never worry about managing workflows again.
 
 If you've ever run more than one AI CLI at a time, you know the rest: lost context, four tabs open, "wait, which window had the auth fix?", and a quota you blew through twice over.
 
 IVE puts every CLI session in one place — persistent, collaborative, and yours. One grid, every agent, no tab juggling.
+
+Stop managing tabs. Stop worrying about missing new trends in AI coding. Stop worrying about context sharing. Start collaborating. Ship fast. And build your solution in lightspeed. This is IVE.
 
 <p align="center">
   <a href="https://ive.dev">
@@ -51,25 +53,19 @@ Open [http://localhost:5173](http://localhost:5173). That's it. IVE handles its 
 
 <img src="docs/screenshots/landing/section-changes.png" alt="What Changes" width="100%">
 
-**One grid, every session.** State, scroll, name, ownership — all tracked. The "which window had the auth fix" problem goes away.
+At a glance — **one grid** · **stacked plans** · **token-saving output styles** · **mobile PWA** · **invites without keys** · **multi-agent coordination** · **voice-over previews** · **catch-up briefings** · **autonomous RALPH loops** · **install-time supply-chain shield** · **trend radar**.
 
-**Stack your plans.** Claude Max, Gemini Ultra, raw API keys, whatever you've got. When a session hits `quota_exceeded`, IVE rotates to the next account and keeps going. The agent doesn't notice; the PR still ships.
-
-**Code from your phone.** Add IVE to your home screen. Real PWA — full terminal, push notifications when something needs you (over the public tunnel or any HTTPS URL — browsers block push on plain LAN HTTP), and your app icon on the home screen instead of a browser tab. Your flow doesn't end when your laptop closes.
-
-**Bring people in without sharing keys.** Hand a friend a 4-word invite. They land in your agent army with clamped access (Brief, Code, or Full). No screen sharing, no password reset, no key copying.
-
-**Multi-agent without the merge chaos.** Two sessions about to touch the same file? IVE notices before they stomp each other — blocking the high-overlap collisions and just sharing notes on the lower ones. Memory syncs through a hub so what one agent learns, every agent remembers.
-
-**Talk to it like a designer.** Hold ⌘R over the Live Preview and narrate what you want changed. IVE records the screen, your voice, and a transcript, then drops the lot into the session. The agent gets the clip *and* what you said — no typing the feedback out.
-
-**Step away. Come back to a paragraph.** When you've been gone a while, a banner shows up with a 2–5 sentence briefing of what your agents shipped, what your team committed, and what memory picked up. One hour, one week, one month — same flow.
-
-**Loops that don't quit.** RALPH runs execute → verify → fix until the tester passes — up to 20 iterations. You start it once, you go to bed, you come back to a green build.
-
-**One safety net under every install.** Anti-Vibe-Code-Pwner checks every `npm install` and `pip install` an agent tries — typo-squats, sketchy post-install scripts, brand-new uploader accounts — *before* the install runs. So you can leave agents unsupervised without leaving your machine unsupervised.
-
-**Know what to build next.** The Observatory scans GitHub Trending, Hacker News, and Product Hunt on a schedule (with Reddit and other sources you can wire up in Smart mode) and tells you what tools are worth integrating.
+- **One grid, every session.** State, scroll, name, ownership — all tracked. The "which window had the auth fix" problem goes away.
+- **Stack your plans.** Claude Max, Gemini Ultra, raw API keys, whatever you've got. When a session hits `quota_exceeded`, IVE rotates to the next account and keeps going. The agent doesn't notice; the PR still ships.
+- **Strip the agent chatter.** Output styles — caveman, dense, lite, ultra — collapse "Sure! Here's what I did and why…" into just the answer. Same content, fraction of the tokens. Set globally, per workspace, or per session.
+- **Code from your phone.** Add IVE to your home screen. Real PWA — full terminal, push notifications when something needs you (over the public tunnel or any HTTPS URL — browsers block push on plain LAN HTTP), and your app icon on the home screen instead of a browser tab. Your flow doesn't end when your laptop closes.
+- **Bring people in without sharing keys.** Hand a friend a 4-word invite. They land in your agent army with clamped access (Brief, Code, or Full). No screen sharing, no password reset, no key copying.
+- **Multi-agent without the merge chaos.** Two sessions about to touch the same file? IVE notices before they stomp each other — blocking the high-overlap collisions and just sharing notes on the lower ones. Memory syncs through a hub so what one agent learns, every agent remembers.
+- **Talk to it like a designer.** Hold ⌘R over the Live Preview and narrate what you want changed. IVE records the screen, your voice, and a transcript, then drops the lot into the session. The agent gets the clip *and* what you said — no typing the feedback out.
+- **Step away. Come back to a paragraph.** When you've been gone a while, a banner shows up with a 2–5 sentence briefing of what your agents shipped, what your team committed, and what memory picked up. One hour, one week, one month — same flow.
+- **Loops that don't quit.** RALPH runs execute → verify → fix until the tester passes — up to 20 iterations. You start it once, you go to bed, you come back to a green build.
+- **One safety net under every install.** Anti-Vibe-Code-Pwner checks every `npm install` and `pip install` an agent tries — typo-squats, sketchy post-install scripts, brand-new uploader accounts — *before* the install runs. So you can leave agents unsupervised without leaving your machine unsupervised.
+- **Know what to build next.** The Observatory scans GitHub Trending, Hacker News, and Product Hunt on a schedule (with Reddit and other sources you can wire up in Smart mode) and tells you what tools are worth integrating.
 
 ---
 
@@ -204,6 +200,7 @@ IVE is open source and early. Bug reports, new CLI profiles, docs improvements, 
 > **Experimental alpha release.** Things move fast and will occasionally break — schema, APIs, and UI are still in flux. Pin a commit if you need stability, and expect rough edges. Feedback welcome.
 
 <p align="center">
-  Built by the IVE community.
+  Built by the IVE community.<br>
+  Made with ❤️ in Berlin.
 </p>
 
