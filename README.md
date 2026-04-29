@@ -199,12 +199,6 @@ IVE_TELEMETRY=off ./start.sh
 
 IVE is open source and early. Bug reports, new CLI profiles, docs improvements, weird edge cases — all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
-
-<img src="docs/screenshots/landing/pillar-skills.png" alt="Fully extendable. Plugin system — marketplace, MCP servers, and 9,000+ skills." width="100%">
-
----
-
 <p align="center">
   Built by the IVE community.
 </p>
