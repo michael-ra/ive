@@ -13,8 +13,7 @@
 <p align="center">
   <a href="https://ive.dev">Website</a> ·
   <a href="https://ive.dev/docs">Docs</a> ·
-  <a href="https://github.com/michael-ra/ive/stargazers">GitHub Stars</a> ·
-  <a href="https://discord.gg/ive">Discord</a>
+  <a href="https://github.com/michael-ra/ive/stargazers">GitHub Stars</a>
 </p>
 
 > **🌤️ Want to skip the local setup?** Boot a public-tunneled instance accessible from anywhere in seconds with `npx ive --tunnel`!
