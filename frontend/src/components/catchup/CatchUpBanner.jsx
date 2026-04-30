@@ -52,7 +52,10 @@ export default function CatchUpBanner({ onOpenPanel }) {
       : new Date(now - 24 * 60 * 60 * 1000).toISOString()
 
     api
-      .getCatchup({ since, limit: 200 })
+      .getAppSetting('catchup_model')
+      .then((res) => res?.value || 'haiku')
+      .catch(() => 'haiku')
+      .then((model) => api.getCatchup({ since, limit: 200, model }))
       .then((d) => {
         if (cancelled) return
         if (d?.total_events > 0) setDigest(d)

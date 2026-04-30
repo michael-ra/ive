@@ -301,11 +301,25 @@ class MemoryManager:
         workspace_id: Optional[str] = None,
         max_chars: int = 4000,
         compact: bool = False,
+        mode: str = "auto",
     ) -> str:
         """Format memory entries as a text block for system prompt injection.
 
         This is the key abstraction: ANY CLI gets the same memory, formatted
         identically, regardless of whether it has native auto-memory support.
+
+        ``mode`` controls the inlining strategy:
+          * ``"full"``  — legacy: inline ``name + full content`` per entry.
+            Long entries crowd out short ones; once ``max_chars`` is hit the
+            tail is silently dropped.
+          * ``"index"`` — one-line entries (``name — description``). The
+            agent calls ``recall_memory(name)`` to fetch a body on demand.
+            Mirrors Claude Code's ``MEMORY.md`` index pattern; scales to
+            many entries inside the same budget.
+          * ``"auto"``  (default) — full mode if every entry's full body
+            comfortably fits in ``max_chars``, otherwise index mode. This
+            keeps small workspaces unchanged while large ones automatically
+            move to the index pattern instead of silently truncating.
 
         When compact=True (triggered by dense/caveman/ultra output styles),
         uses abbreviated headers and drops bold formatting to save tokens.
@@ -313,6 +327,17 @@ class MemoryManager:
         entries = await self.list_entries(workspace_id=workspace_id)
         if not entries:
             return ""
+
+        # Auto-mode decision: would full bodies fit? Use ~80% of budget as
+        # the threshold so we keep some headroom for headers / hint footer
+        # / accumulating content variability.
+        if mode == "auto":
+            full_size = sum(len(e.get("name", "")) + len(e.get("content", "")) + 8
+                            for e in entries)
+            mode = "full" if full_size <= int(max_chars * 0.8) else "index"
+
+        if mode not in ("full", "index"):
+            mode = "full"
 
         lines: list[str] = []
         char_count = 0
@@ -347,10 +372,24 @@ class MemoryManager:
                 section = f"\n### {label}\n"
 
             for e in group:
-                if compact:
-                    entry_text = f"- {e['name']}: {e['content']}"
+                name = e.get("name", "")
+                if mode == "index":
+                    # Prefer the curated description; fall back to a tight
+                    # excerpt of content so legacy entries without a
+                    # description still convey what they're about.
+                    desc = (e.get("description") or "").strip()
+                    if not desc:
+                        body = (e.get("content") or "").strip().replace("\n", " ")
+                        desc = body[:120] + ("…" if len(body) > 120 else "")
+                    if compact:
+                        entry_text = f"- {name} — {desc}"
+                    else:
+                        entry_text = f"- **{name}** — {desc}"
                 else:
-                    entry_text = f"- **{e['name']}**: {e['content']}"
+                    if compact:
+                        entry_text = f"- {name}: {e.get('content', '')}"
+                    else:
+                        entry_text = f"- **{name}**: {e.get('content', '')}"
                 if char_count + len(section) + len(entry_text) > max_chars:
                     break
                 section += entry_text + "\n"
@@ -366,7 +405,15 @@ class MemoryManager:
             return ""
 
         header = "**context**\n" if compact else "## Remembered Context\n"
-        return header + "".join(lines)
+        body = header + "".join(lines)
+        if mode == "index":
+            hint = (
+                "\n_call `recall_memory(name=...)` to expand any entry above._\n"
+                if not compact else
+                "\n_recall_memory(name=...) to expand_\n"
+            )
+            body += hint
+        return body
 
     # ── Sync back to a provider's native auto-memory format ──────────
 

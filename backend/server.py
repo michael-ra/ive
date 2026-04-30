@@ -2099,52 +2099,154 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                                 except Exception as _ov_exc:
                                     logger.debug("Overlap detection skipped: %s", _ov_exc)
 
-                                # Context sharing prompt fragment
-                                system_prompt_parts.append(
-                                    "## Shared Context (W2W)\n\n"
-                                    "### MANDATORY: Before starting work\n"
-                                    "1. **search_memory(query)** — ALWAYS do this first. Searches ALL workspace "
-                                    "memory: past tasks with lessons, session digests, knowledge base, peer "
-                                    "messages, and file activity. Skipping this risks duplicating solved problems.\n"
-                                    "2. **check_messages()** — Read the peer bulletin board for warnings and updates.\n"
-                                    "3. **find_similar_tasks(query)** — Check if someone already solved this or a related problem.\n\n"
-                                    "### MANDATORY: Before editing any file\n"
-                                    "- **get_file_context(file_path)** — Check who else recently edited this file "
-                                    "and what they were working on. If another session touched it in the last "
-                                    "10 minutes, coordinate via post_message() before making changes.\n\n"
-                                    "### While working\n"
-                                    "- **update_digest(summary?, discoveries?, decisions?)** — Keep your digest current "
-                                    "so peers can see what you're doing. Update after each major step.\n"
-                                    "- **contribute_knowledge(category, content, scope?)** — Share codebase insights "
-                                    "(gotchas, conventions, patterns) that would help other sessions.\n"
-                                    "- **post_message(topic, content, priority, files?)** — Warn peers when your "
-                                    "changes affect shared interfaces, schemas, configs, or APIs.\n\n"
-                                    "### When completing a task\n"
-                                    "Always provide lessons_learned and important_notes in update_my_task(). "
-                                    "These are the most valuable knowledge artifacts — they help future sessions "
-                                    "avoid your mistakes and build on your discoveries.\n\n"
-                                    "Categories: architecture, convention, gotcha, pattern, api, setup"
-                                )
+                                # Context sharing prompt fragment.
+                                # Testers don't edit shared code, so they get a trimmed
+                                # surface: no conflict-avoidance tools, no "before editing
+                                # any file" rituals — just the memory/digest/knowledge loop
+                                # they actually use. contribute_knowledge stays in the tester
+                                # block because gotchas the tester finds (flaky selectors,
+                                # UI quirks, "still broken" notes) should land in the shared
+                                # KB so the next implementer sees them.
+                                _session_type_w2w = (config.get("session_type") or "").strip()
+                                _is_tester_w2w = _session_type_w2w in ("tester", "test_worker")
+                                _is_commander_w2w = _session_type_w2w == "commander"
+                                _is_documentor_w2w = _session_type_w2w == "documentor"
+
+                                if _is_documentor_w2w:
+                                    # Documentor MCP only exposes save_memory from the W2W
+                                    # surface — no peer comms, no digests, no contribute_knowledge.
+                                    # Skip the block entirely; documentor's role prompt covers
+                                    # what it actually does.
+                                    pass
+                                elif _is_commander_w2w:
+                                    system_prompt_parts.append(
+                                        "## Shared Context (W2W) — Commander\n\n"
+                                        "You orchestrate workers; you rarely edit code yourself, "
+                                        "so you skip per-file conflict checks. Your loop is:\n\n"
+                                        "### Before assigning or routing a task\n"
+                                        "1. **search_memory(query)** — past tasks with lessons, worker digests, "
+                                        "knowledge entries, and peer messages. Skipping this means re-routing the "
+                                        "same task to the same worker class that already failed at it.\n"
+                                        "2. **list_worker_digests()** — what every worker is currently doing. "
+                                        "Use this to spot idle capacity and avoid double-booking.\n"
+                                        "3. **check_coordination(intent=...)** — does this task overlap with "
+                                        "active worker intents? Returns conflict / share / notify levels.\n\n"
+                                        "### While orchestrating\n"
+                                        "- **get_session_digest(session_id)** — pull a single worker's current "
+                                        "task, focus, decisions, and discoveries.\n"
+                                        "- **save_memory** — your private playbook. Save routing decisions, "
+                                        "worker reliability notes, and user-correction feedback.\n"
+                                        "- **contribute_knowledge(category='orchestration', content, scope?)** — "
+                                        "share routing/team-formation lessons with the workspace KB so future "
+                                        "commanders (and the next session of yours) inherit them.\n\n"
+                                        "### You do NOT have\n"
+                                        "update_digest, post_message, get_file_context, check_messages, "
+                                        "list_peers, blocking_bulletin, find_similar_tasks — those are worker-only. "
+                                        "Use the commander-side equivalents above."
+                                    )
+                                elif _is_tester_w2w:
+                                    system_prompt_parts.append(
+                                        "## Shared Context (W2W) — Tester\n\n"
+                                        "You are a verifier, not an implementer. You don't edit shared code, "
+                                        "so you skip the conflict-avoidance machinery. Your W2W loop is:\n\n"
+                                        "### Before each test run\n"
+                                        "1. **search_memory(query)** — has this feature been tested before? "
+                                        "Any flaky tests, undocumented behavior, or known gotchas? "
+                                        "Skipping this means rediscovering the same flake.\n"
+                                        "2. **find_similar_tasks(query)** — has this exact bug been reported already?\n\n"
+                                        "### While testing\n"
+                                        "- **update_digest(task_summary?, current_focus?, discoveries?)** — keep your "
+                                        "digest current so commander and the UI can see what you're testing right now.\n"
+                                        "- **save_memory** — save flaky tests, undocumented behavior, reusable selectors, "
+                                        "and user-correction feedback. See your role prompt for what to save.\n"
+                                        "- **contribute_knowledge(category='gotcha'|'pattern', content, scope?)** — "
+                                        "when you find a UI quirk, a selector that needs special handling, an "
+                                        "unresolved 'still broken' issue, or a testing pattern that worked, write it "
+                                        "to the shared KB so the next implementer or tester sees it in their prompt. "
+                                        "This is how testers ship lasting value beyond a single report.\n\n"
+                                        "### When you find a bug\n"
+                                        "Report findings up — do NOT try to coordinate a fix yourself. "
+                                        "Use update_my_task() with detailed reproduction steps and notes. "
+                                        "Commander will file follow-up tasks for implementer workers."
+                                    )
+                                else:
+                                    system_prompt_parts.append(
+                                        "## Shared Context (W2W)\n\n"
+                                        "### MANDATORY: Before starting work\n"
+                                        "1. **search_memory(query)** — ALWAYS do this first. Searches ALL workspace "
+                                        "memory: past tasks with lessons, session digests, knowledge base, peer "
+                                        "messages, and file activity. Skipping this risks duplicating solved problems.\n"
+                                        "2. **check_messages()** — Read the peer bulletin board for warnings and updates.\n"
+                                        "3. **find_similar_tasks(query)** — Check if someone already solved this or a related problem.\n\n"
+                                        "### MANDATORY: Before editing any file\n"
+                                        "- **get_file_context(file_path)** — Check who else recently edited this file "
+                                        "and what they were working on. If another session touched it in the last "
+                                        "10 minutes, coordinate via post_message() before making changes.\n\n"
+                                        "### While working\n"
+                                        "- **update_digest(summary?, discoveries?, decisions?)** — Keep your digest current "
+                                        "so peers can see what you're doing. Update after each major step.\n"
+                                        "- **contribute_knowledge(category, content, scope?)** — Share codebase insights "
+                                        "(gotchas, conventions, patterns) that would help other sessions.\n"
+                                        "- **post_message(topic, content, priority, files?)** — Warn peers when your "
+                                        "changes affect shared interfaces, schemas, configs, or APIs.\n\n"
+                                        "### When completing a task\n"
+                                        "Always provide lessons_learned and important_notes in update_my_task(). "
+                                        "These are the most valuable knowledge artifacts — they help future sessions "
+                                        "avoid your mistakes and build on your discoveries.\n\n"
+                                        "Categories: architecture, convention, gotcha, pattern, api, setup"
+                                    )
 
                             if ws_flags and ws_flags["comms_enabled"]:
-                                system_prompt_parts.append(
-                                    "## Peer Communication (W2W)\n\n"
-                                    "You share this workspace with other active agent sessions. "
-                                    "You MUST coordinate to avoid conflicts:\n\n"
-                                    "- **post_message(topic, content, priority, files?)** — Alert peers about your changes.\n"
-                                    "  Use priority='blocking' + files=[...] when editing shared files.\n"
-                                    "- **check_messages()** — Check the bulletin board BEFORE starting each work phase.\n"
-                                    "- **list_peers()** — See who else is active and what they're working on.\n\n"
-                                    "**Rules:**\n"
-                                    "1. Before editing a shared file (config, schema, API, types), post a blocking "
-                                    "message with the file path so peers know to wait.\n"
-                                    "2. After finishing a batch of related edits, post an info message summarizing "
-                                    "what changed so peers can adapt.\n"
-                                    "3. If you receive a blocking warning about a file you need to edit, "
-                                    "coordinate with the peer before proceeding.\n\n"
-                                    "Priority levels: info (FYI), heads_up (peer notified at idle), "
-                                    "blocking (immediate — file is locked by peer)."
-                                )
+                                if _is_documentor_w2w:
+                                    # Documentor has no peer-comms tools — skip this block.
+                                    pass
+                                elif _is_commander_w2w:
+                                    system_prompt_parts.append(
+                                        "## Peer Communication (W2W) — Commander\n\n"
+                                        "You talk to workers, not the other way around. Channels:\n\n"
+                                        "- **send_message(session_id, message)** — direct a specific worker. "
+                                        "Use this to redirect, ask a clarifying question, or hand off context.\n"
+                                        "- **broadcast_message(message)** — fan out to all active workers in "
+                                        "the workspace (e.g. user changed direction; merge freeze; new constraint).\n"
+                                        "- **headsup(to='all'|session_id, message=...)** — non-blocking notice. "
+                                        "Fire-and-continue when you want workers to SEE something but you're not "
+                                        "waiting on them (e.g. \"reassigning the auth area to session X\").\n\n"
+                                        "You do NOT have post_message, check_messages, or list_peers — "
+                                        "those are worker bulletin-board tools. For peer state, use "
+                                        "list_worker_digests / get_session_digest instead."
+                                    )
+                                elif _is_tester_w2w:
+                                    system_prompt_parts.append(
+                                        "## Peer Communication (W2W) — Tester\n\n"
+                                        "You can talk to peers but rarely need to. Two channels:\n\n"
+                                        "- **headsup(to='commander', message=...)** — surface a finding or "
+                                        "escalation to commander when you've hit something they should see "
+                                        "immediately (a critical regression, a blocker for the test plan).\n"
+                                        "- **post_message(topic, content, priority='info')** — coordinate with "
+                                        "sibling test-workers if you're running in parallel (e.g. \"I'm taking "
+                                        "the login flow, you take signup\").\n\n"
+                                        "You do NOT need to: lock files, send blocking bulletins, or warn peers "
+                                        "about your edits — testers don't edit code."
+                                    )
+                                else:
+                                    system_prompt_parts.append(
+                                        "## Peer Communication (W2W)\n\n"
+                                        "You share this workspace with other active agent sessions. "
+                                        "You MUST coordinate to avoid conflicts:\n\n"
+                                        "- **post_message(topic, content, priority, files?)** — Alert peers about your changes.\n"
+                                        "  Use priority='blocking' + files=[...] when editing shared files.\n"
+                                        "- **check_messages()** — Check the bulletin board BEFORE starting each work phase.\n"
+                                        "- **list_peers()** — See who else is active and what they're working on.\n\n"
+                                        "**Rules:**\n"
+                                        "1. Before editing a shared file (config, schema, API, types), post a blocking "
+                                        "message with the file path so peers know to wait.\n"
+                                        "2. After finishing a batch of related edits, post an info message summarizing "
+                                        "what changed so peers can adapt.\n"
+                                        "3. If you receive a blocking warning about a file you need to edit, "
+                                        "coordinate with the peer before proceeding.\n\n"
+                                        "Priority levels: info (FYI), heads_up (peer notified at idle), "
+                                        "blocking (immediate — file is locked by peer)."
+                                    )
                         except Exception as w2w_exc:
                             logger.warning("W2W injection skipped: %s", w2w_exc)
 
@@ -2261,7 +2363,9 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                             await _ask_db.close()
                         if _ask_row and _ask_row["value"] == "on":
                             from skill_suggester import suggest_for_session
-                            # Build context from session name + purpose + existing system prompt
+                            # Build context from session name + purpose + existing system prompt,
+                            # plus recent workspace digests so the match reflects what the user
+                            # has actually been doing — not just static session config.
                             _skill_ctx_parts = []
                             if config.get("name"):
                                 _skill_ctx_parts.append(config["name"])
@@ -2269,6 +2373,26 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                                 _skill_ctx_parts.append(config["purpose"])
                             if config.get("system_prompt"):
                                 _skill_ctx_parts.append(config["system_prompt"][:300])
+                            _ws_id = config.get("workspace_id")
+                            if _ws_id:
+                                try:
+                                    _dg_db = await get_db()
+                                    try:
+                                        _dg_cur = await _dg_db.execute(
+                                            "SELECT task_summary, current_focus FROM session_digests "
+                                            "WHERE workspace_id = ? AND (task_summary != '' OR current_focus != '') "
+                                            "ORDER BY updated_at DESC LIMIT 3",
+                                            (_ws_id,),
+                                        )
+                                        for _dg_row in await _dg_cur.fetchall():
+                                            for _f in ("task_summary", "current_focus"):
+                                                _v = (_dg_row[_f] or "").strip()
+                                                if _v:
+                                                    _skill_ctx_parts.append(_v[:200])
+                                    finally:
+                                        await _dg_db.close()
+                                except Exception as _dg_err:
+                                    logger.debug("Skill ctx digest enrichment skipped: %s", _dg_err)
                             _skill_ctx = " ".join(_skill_ctx_parts)
                             if _skill_ctx.strip():
                                 _skill_block = await suggest_for_session(_skill_ctx)
@@ -2386,6 +2510,33 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         # previous session linger in this scope and contaminate
                         # the next session's config file.
                         _mcp_json = {"mcpServers": {}}
+
+                        # Snapshot W2W flags now so the worker MCP can read them
+                        # from env at startup instead of API-roundtripping back to
+                        # this server (which races with our own startup). Read
+                        # all three flags from the workspaces row; default '0'
+                        # if the row is missing or query fails.
+                        _w2w_comms_env = "0"
+                        _w2w_context_env = "0"
+                        _w2w_coord_env = "0"
+                        try:
+                            _w2w_db = await get_db()
+                            try:
+                                _w2w_cur = await _w2w_db.execute(
+                                    "SELECT comms_enabled, context_sharing_enabled, "
+                                    "coordination_enabled FROM workspaces WHERE id = ?",
+                                    (config.get("workspace_id", ""),),
+                                )
+                                _w2w_row = await _w2w_cur.fetchone()
+                                if _w2w_row:
+                                    _w2w_comms_env = "1" if _w2w_row["comms_enabled"] else "0"
+                                    _w2w_context_env = "1" if _w2w_row["context_sharing_enabled"] else "0"
+                                    _w2w_coord_env = "1" if _w2w_row["coordination_enabled"] else "0"
+                            finally:
+                                await _w2w_db.close()
+                        except Exception as _w2w_exc:
+                            logger.debug("W2W env-flag fetch skipped: %s", _w2w_exc)
+
                         for srv in mcp_servers_for_session:
                             resolved_env = {}
                             for ek, ev in srv["env"].items():
@@ -2397,6 +2548,9 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                                     .replace("{workspace_path}", config.get("workspace_path", ""))
                                     .replace("{session_id}", session_id)
                                     .replace("{session_type}", config.get("session_type") or "worker")
+                                    .replace("{w2w_comms}", _w2w_comms_env)
+                                    .replace("{w2w_context}", _w2w_context_env)
+                                    .replace("{w2w_coordination}", _w2w_coord_env)
                                 )
                             effective_approve = (
                                 srv["auto_approve_override"]
@@ -3463,6 +3617,31 @@ async def _autostart_session_pty(session_id: str):
 
                 mcp_json = {"mcpServers": {}}
                 auto_approved_names = []
+
+                # Snapshot W2W flags for env-var injection — same approach as the
+                # manual-start resolver above. Worker MCP reads these from env
+                # so it doesn't have to API-roundtrip at startup.
+                _a_w2w_comms = "0"
+                _a_w2w_context = "0"
+                _a_w2w_coord = "0"
+                try:
+                    _a_w2w_db = await get_db()
+                    try:
+                        _a_w2w_cur = await _a_w2w_db.execute(
+                            "SELECT comms_enabled, context_sharing_enabled, "
+                            "coordination_enabled FROM workspaces WHERE id = ?",
+                            (config.get("workspace_id", ""),),
+                        )
+                        _a_w2w_row = await _a_w2w_cur.fetchone()
+                        if _a_w2w_row:
+                            _a_w2w_comms = "1" if _a_w2w_row["comms_enabled"] else "0"
+                            _a_w2w_context = "1" if _a_w2w_row["context_sharing_enabled"] else "0"
+                            _a_w2w_coord = "1" if _a_w2w_row["coordination_enabled"] else "0"
+                    finally:
+                        await _a_w2w_db.close()
+                except Exception as _a_w2w_exc:
+                    logger.debug("W2W env-flag fetch (autostart) skipped: %s", _a_w2w_exc)
+
                 for row_mcp in mcp_rows:
                     srv = dict(row_mcp)
                     srv_args = json.loads(srv["args"] or "[]")
@@ -3487,6 +3666,9 @@ async def _autostart_session_pty(session_id: str):
                             .replace("{workspace_id}", config.get("workspace_id", ""))
                             .replace("{session_id}", session_id)
                             .replace("{session_type}", config.get("session_type") or "worker")
+                            .replace("{w2w_comms}", _a_w2w_comms)
+                            .replace("{w2w_context}", _a_w2w_context)
+                            .replace("{w2w_coordination}", _a_w2w_coord)
                         )
                     entry = {"command": srv["command"], "args": srv_args}
                     if resolved_env:
@@ -14589,8 +14771,12 @@ async def catchup_handler(request: web.Request) -> web.Response:
     use_llm = request.query.get("llm", "true").lower() not in ("0", "false", "no")
     include_commits = request.query.get("commits", "true").lower() not in ("0", "false", "no")
     include_memory = request.query.get("memory", "true").lower() not in ("0", "false", "no")
-    llm_cli = request.query.get("cli", "claude")
     llm_model = request.query.get("model", "haiku")
+    # Infer cli from the model id when the caller didn't pin one.
+    # Keeps the frontend single-string (one model setting drives both).
+    llm_cli = request.query.get("cli") or (
+        "gemini" if str(llm_model).lower().startswith("gemini") else "claude"
+    )
     digest = await catchup.build_digest(
         since_iso=since,
         until_iso=until,
@@ -15087,6 +15273,12 @@ async def on_startup(app: web.Application):
     worker_queue.set_pty_manager(pty_mgr)
     worker_queue.set_broadcast_fn(broadcast)
     worker_queue.register_subscribers()
+
+    # ── Idle reflection: PTY-injects a save-prompt after real idle ──
+    import idle_reflection
+    idle_reflection.set_pty_manager(pty_mgr)
+    idle_reflection.set_broadcast_fn(broadcast)
+    idle_reflection.register_subscribers()
 
     # ── Pipeline: implement → test → document loop ──────────────────
     import pipeline

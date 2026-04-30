@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   X, RefreshCw, Sparkles, Plus, Trash2, Telescope,
-  Loader2, Save, Edit3, Eye, MessageSquare,
+  Loader2, Check, Pencil,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
@@ -35,14 +35,32 @@ function StatusDot({ score }) {
   return <span className={`inline-block w-1.5 h-1.5 rounded-full ${cls}`} />
 }
 
-function SectionHeader({ children, action }) {
+function StatusPill({ score }) {
+  const tone =
+    score >= 0.7 ? 'text-emerald-300 bg-emerald-400/10 border-emerald-400/20'
+    : score >= 0.4 ? 'text-amber-300 bg-amber-400/10 border-amber-400/20'
+    : score > 0 ? 'text-red-300 bg-red-400/10 border-red-400/20'
+    : 'text-text-faint bg-zinc-700/20 border-zinc-700/40'
   return (
-    <div className="flex items-center justify-between mb-2">
-      <div className="text-[10px] font-medium text-text-faint uppercase tracking-wider">{children}</div>
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] tabular-nums ${tone}`}>
+      <StatusDot score={score} />
+      {(score || 0).toFixed(2)}
+    </span>
+  )
+}
+
+function Eyebrow({ children, action, className = '' }) {
+  return (
+    <div className={`flex items-center justify-between ${className}`}>
+      <div className="text-[10px] font-medium text-text-faint uppercase tracking-[0.12em]">{children}</div>
       {action}
     </div>
   )
 }
+
+const PRIMARY_BTN = 'inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 rounded transition-colors'
+const GHOST_BTN = 'inline-flex items-center justify-center gap-1.5 px-2.5 py-1 text-xs text-text-faint hover:text-text-base hover:bg-bg-deep/60 rounded transition-colors'
+const INPUT_BASE = 'bg-bg-deep border border-border-base focus:border-cyan-500/40 focus:outline-none rounded px-2 py-1.5 text-xs'
 
 export default function SmartObservatoryPanel({ onClose }) {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId)
@@ -188,146 +206,209 @@ export default function SmartObservatoryPanel({ onClose }) {
 
   if (!activeWorkspaceId) {
     return (
-      <div className="fixed inset-0 z-50 bg-bg-deep/95 flex items-center justify-center">
+      <div className="fixed inset-0 z-50 bg-bg-deep/80 backdrop-blur-sm flex items-center justify-center">
         <div className="text-text-faint">Select a workspace first.</div>
       </div>
     )
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-bg-deep/95 flex">
-      <div className="flex-1 max-w-5xl mx-auto my-8 bg-bg-base border border-border-base rounded-md flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border-base">
-          <div className="flex items-center gap-2">
-            <Telescope className="w-4 h-4 text-cyan-400" />
-            <span className="text-sm font-medium">Smart Observatory</span>
+    <div className="fixed inset-0 z-50 bg-bg-deep/80 backdrop-blur-sm flex" onClick={onClose}>
+      <div
+        className="flex-1 max-w-4xl mx-auto my-10 bg-bg-base border border-border-base rounded-lg shadow-2xl flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between px-5 py-4 border-b border-border-base">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 w-8 h-8 rounded-md bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">
+              <Telescope className="w-4 h-4 text-cyan-300" />
+            </div>
+            <div>
+              <div className="text-sm font-medium leading-tight">Smart Observatory</div>
+              <div className="text-[11px] text-text-faint mt-0.5">Profile-aware competitive scanning across web sources</div>
+            </div>
           </div>
-          <button onClick={onClose} className="text-text-faint hover:text-text-base">
+          <button onClick={onClose} className="text-text-faint hover:text-text-base p-1 -m-1 rounded hover:bg-bg-deep/60 transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="flex border-b border-border-base text-xs">
+        <div className="flex items-center gap-1 px-4 pt-2 border-b border-border-base">
           {[
             ['profile', 'Profile'],
             ['targets', 'Curated Targets'],
             ['insights', 'Insights'],
-            ['scan', 'Run Smart Scan'],
+            ['scan', 'Smart Scan'],
           ].map(([k, label]) => (
             <button
               key={k}
               onClick={() => setTab(k)}
-              className={`px-4 py-2 ${
-                tab === k ? 'text-text-base border-b border-cyan-400' : 'text-text-faint hover:text-text-base'
+              className={`relative px-3 py-2 text-xs transition-colors ${
+                tab === k ? 'text-text-base' : 'text-text-faint hover:text-text-base'
               }`}
             >
               {label}
+              {tab === k && (
+                <span className="absolute left-2 right-2 -bottom-px h-px bg-cyan-400" />
+              )}
             </button>
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 text-sm">
+        <div className="flex-1 overflow-y-auto px-5 py-5 text-sm">
           {tab === 'profile' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="text-text-faint">
-                  {profile?.last_built_at
-                    ? `Built ${new Date(profile.last_built_at).toLocaleString()}`
-                    : 'No profile yet — build one to enable smart scans.'}
+            <div className="space-y-5">
+              <div className="flex items-center justify-between gap-4 p-3 rounded-md bg-bg-deep/40 border border-border-base/60">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className={`w-1.5 h-1.5 rounded-full ${profile?.last_built_at ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  <span className="text-text-base">
+                    {profile?.last_built_at ? 'Profile ready' : 'No profile yet'}
+                  </span>
+                  <span className="text-text-faint">
+                    {profile?.last_built_at
+                      ? `· built ${new Date(profile.last_built_at).toLocaleString()}`
+                      : '· build one to enable smart scans'}
+                  </span>
                 </div>
                 <button
                   onClick={buildProfile}
                   disabled={profileBuilding || profileLoading}
-                  className="px-3 py-1 text-xs bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 rounded flex items-center gap-1.5"
+                  className={PRIMARY_BTN}
                 >
                   {profileBuilding ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                   {profile ? 'Rebuild from sources' : 'Build profile'}
                 </button>
               </div>
 
-              {Object.keys(SECTION_LABEL).map((section) => {
-                const text = profileDraft[section] || ''
-                const editing = editingSection === section
-                return (
-                  <div key={section} className="border border-border-base rounded p-3">
-                    <SectionHeader
-                      action={
-                        editing ? (
-                          <button
-                            onClick={() => saveProfileSection(section)}
-                            className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
-                          >
-                            <Save className="w-3 h-3" /> Save
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => setEditingSection(section)}
-                            className="text-xs text-text-faint hover:text-text-base flex items-center gap-1"
-                          >
-                            <Edit3 className="w-3 h-3" /> Edit
-                          </button>
-                        )
-                      }
-                    >
-                      {SECTION_LABEL[section]}
-                    </SectionHeader>
-                    {editing ? (
-                      <textarea
-                        value={text}
-                        onChange={(e) =>
-                          setProfileDraft({ ...profileDraft, [section]: e.target.value })
+              <div className="divide-y divide-border-base/60 border border-border-base/60 rounded-md overflow-hidden">
+                {Object.keys(SECTION_LABEL).map((section) => {
+                  const text = profileDraft[section] || ''
+                  const editing = editingSection === section
+                  return (
+                    <div key={section} className="px-4 py-3 hover:bg-bg-deep/30 transition-colors group">
+                      <Eyebrow
+                        className="mb-1.5"
+                        action={
+                          editing ? (
+                            <button onClick={() => saveProfileSection(section)} className="inline-flex items-center gap-1 text-[11px] text-cyan-300 hover:text-cyan-200">
+                              <Check className="w-3 h-3" /> Save
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setEditingSection(section)}
+                              className="inline-flex items-center gap-1 text-[11px] text-text-faint hover:text-text-base opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <Pencil className="w-3 h-3" /> Edit
+                            </button>
+                          )
                         }
-                        className="w-full bg-bg-deep border border-border-base rounded p-2 text-xs min-h-[80px] font-mono"
-                      />
-                    ) : (
-                      <div className="text-xs text-text-base whitespace-pre-wrap leading-relaxed">
-                        {text || <span className="text-text-faint italic">empty</span>}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+                      >
+                        {SECTION_LABEL[section]}
+                      </Eyebrow>
+                      {editing ? (
+                        <textarea
+                          value={text}
+                          onChange={(e) => setProfileDraft({ ...profileDraft, [section]: e.target.value })}
+                          autoFocus
+                          className="w-full bg-bg-deep border border-border-base focus:border-cyan-500/40 focus:outline-none rounded p-2 text-xs min-h-[90px] font-mono leading-relaxed"
+                        />
+                      ) : (
+                        <div className="text-xs text-text-base whitespace-pre-wrap leading-relaxed">
+                          {text || <span className="text-text-faint italic">empty — click Edit to fill in</span>}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
 
           {tab === 'targets' && (
             <div className="space-y-4">
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-text-faint">Source:</span>
-                <select
-                  value={targetSourceFilter}
-                  onChange={(e) => setTargetSourceFilter(e.target.value)}
-                  className="bg-bg-deep border border-border-base rounded px-2 py-1"
-                >
-                  <option value="all">All</option>
-                  {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                {targetSourceFilter !== 'all' && (
-                  <button
-                    onClick={() => planTargets(targetSourceFilter)}
-                    disabled={planning === targetSourceFilter}
-                    className="ml-auto px-2 py-1 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 rounded flex items-center gap-1.5"
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-[10px] uppercase tracking-[0.12em] text-text-faint">Source</span>
+                  <select
+                    value={targetSourceFilter}
+                    onChange={(e) => setTargetSourceFilter(e.target.value)}
+                    className={INPUT_BASE}
                   >
-                    {planning === targetSourceFilter ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                    Plan with LLM
-                  </button>
-                )}
+                    <option value="all">All sources</option>
+                    {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="text-[11px] text-text-faint tabular-nums">{targets.length} target{targets.length === 1 ? '' : 's'}</span>
+                  {targetSourceFilter !== 'all' && (
+                    <button
+                      onClick={() => planTargets(targetSourceFilter)}
+                      disabled={planning === targetSourceFilter}
+                      className={PRIMARY_BTN}
+                    >
+                      {planning === targetSourceFilter ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                      Plan with LLM
+                    </button>
+                  )}
+                </div>
               </div>
 
               {planResult && (
-                <div className="border border-cyan-500/30 bg-cyan-500/5 rounded p-2 text-[11px]">
+                <div className="border-l-2 border-cyan-500/50 bg-cyan-500/5 rounded-r px-3 py-2 text-[11px]">
                   <div className="font-medium text-cyan-300 mb-1">
-                    Plan for {planResult.source}: +{(planResult.added || []).length} added, {(planResult.retired || []).length} retired
+                    Plan for {planResult.source}: +{(planResult.added || []).length} added · {(planResult.retired || []).length} retired
                   </div>
                   {(planResult.added || []).map((t, i) => (
-                    <div key={i} className="text-text-faint">+ {t.target_type}: <span className="text-text-base">{t.value}</span> — {t.rationale}</div>
+                    <div key={i} className="text-text-faint leading-relaxed">
+                      <span className="text-emerald-400">+</span> <span className="text-text-faint">{t.target_type}:</span>{' '}
+                      <span className="text-text-base">{t.value}</span>
+                      {t.rationale && <span className="text-text-faint"> — {t.rationale}</span>}
+                    </div>
                   ))}
                 </div>
               )}
 
-              <div className="border border-border-base rounded p-3 space-y-2">
-                <div className="text-[10px] font-medium text-text-faint uppercase tracking-wider">Add target</div>
-                <div className="grid grid-cols-4 gap-2 text-xs">
+              <div className="rounded-md border border-border-base/60 overflow-hidden">
+                <div className="grid grid-cols-[80px_100px_1fr_56px_56px_84px_36px] text-[10px] uppercase tracking-[0.12em] text-text-faint bg-bg-deep/40 border-b border-border-base/60 px-3 py-2">
+                  <div>Source</div><div>Type</div><div>Value</div>
+                  <div className="text-right">Hits</div><div className="text-right">Yields</div>
+                  <div className="text-right">Signal</div><div></div>
+                </div>
+                {targets.length === 0 ? (
+                  <div className="text-center text-text-faint text-xs py-10">
+                    No targets yet. Use <span className="text-cyan-300">Plan with LLM</span> or add one below.
+                  </div>
+                ) : targets.map((t, idx) => (
+                  <div
+                    key={t.id}
+                    className={`grid grid-cols-[80px_100px_1fr_56px_56px_84px_36px] items-center px-3 py-2 text-xs hover:bg-bg-deep/30 transition-colors ${idx > 0 ? 'border-t border-border-base/40' : ''}`}
+                  >
+                    <div className="text-text-faint">{t.source}</div>
+                    <div className="text-text-faint">{t.target_type}</div>
+                    <div className="truncate flex items-center gap-2 min-w-0">
+                      <button
+                        onClick={() => toggleTarget(t)}
+                        title={t.status === 'active' ? 'Active — click to pause' : 'Paused — click to activate'}
+                        className={`shrink-0 w-1.5 h-1.5 rounded-full ${t.status === 'active' ? 'bg-emerald-400' : 'bg-zinc-600'}`}
+                      />
+                      <span className="truncate text-text-base">{t.value}</span>
+                      {t.rationale && <span className="text-text-faint truncate">— {t.rationale}</span>}
+                    </div>
+                    <div className="text-right tabular-nums text-text-faint">{t.hit_count || 0}</div>
+                    <div className="text-right tabular-nums text-text-faint">{t.yield_count || 0}</div>
+                    <div className="flex justify-end"><StatusPill score={t.signal_score || 0} /></div>
+                    <div className="text-right">
+                      <button onClick={() => deleteTarget(t)} className="text-text-faint hover:text-red-400 p-1 -m-1 rounded">
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-md border border-border-base/60 p-3 space-y-2">
+                <Eyebrow>Add target manually</Eyebrow>
+                <div className="grid grid-cols-[100px_120px_1fr_auto] gap-2">
                   <select
                     value={targetForm.source}
                     onChange={(e) => {
@@ -335,14 +416,14 @@ export default function SmartObservatoryPanel({ onClose }) {
                       const types = TARGET_TYPES_BY_SOURCE[src] || ['search_query']
                       setTargetForm({ ...targetForm, source: src, target_type: types[0] })
                     }}
-                    className="bg-bg-deep border border-border-base rounded px-2 py-1"
+                    className={INPUT_BASE}
                   >
                     {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                   <select
                     value={targetForm.target_type}
                     onChange={(e) => setTargetForm({ ...targetForm, target_type: e.target.value })}
-                    className="bg-bg-deep border border-border-base rounded px-2 py-1"
+                    className={INPUT_BASE}
                   >
                     {(TARGET_TYPES_BY_SOURCE[targetForm.source] || []).map((t) =>
                       <option key={t} value={t}>{t}</option>
@@ -352,12 +433,9 @@ export default function SmartObservatoryPanel({ onClose }) {
                     placeholder="value (e.g. r/MachineLearning)"
                     value={targetForm.value}
                     onChange={(e) => setTargetForm({ ...targetForm, value: e.target.value })}
-                    className="bg-bg-deep border border-border-base rounded px-2 py-1"
+                    className={INPUT_BASE}
                   />
-                  <button
-                    onClick={addTarget}
-                    className="bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 rounded flex items-center justify-center gap-1"
-                  >
+                  <button onClick={addTarget} disabled={!targetForm.value.trim()} className={`${PRIMARY_BTN} disabled:opacity-40 disabled:cursor-not-allowed`}>
                     <Plus className="w-3 h-3" /> Add
                   </button>
                 </div>
@@ -365,152 +443,135 @@ export default function SmartObservatoryPanel({ onClose }) {
                   placeholder="rationale (why this source matters)"
                   value={targetForm.rationale}
                   onChange={(e) => setTargetForm({ ...targetForm, rationale: e.target.value })}
-                  className="w-full bg-bg-deep border border-border-base rounded px-2 py-1 text-xs"
+                  className={`${INPUT_BASE} w-full`}
                 />
-              </div>
-
-              <div className="border border-border-base rounded">
-                <div className="grid grid-cols-[80px_90px_1fr_60px_60px_70px_70px] text-[10px] uppercase tracking-wider text-text-faint border-b border-border-base px-2 py-1.5">
-                  <div>Source</div><div>Type</div><div>Value</div>
-                  <div className="text-right">Hits</div><div className="text-right">Yields</div>
-                  <div className="text-right">Signal</div><div></div>
-                </div>
-                {targets.length === 0 && (
-                  <div className="text-center text-text-faint text-xs py-6">
-                    No targets yet. Use "Plan with LLM" or add manually.
-                  </div>
-                )}
-                {targets.map((t) => (
-                  <div key={t.id} className="grid grid-cols-[80px_90px_1fr_60px_60px_70px_70px] items-center border-b border-border-base/50 px-2 py-1.5 text-xs">
-                    <div className="text-text-faint">{t.source}</div>
-                    <div className="text-text-faint">{t.target_type}</div>
-                    <div className="truncate">
-                      <button
-                        onClick={() => toggleTarget(t)}
-                        className={`mr-1.5 ${t.status === 'active' ? 'text-emerald-400' : 'text-text-faint'}`}
-                        title={t.status}
-                      >●</button>
-                      {t.value}
-                      {t.rationale && <span className="text-text-faint ml-1.5 italic">— {t.rationale}</span>}
-                    </div>
-                    <div className="text-right tabular-nums">{t.hit_count || 0}</div>
-                    <div className="text-right tabular-nums">{t.yield_count || 0}</div>
-                    <div className="text-right tabular-nums flex items-center justify-end gap-1">
-                      <StatusDot score={t.signal_score || 0} />
-                      {(t.signal_score || 0).toFixed(2)}
-                    </div>
-                    <div className="text-right">
-                      <button onClick={() => deleteTarget(t)} className="text-text-faint hover:text-red-400">
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}
 
           {tab === 'insights' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="flex items-center gap-2 text-xs">
-                <span className="text-text-faint">Type:</span>
+                <span className="text-[10px] uppercase tracking-[0.12em] text-text-faint">Type</span>
                 <select
                   value={insightTypeFilter}
                   onChange={(e) => setInsightTypeFilter(e.target.value)}
-                  className="bg-bg-deep border border-border-base rounded px-2 py-1"
+                  className={INPUT_BASE}
                 >
-                  <option value="all">All</option>
-                  {INSIGHT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  <option value="all">All types</option>
+                  {INSIGHT_TYPES.map((t) => <option key={t} value={t}>{t.replace('_', ' ')}</option>)}
                 </select>
+                <span className="ml-auto text-[11px] text-text-faint tabular-nums">{insights.length} insight{insights.length === 1 ? '' : 's'}</span>
               </div>
 
-              {insights.length === 0 && (
-                <div className="text-center text-text-faint text-xs py-6">
+              {insights.length === 0 ? (
+                <div className="text-center text-text-faint text-xs py-12 border border-dashed border-border-base/60 rounded-md">
                   No insights yet. Run a smart scan to populate.
                 </div>
-              )}
-
-              {insights.map((i) => {
-                let evidenceCount = 0
-                if (Array.isArray(i.evidence)) evidenceCount = i.evidence.length
-                else if (typeof i.evidence === 'string') {
-                  try { const arr = JSON.parse(i.evidence); evidenceCount = Array.isArray(arr) ? arr.length : 0 } catch {}
-                }
-                return (
-                  <div key={i.id} className="border border-border-base rounded p-3 text-xs">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium text-text-base">{i.name}</span>
-                      <span className="text-[10px] text-text-faint uppercase">{i.insight_type}</span>
-                      <StatusDot score={i.strength || 0} />
-                      <span className="tabular-nums text-text-faint">{(i.strength || 0).toFixed(2)}</span>
-                      <button
-                        onClick={() => deleteInsight(i)}
-                        className="ml-auto text-text-faint hover:text-red-400"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                    <div className="whitespace-pre-wrap text-text-base">{i.summary}</div>
-                    {evidenceCount > 0 && (
-                      <div className="text-[10px] text-text-faint mt-1">
-                        {evidenceCount} evidence finding{evidenceCount === 1 ? '' : 's'}
+              ) : (
+                <div className="space-y-2">
+                  {insights.map((i) => {
+                    let evidenceCount = 0
+                    if (Array.isArray(i.evidence)) evidenceCount = i.evidence.length
+                    else if (typeof i.evidence === 'string') {
+                      try { const arr = JSON.parse(i.evidence); evidenceCount = Array.isArray(arr) ? arr.length : 0 } catch {}
+                    }
+                    return (
+                      <div key={i.id} className="rounded-md border border-border-base/60 hover:border-border-base transition-colors p-3 text-xs group">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="font-medium text-text-base">{i.name}</span>
+                          <span className="text-[10px] text-text-faint uppercase tracking-wider px-1.5 py-0.5 rounded bg-bg-deep/60">
+                            {(i.insight_type || '').replace('_', ' ')}
+                          </span>
+                          <StatusPill score={i.strength || 0} />
+                          <button
+                            onClick={() => deleteInsight(i)}
+                            className="ml-auto text-text-faint hover:text-red-400 p-1 -m-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                        <div className="whitespace-pre-wrap text-text-base leading-relaxed">{i.summary}</div>
+                        {evidenceCount > 0 && (
+                          <div className="text-[10px] text-text-faint mt-2 flex items-center gap-1">
+                            <span className="w-1 h-1 rounded-full bg-text-faint/60" />
+                            {evidenceCount} evidence finding{evidenceCount === 1 ? '' : 's'}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )
-              })}
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
 
           {tab === 'scan' && (
-            <div className="space-y-3">
-              <div className="text-xs text-text-faint">
-                Smart scan = profile-aware planner → scrape per target → batched triage → deep analyze + voice extract → insight merge.
+            <div className="space-y-4">
+              <div className="text-[11px] text-text-faint leading-relaxed p-3 rounded-md bg-bg-deep/40 border border-border-base/60">
+                <div className="text-text-base text-xs font-medium mb-1">How it works</div>
+                Profile-aware planner → scrape per target → batched triage → deep analyze + voice extract → insight merge.
                 Requires a built profile.
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                {SOURCES.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => runSmartScan(s)}
-                    disabled={scanRunning != null}
-                    className="border border-border-base hover:border-cyan-500/50 rounded p-3 text-left flex items-center justify-between"
-                  >
-                    <span className="text-sm">{s}</span>
-                    {scanRunning === s ? (
-                      <Loader2 className="w-3 h-3 animate-spin text-cyan-400" />
-                    ) : (
-                      <RefreshCw className="w-3 h-3 text-text-faint" />
-                    )}
-                  </button>
-                ))}
-                <button
-                  onClick={() => runSmartScan('all')}
-                  disabled={scanRunning != null}
-                  className="col-span-2 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 rounded p-3 flex items-center justify-center gap-2"
-                >
-                  {scanRunning === 'all' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  Scan all sources
-                </button>
+
+              <button
+                onClick={() => runSmartScan('all')}
+                disabled={scanRunning != null}
+                className={`w-full ${PRIMARY_BTN} py-2.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {scanRunning === 'all' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                Scan all sources
+              </button>
+
+              <div>
+                <Eyebrow className="mb-2">Or scan a single source</Eyebrow>
+                <div className="grid grid-cols-2 gap-2">
+                  {SOURCES.map((s) => {
+                    const running = scanRunning === s
+                    return (
+                      <button
+                        key={s}
+                        onClick={() => runSmartScan(s)}
+                        disabled={scanRunning != null}
+                        className="border border-border-base/60 hover:border-cyan-500/40 hover:bg-bg-deep/40 disabled:opacity-50 disabled:cursor-not-allowed rounded-md px-3 py-2.5 text-left flex items-center justify-between transition-colors"
+                      >
+                        <span className="text-sm capitalize">{s}</span>
+                        {running ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                        ) : (
+                          <RefreshCw className="w-3.5 h-3.5 text-text-faint" />
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
 
               {scanResults.length > 0 && (
-                <div className="border border-border-base rounded p-3 space-y-2">
-                  <div className="text-[10px] font-medium text-text-faint uppercase tracking-wider">Last results</div>
-                  {scanResults.map((r, i) => (
-                    <div key={i} className="text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{r.source}</span>
-                        <span className={r.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'}>
-                          {r.status}
-                        </span>
+                <div className="rounded-md border border-border-base/60 overflow-hidden">
+                  <div className="px-3 py-2 bg-bg-deep/40 border-b border-border-base/60">
+                    <Eyebrow>Last results</Eyebrow>
+                  </div>
+                  <div className="divide-y divide-border-base/40">
+                    {scanResults.map((r, i) => (
+                      <div key={i} className="px-3 py-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium capitalize">{r.source}</span>
+                          <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                            r.status === 'completed'
+                              ? 'text-emerald-300 border-emerald-400/30 bg-emerald-400/10'
+                              : 'text-amber-300 border-amber-400/30 bg-amber-400/10'
+                          }`}>
+                            {r.status}
+                          </span>
+                        </div>
+                        <div className="text-text-faint text-[11px] mt-1 tabular-nums">
+                          {r.targets_scanned || 0} targets · {r.items_scraped || 0} scraped · {r.findings_created || 0} findings · {r.insights_touched || 0} insights touched
+                        </div>
+                        {r.error && <div className="text-red-400 text-[11px] mt-1">{r.error}</div>}
                       </div>
-                      <div className="text-text-faint text-[11px]">
-                        targets: {r.targets_scanned || 0} · scraped: {r.items_scraped || 0} · findings: {r.findings_created || 0} · insights touched: {r.insights_touched || 0}
-                      </div>
-                      {r.error && <div className="text-red-400 text-[11px]">{r.error}</div>}
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

@@ -133,6 +133,9 @@ class CommanderEvent(str, Enum):
     # ── Skill Suggester ─────────────────────────────────────────────
     SKILL_SUGGESTED                 = "skill_suggested"
 
+    # ── Idle reflection ─────────────────────────────────────────────
+    IDLE_REFLECTION_FIRED           = "idle_reflection_fired"
+
     # ── Safety Gate ──────────────────────────────────────────────────
     SAFETY_RULE_TRIGGERED   = "safety_rule_triggered"
     SAFETY_RULE_PROPOSED    = "safety_rule_proposed"

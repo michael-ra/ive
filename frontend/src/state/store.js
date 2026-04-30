@@ -65,6 +65,7 @@ const useStore = create((set, get) => ({
   },
   splitMode: false,
   splitSessionId: null,
+  splitPrimaryId: null,
   // Per-workspace view mode — stored as JSON map in localStorage
   viewMode: (() => {
     try { const m = JSON.parse(localStorage.getItem('cc-viewModes') || '{}'); return Object.values(m)[0] || 'tabs' } catch { return localStorage.getItem('cc-viewMode') || 'tabs' }
@@ -553,7 +554,16 @@ const useStore = create((set, get) => ({
       }
     }),
 
-  setActiveSession: (id) => set({ activeSessionId: id, showHome: false }),
+  setActiveSession: (id) =>
+    set((s) => {
+      const update = { activeSessionId: id, showHome: false }
+      // In split mode, focusing the right (split) pane must not move panels around;
+      // only update the left (primary) pane when the user activates a tab outside the pair.
+      if (s.splitMode && s.splitSessionId && id !== s.splitSessionId) {
+        update.splitPrimaryId = id
+      }
+      return update
+    }),
 
   closeTab: (id) =>
     set((s) => {

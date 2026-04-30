@@ -15,6 +15,11 @@ Embeds the full skills catalog (name + description) using BAAI/bge-small-en-v1.5
   4. **Auto-suggestion WS push**: When `experimental_auto_skill_suggestions` is
      enabled, pushes top-3 matches to the frontend as the session's intent
      accumulates (same pattern as guideline recommendations).
+
+  5. **Two-stage filter**: embedding pre-filter → Haiku judge confirms each
+     candidate is *actually* useful for the current context. Drift gate skips
+     the LLM call when the in-session context hasn't shifted meaningfully
+     (cosine ≥ 0.85 vs. last-judged context).
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 
 logger = logging.getLogger(__name__)
@@ -38,10 +44,17 @@ _index_building = False
 _index_hash: str = ""
 
 _EMBED_BATCH_SIZE = 64
-SUGGEST_MIN_SCORE = 0.45
-_SUGGEST_COOLDOWN = 30.0
+SUGGEST_MIN_SCORE = 0.50
+_SUGGEST_COOLDOWN = 240.0
+_DRIFT_THRESHOLD = 0.85  # cosine ≥ this → topic unchanged → reuse last result
+_JUDGE_MODEL = "claude-haiku-4-5-20251001"
+_JUDGE_API_URL = "https://api.anthropic.com/v1/messages"
+_JUDGE_TIMEOUT = 10.0
+
 _last_suggest: dict[str, float] = {}
 _dismissed: dict[str, set[str]] = {}
+_last_judged_ctx_vec: dict[str, list[float]] = {}
+_last_judged_results: dict[str, list[dict]] = {}
 
 
 def _skill_entity_id(skill: dict) -> str:
@@ -298,6 +311,92 @@ async def _keyword_fallback(query: str, limit: int) -> list[dict]:
     return scored[:limit]
 
 
+# ── LLM Judge ──────────────────────────────────────────────────────────────
+
+async def _get_anthropic_api_key() -> str | None:
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key
+    try:
+        from db import get_db
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                "SELECT api_key FROM accounts WHERE type = 'api_key' "
+                "AND api_key IS NOT NULL AND api_key != '' AND status = 'active' LIMIT 1"
+            )
+            row = await cur.fetchone()
+            if row:
+                return row["api_key"]
+        finally:
+            await db.close()
+    except Exception:
+        pass
+    return None
+
+
+async def judge_candidates(context: str, candidates: list[dict]) -> list[dict]:
+    """Ask Haiku which candidates are actually relevant. Returns the kept subset.
+
+    Falls back to returning all candidates if the API key is missing or the call
+    fails — keeps current behavior intact when the judge can't run.
+    """
+    if not candidates:
+        return []
+
+    api_key = await _get_anthropic_api_key()
+    if not api_key:
+        return candidates
+
+    catalog_lines = []
+    for i, c in enumerate(candidates):
+        desc = (c.get("description") or "").strip().replace("\n", " ")[:160]
+        catalog_lines.append(f"{i}. {c['name']} — {desc}")
+    catalog = "\n".join(catalog_lines)
+
+    prompt = (
+        f"Context (what the user is working on):\n{context[:1200]}\n\n"
+        f"Candidate skills (from semantic match):\n{catalog}\n\n"
+        f"Return ONLY the indices of skills that would clearly help with this "
+        f"specific work — be strict, prefer returning fewer or none over noise. "
+        f'Respond with raw JSON only: {{"keep": [<indices>]}}'
+    )
+
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as http:
+            resp = await http.post(
+                _JUDGE_API_URL,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": _JUDGE_MODEL,
+                    "max_tokens": 128,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=aiohttp.ClientTimeout(total=_JUDGE_TIMEOUT),
+            )
+            body = await resp.json()
+        if resp.status != 200:
+            logger.debug("skill judge: API %d, falling back to embedding results", resp.status)
+            return candidates
+        raw = body.get("content", [{}])[0].get("text", "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+        data = json.loads(raw.strip())
+        keep_idx = [int(i) for i in data.get("keep", []) if isinstance(i, (int, float))]
+        kept = [candidates[i] for i in keep_idx if 0 <= i < len(candidates)]
+        return kept
+    except Exception as e:
+        logger.debug("skill judge: %s — falling back to embedding results", e)
+        return candidates
+
+
 # ── Session System Prompt Injection ────────────────────────────────────────
 
 async def suggest_for_session(context: str, limit: int = 3) -> str | None:
@@ -309,7 +408,11 @@ async def suggest_for_session(context: str, limit: int = 3) -> str | None:
     if not context.strip():
         return None
 
-    results = await search_skills(context, limit=limit, min_score=0.50)
+    results = await search_skills(context, limit=limit, min_score=SUGGEST_MIN_SCORE)
+    if not results:
+        return None
+
+    results = await judge_candidates(context, results)
     if not results:
         return None
 
@@ -390,6 +493,26 @@ async def maybe_suggest_skills(
     if not results:
         return
 
+    # Drift gate: if the topic hasn't shifted meaningfully since the last
+    # judged push, reuse the prior judge result instead of re-asking Haiku.
+    from embedder import embed, _cosine
+    ctx_vec = await embed(intent_text)
+    last_vec = _last_judged_ctx_vec.get(session_id)
+    if ctx_vec is not None and last_vec is not None and _cosine(ctx_vec, last_vec) >= _DRIFT_THRESHOLD:
+        cached = _last_judged_results.get(session_id)
+        if cached is not None:
+            results = cached
+        else:
+            results = await judge_candidates(intent_text, results)
+    else:
+        results = await judge_candidates(intent_text, results)
+        if ctx_vec is not None:
+            _last_judged_ctx_vec[session_id] = ctx_vec
+        _last_judged_results[session_id] = results
+
+    if not results:
+        return
+
     if broadcast_fn:
         try:
             await broadcast_fn({
@@ -423,6 +546,8 @@ def dismiss_skill(session_id: str, entity_id: str):
 def clear_session(session_id: str):
     _last_suggest.pop(session_id, None)
     _dismissed.pop(session_id, None)
+    _last_judged_ctx_vec.pop(session_id, None)
+    _last_judged_results.pop(session_id, None)
 
 
 def index_status() -> dict:

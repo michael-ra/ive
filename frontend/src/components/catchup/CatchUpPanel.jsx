@@ -1,9 +1,12 @@
 // CatchUpPanel — modal panel showing the briefing + raw event digest.
 //
-// Lets the user pick a preset range or a custom start/end window, swap
-// the summarizing model (haiku ↔ sonnet), and regenerate the briefing.
+// When opened from the banner with an `initialDigest`, the panel just
+// renders that pre-fetched digest — it does not re-summarize. A rebrief
+// only fires when the user explicitly picks a different time window
+// (preset button, custom "Brief me", or the manual ↻ button). The model
+// used for re-briefing is read from the global `catchup_model` setting.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../../lib/api'
 
 const RANGES = [
@@ -12,11 +15,6 @@ const RANGES = [
   { id: '24h', label: 'Last 24 hours', ms: 24 * 60 * 60 * 1000 },
   { id: '7d', label: 'Last 7 days', ms: 7 * 24 * 60 * 60 * 1000 },
   { id: '30d', label: 'Last 30 days', ms: 30 * 24 * 60 * 60 * 1000 },
-]
-
-const MODELS = [
-  { id: 'haiku', label: 'Haiku', hint: 'Fast' },
-  { id: 'sonnet', label: 'Sonnet', hint: 'Richer' },
 ]
 
 // Format Date → "YYYY-MM-DDTHH:MM" for <input type="datetime-local">.
@@ -33,31 +31,31 @@ export default function CatchUpPanel({ initialDigest = null, onClose }) {
     toLocalInput(new Date(Date.now() - 24 * 60 * 60 * 1000))
   )
   const [customUntil, setCustomUntil] = useState(() => toLocalInput(new Date()))
-  const [model, setModel] = useState('haiku')
+  const modelRef = useRef('haiku')
   const [loading, setLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
 
-  async function loadPreset(rangeId, modelOverride) {
+  async function loadPreset(rangeId) {
     const r = RANGES.find((x) => x.id === rangeId) || RANGES[2]
     const since = new Date(Date.now() - r.ms).toISOString()
-    return loadWindow({ since, until: undefined, modelOverride })
+    return loadWindow({ since, until: undefined })
   }
 
-  async function loadCustom(modelOverride) {
+  async function loadCustom() {
     if (!customSince) return
     const sinceIso = new Date(customSince).toISOString()
     const untilIso = customUntil ? new Date(customUntil).toISOString() : undefined
-    return loadWindow({ since: sinceIso, until: untilIso, modelOverride })
+    return loadWindow({ since: sinceIso, until: untilIso })
   }
 
-  async function loadWindow({ since, until, modelOverride }) {
+  async function loadWindow({ since, until }) {
     setLoading(true)
     try {
       const d = await api.getCatchup({
         since,
         until,
         limit: 500,
-        model: modelOverride || model,
+        model: modelRef.current,
       })
       setDigest(d)
     } catch (e) {
@@ -67,11 +65,28 @@ export default function CatchUpPanel({ initialDigest = null, onClose }) {
     }
   }
 
-  // Initial load + reload when range/model changes (preset mode only).
+  // Resolve the briefing model from global settings once on mount.
+  // Only auto-load a digest when the panel was opened without a seed
+  // (e.g. via a deep link / future entry points) — the banner-driven
+  // open path passes `initialDigest` and we render that directly.
   useEffect(() => {
-    if (!customOpen) loadPreset(range)
+    let cancelled = false
+    api
+      .getAppSetting('catchup_model')
+      .then((res) => {
+        if (cancelled) return
+        if (res?.value) modelRef.current = res.value
+      })
+      .catch(() => {})
+      .then(() => {
+        if (cancelled) return
+        if (!initialDigest) loadPreset(range)
+      })
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, model, customOpen])
+  }, [])
 
   const briefing = digest?.summary
   const briefingFromLLM =
@@ -114,7 +129,7 @@ export default function CatchUpPanel({ initialDigest = null, onClose }) {
           </button>
         </div>
 
-        {/* Range + model controls */}
+        {/* Range controls — clicking a preset triggers a fresh briefing. */}
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
           {RANGES.map((r) => (
             <button
@@ -122,6 +137,7 @@ export default function CatchUpPanel({ initialDigest = null, onClose }) {
               onClick={() => {
                 setCustomOpen(false)
                 setRange(r.id)
+                loadPreset(r.id)
               }}
               className={`rounded border px-2 py-0.5 text-xs ${
                 !customOpen && range === r.id
@@ -143,30 +159,14 @@ export default function CatchUpPanel({ initialDigest = null, onClose }) {
             Custom…
           </button>
 
-          <div className="ml-auto flex items-center gap-1">
-            {MODELS.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => setModel(m.id)}
-                title={m.hint}
-                className={`rounded border px-2 py-0.5 text-xs ${
-                  model === m.id
-                    ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
-                    : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
-                }`}
-              >
-                {m.label}
-              </button>
-            ))}
-            <button
-              onClick={() => (customOpen ? loadCustom() : loadPreset(range))}
-              disabled={loading}
-              className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-              title="Regenerate briefing"
-            >
-              ↻
-            </button>
-          </div>
+          <button
+            onClick={() => (customOpen ? loadCustom() : loadPreset(range))}
+            disabled={loading}
+            className="ml-auto rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            title="Regenerate briefing"
+          >
+            ↻
+          </button>
         </div>
 
         {customOpen && (

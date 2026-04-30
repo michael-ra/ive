@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { Settings, X, RefreshCw, Loader2, Columns, Rows, Grid2x2, Maximize, Type } from 'lucide-react'
+import { Settings, X, RefreshCw, Loader2, Columns, Rows, Grid2x2, Maximize, Type, Sparkles } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
+import { MODELS, GEMINI_MODELS } from '../../lib/constants'
 
 function Toggle({ value, onChange }) {
   return (
@@ -52,9 +53,14 @@ const HOME_COLUMN_OPTIONS = [2, 3, 4, 5]
 export default function GeneralSettingsPanel({ onClose }) {
   const [autoUpdateCli, setAutoUpdateCli] = useState(false)
   const [autoSessionTitles, setAutoSessionTitles] = useState(true)
+  const [catchupModel, setCatchupModel] = useState('haiku')
+  const [cliAvail, setCliAvail] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('cc-cli-available') || '{}') } catch { return {} }
+  })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [savingTitle, setSavingTitle] = useState(false)
+  const [savingCatchupModel, setSavingCatchupModel] = useState(false)
 
   const viewMode = useStore((s) => s.viewMode)
   const gridLayout = useStore((s) => s.gridLayout)
@@ -70,6 +76,15 @@ export default function GeneralSettingsPanel({ onClose }) {
       api.getAppSetting('auto_session_titles').then((res) => {
         // Default is on — only disable if explicitly "off"
         setAutoSessionTitles(res.value !== 'off')
+      }).catch(() => {}),
+      api.getAppSetting('catchup_model').then((res) => {
+        if (res?.value) setCatchupModel(res.value)
+      }).catch(() => {}),
+      api.getCliInfo().then((info) => {
+        if (info.available_clis) {
+          setCliAvail(info.available_clis)
+          localStorage.setItem('cc-cli-available', JSON.stringify(info.available_clis))
+        }
       }).catch(() => {}),
     ]).finally(() => setLoading(false))
   }, [])
@@ -94,6 +109,18 @@ export default function GeneralSettingsPanel({ onClose }) {
       setAutoSessionTitles(!val)
     }
     setSavingTitle(false)
+  }
+
+  const handleCatchupModelChange = async (val) => {
+    const prev = catchupModel
+    setCatchupModel(val)
+    setSavingCatchupModel(true)
+    try {
+      await api.setAppSetting('catchup_model', val)
+    } catch (e) {
+      setCatchupModel(prev)
+    }
+    setSavingCatchupModel(false)
   }
 
   return (
@@ -274,6 +301,52 @@ export default function GeneralSettingsPanel({ onClose }) {
                   </div>
                 </div>
                 <Toggle value={autoSessionTitles} onChange={handleTitleToggle} />
+              </div>
+            </div>
+          )}
+
+          <div className="border-t border-border-secondary" />
+
+          {/* ── Briefing ──────────────────────────── */}
+          <div className="text-[10px] text-text-faint font-medium uppercase tracking-wider flex items-center gap-2">
+            Briefing
+            <span className="normal-case tracking-normal text-blue-400/70 px-1.5 py-0.5 bg-blue-500/8 rounded border border-blue-500/15 text-[9px]">Global</span>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs text-text-faint">
+              <Loader2 size={12} className="animate-spin" />
+              Loading...
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles size={13} className="text-amber-400 shrink-0" />
+                    <span className="text-xs text-text-primary font-medium">Catch-up model</span>
+                    {savingCatchupModel && <Loader2 size={10} className="animate-spin text-text-faint" />}
+                  </div>
+                  <div className="text-[10px] text-text-faint mt-0.5 ml-[19px]">
+                    Model used to summarize activity for the catch-up banner and panel
+                  </div>
+                </div>
+                <select
+                  value={catchupModel}
+                  onChange={(e) => handleCatchupModelChange(e.target.value)}
+                  className="shrink-0 px-2 py-1 text-[11px] font-mono bg-bg-inset border border-border-secondary rounded-md text-text-secondary focus:outline-none focus:border-amber-500/50 ide-focus-ring transition-colors"
+                >
+                  {(cliAvail.claude !== false) && (
+                    <optgroup label="Claude">
+                      {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                    </optgroup>
+                  )}
+                  {cliAvail.gemini && (
+                    <optgroup label="Gemini">
+                      {GEMINI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                    </optgroup>
+                  )}
+                </select>
               </div>
             </div>
           )}

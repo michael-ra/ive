@@ -311,6 +311,7 @@ def tool_save_memory(args: dict) -> str:
     name = (args.get("name") or "").strip()
     content = (args.get("content") or "").strip()
     mem_type = (args.get("type") or "").strip()
+    description = (args.get("description") or "").strip()
     tags = args.get("tags") or []
 
     if not name or not content:
@@ -345,6 +346,7 @@ def tool_save_memory(args: dict) -> str:
         "name": name,
         "type": mem_type,
         "content": content,
+        "description": description,
         "workspace_id": WORKSPACE_ID or None,
         "tags": tags,
         "source_cli": "worker",
@@ -363,6 +365,65 @@ def tool_save_memory(args: dict) -> str:
         "ok": True,
         "id": (result or {}).get("id"),
         "created": True,
+    })
+
+
+def tool_recall_memory(args: dict) -> str:
+    """Fetch the full body of a memory entry by name.
+
+    The system prompt's Remembered Context block may be rendered in *index*
+    mode (one line per entry: ``name — description``) when the workspace
+    has more memory than fits inline. Use this to expand any entry whose
+    description looks relevant to your current task.
+
+    Looks first in the bound workspace, then falls back to global entries.
+    Returns the entry as JSON: ``{ok, name, type, description, content,
+    updated_at}`` or ``{ok: false, error}``.
+    """
+    name = (args.get("name") or "").strip()
+    if not name:
+        return json.dumps({"ok": False, "error": "name is required"})
+
+    # Workspace-scoped lookup — `/memory?workspace_id=` returns workspace +
+    # global rows. We pull both and prefer the workspace match, falling
+    # back to global so an agent can recall the user/global entries it
+    # sees in the index.
+    qs = ""
+    if WORKSPACE_ID:
+        qs = f"?workspace_id={urllib.parse.quote(WORKSPACE_ID)}&include_global=1"
+    entries = api_call("GET", f"/memory{qs}")
+    if not isinstance(entries, list):
+        return json.dumps({"ok": False, "error": "memory list unavailable"})
+
+    target = name.lower()
+    workspace_match = None
+    global_match = None
+    for e in entries:
+        if (e.get("name") or "").strip().lower() != target:
+            continue
+        if (e.get("workspace_id") or "") == (WORKSPACE_ID or ""):
+            workspace_match = e
+            break
+        if not e.get("workspace_id"):
+            global_match = e
+
+    hit = workspace_match or global_match
+    if not hit:
+        return json.dumps({
+            "ok": False,
+            "error": f"no memory entry named {name!r} in this workspace",
+        })
+
+    return json.dumps({
+        "ok": True,
+        "id": hit.get("id"),
+        "name": hit.get("name"),
+        "type": hit.get("type"),
+        "description": hit.get("description") or "",
+        "content": hit.get("content") or "",
+        "tags": hit.get("tags") or [],
+        "updated_at": hit.get("updated_at") or "",
+        "scope": "workspace" if workspace_match else "global",
     })
 
 
@@ -658,6 +719,15 @@ TOOLS = {
                     "type": "string",
                     "description": "The insight itself. One paragraph or a tight bullet list.",
                 },
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "One-line summary used in the Remembered Context index "
+                        "(when the workspace has more memory than fits inline). "
+                        "Make it specific enough that a future agent scanning a "
+                        "list can decide whether to recall_memory the full body."
+                    ),
+                },
                 "tags": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -665,6 +735,26 @@ TOOLS = {
                 },
             },
             "required": ["name", "type", "content"],
+        },
+    },
+    "recall_memory": {
+        "handler": tool_recall_memory,
+        "description": (
+            "Expand a memory entry from the Remembered Context index. When the system "
+            "prompt shows entries as one-liners ('name — description'), call this with "
+            "the name to fetch the full body before acting on it. No-op for entries you "
+            "already have inlined in the prompt — only call when the description looks "
+            "relevant to the current task and you need the details."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact entry name as shown in the Remembered Context index.",
+                },
+            },
+            "required": ["name"],
         },
     },
 }
@@ -1040,21 +1130,66 @@ def handle_request(req: dict) -> dict:
 
 
 def _load_workspace_flags() -> dict:
-    """Fetch W2W feature flags for the worker's workspace (once at startup)."""
+    """Fetch W2W feature flags for the worker's workspace (once at startup).
+
+    Two paths, in order of preference:
+
+    1. **Env vars** (WORKER_W2W_COMMS / _CONTEXT / _COORDINATION) plumbed in
+       at PTY-spawn time by server.py's MCP env resolver. Fast, no network,
+       and side-steps the startup race where commander's API isn't ready
+       when this MCP launches. This is the path used in the steady state.
+
+    2. **API fallback**. Used when env vars are absent (e.g. a manually-
+       installed worker-MCP entry that pre-dates this scheme, or an
+       unsubstituted template like the literal string "{w2w_comms}").
+       On failure, log loudly to stderr so the worker log captures the
+       cause — otherwise the failure is undebuggable.
+
+    Returns {} on any failure (fail-closed: don't register W2W tools the
+    workspace hasn't opted into).
+    """
+    # ── Env-var path ────────────────────────────────────────────────
+    placeholders = {"", "{w2w_comms}", "{w2w_context}", "{w2w_coordination}"}
+    env_pairs = (
+        ("comms", os.environ.get("WORKER_W2W_COMMS", "")),
+        ("context", os.environ.get("WORKER_W2W_CONTEXT", "")),
+        ("coordination", os.environ.get("WORKER_W2W_COORDINATION", "")),
+    )
+    if any(v not in placeholders for _, v in env_pairs):
+        truthy = {"1", "true", "True", "yes", "on"}
+        return {k: v in truthy for k, v in env_pairs}
+
+    # ── API fallback ────────────────────────────────────────────────
     if not WORKSPACE_ID:
         return {}
     try:
         workspaces = api_call("GET", "/workspaces")
-        if isinstance(workspaces, list):
-            for ws in workspaces:
-                if ws.get("id") == WORKSPACE_ID:
-                    return {
-                        "comms": bool(ws.get("comms_enabled")),
-                        "coordination": bool(ws.get("coordination_enabled")),
-                        "context": bool(ws.get("context_sharing_enabled")),
-                    }
-    except Exception:
-        pass
+        if not isinstance(workspaces, list):
+            print(
+                f"[worker-mcp] W2W flag fetch failed (api_call returned non-list): {workspaces!r}. "
+                "No W2W tools will register; prompt may still reference them.",
+                file=sys.stderr, flush=True,
+            )
+            return {}
+        for ws in workspaces:
+            if ws.get("id") == WORKSPACE_ID:
+                return {
+                    "comms": bool(ws.get("comms_enabled")),
+                    "coordination": bool(ws.get("coordination_enabled")),
+                    "context": bool(ws.get("context_sharing_enabled")),
+                }
+        print(
+            f"[worker-mcp] W2W flag fetch: workspace {WORKSPACE_ID} not found in /workspaces "
+            f"(saw {len(workspaces)} workspaces). Likely a startup race — the worker MCP "
+            "spawned before the workspace row was committed. No W2W tools will register.",
+            file=sys.stderr, flush=True,
+        )
+    except Exception as e:
+        print(
+            f"[worker-mcp] W2W flag fetch raised: {type(e).__name__}: {e}. "
+            "No W2W tools will register; prompt may still reference them.",
+            file=sys.stderr, flush=True,
+        )
     return {}
 
 

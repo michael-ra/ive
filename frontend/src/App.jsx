@@ -346,6 +346,7 @@ export default function App() {
   const activeGridTemplateId = useStore((s) => s.activeGridTemplateId)
   const workspaces = useStore((s) => s.workspaces)
   const splitSessionId = useStore((s) => s.splitSessionId)
+  const splitPrimaryId = useStore((s) => s.splitPrimaryId)
   const tabScope = useStore((s) => s.tabScope)
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId)
   const viewingSubagent = useStore((s) => s.viewingSubagent)
@@ -362,19 +363,25 @@ export default function App() {
     ? openTabs.filter((id) => sessions[id]?.workspace_id === activeWorkspaceId)
     : openTabs
 
-  // Split is visually active when the split session differs from the active tab.
-  // Mobile clamps to single-terminal view — split / grid / custom templates
-  // are all unusable on phone-width screens, so we pretend they're off.
-  const hasSplit = !isMobile && splitMode && splitSessionId && splitSessionId !== activeSessionId && !!sessions[splitSessionId]
+  // Split is visually active when both panes resolve to distinct mounted sessions.
+  // Layout uses splitPrimaryId for the left pane and splitSessionId for the right —
+  // activeSessionId only carries focus, so clicking the right pane doesn't move panels.
+  // Mobile clamps to single-terminal view, so we pretend split is off there.
+  const hasSplit = !isMobile && splitMode && splitSessionId && splitPrimaryId
+    && splitSessionId !== splitPrimaryId
+    && !!sessions[splitSessionId] && !!sessions[splitPrimaryId]
   const effectiveViewMode = isMobile ? 'tabs' : viewMode
   const effectiveGridTemplateId = isMobile ? null : activeGridTemplateId
 
-  // Auto-close split if split session was removed
+  // Auto-close split if either pane's session was removed
   useEffect(() => {
-    if (splitMode && splitSessionId && !sessions[splitSessionId]) {
-      useStore.setState({ splitMode: false, splitSessionId: null })
+    if (splitMode && (
+      (splitSessionId && !sessions[splitSessionId]) ||
+      (splitPrimaryId && !sessions[splitPrimaryId])
+    )) {
+      useStore.setState({ splitMode: false, splitSessionId: null, splitPrimaryId: null })
     }
-  }, [splitMode, splitSessionId, sessions])
+  }, [splitMode, splitSessionId, splitPrimaryId, sessions])
 
   // Refit all terminals when the view or layout changes — covers workspace
   // switches (different visibleTabs), tab open/close (cell count change),
@@ -596,7 +603,7 @@ export default function App() {
         [showCodeReview, () => setShowCodeReview(false)],
         [showGridEditor, () => setShowGridEditor(false)],
         [showScratchpad, () => setShowScratchpad(false)],
-        [splitMode, () => useStore.setState({ splitMode: false, splitSessionId: null })],
+        [splitMode, () => useStore.setState({ splitMode: false, splitSessionId: null, splitPrimaryId: null })],
       ]
       for (const [isOpen, close] of escapeStack) {
         if (isOpen) { e.stopPropagation(); close(); return }
@@ -650,12 +657,12 @@ export default function App() {
     if (isMobile) return
     const store = useStore.getState()
     if (store.splitMode) {
-      useStore.setState({ splitMode: false, splitSessionId: null })
+      useStore.setState({ splitMode: false, splitSessionId: null, splitPrimaryId: null })
       return
     }
     const idx = store.openTabs.indexOf(store.activeSessionId)
     const nextId = store.openTabs[idx + 1] || store.openTabs[idx - 1]
-    if (nextId) useStore.setState({ splitMode: true, splitSessionId: nextId })
+    if (nextId) useStore.setState({ splitMode: true, splitSessionId: nextId, splitPrimaryId: store.activeSessionId })
   }, [isMobile])
 
   useKeyboard({
@@ -1083,7 +1090,7 @@ export default function App() {
                 if (sid && sid !== activeSessionId) {
                   const store = useStore.getState()
                   if (!store.openTabs.includes(sid)) store.openSession(sid)
-                  useStore.setState({ splitMode: true, splitSessionId: sid })
+                  useStore.setState({ splitMode: true, splitSessionId: sid, splitPrimaryId: activeSessionId })
                 }
               } : undefined}
             >
@@ -1093,8 +1100,9 @@ export default function App() {
                 const ws = workspaces.find((w) => w.id === s?.workspace_id)
                 const wsColor = getWorkspaceColor(ws)
                 const gridVisible = isGrid && visibleTabs.includes(id)
-                const isSplit = !isGrid && hasSplit && splitSessionId === id
-                const tabVisible = !isGrid && (isActiveTab || isSplit)
+                const isSplitRight = !isGrid && hasSplit && splitSessionId === id
+                const isSplitLeft = !isGrid && hasSplit && splitPrimaryId === id
+                const tabVisible = !isGrid && (hasSplit ? (isSplitLeft || isSplitRight) : isActiveTab)
 
                 // Grid mode: non-visible tabs stay mounted but hidden
                 if (isGrid && !gridVisible) {
@@ -1121,8 +1129,8 @@ export default function App() {
                       boxShadow: isActiveTab ? `0 0 8px ${wsColor}30` : 'none',
                       ...(placement || {}),
                     } : {
-                      left: isSplit ? `${splitRatio}%` : 0,
-                      right: (hasSplit && isActiveTab) ? `${100 - splitRatio}%` : 0,
+                      left: isSplitRight ? `${splitRatio}%` : 0,
+                      right: isSplitLeft ? `${100 - splitRatio}%` : 0,
                       opacity: tabVisible ? 1 : 0,
                       pointerEvents: tabVisible ? 'auto' : 'none',
                       zIndex: tabVisible ? 1 : 0,
@@ -1168,7 +1176,7 @@ export default function App() {
                     onMouseDown={handleSplitDragStart}
                   />
                   <button
-                    onClick={() => useStore.setState({ splitMode: false, splitSessionId: null })}
+                    onClick={() => useStore.setState({ splitMode: false, splitSessionId: null, splitPrimaryId: null })}
                     className="absolute top-2 bg-bg-tertiary border border-border-primary hover:bg-red-500/20 hover:border-red-500/30 text-text-faint hover:text-red-400 rounded-full w-5 h-5 flex items-center justify-center text-xs z-10 transition-all opacity-0 group-hover/split:opacity-100"
                     title="Close split (⌘D)"
                   >

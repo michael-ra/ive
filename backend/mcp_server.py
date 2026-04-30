@@ -618,6 +618,7 @@ def tool_save_memory(args: dict) -> str:
     name = (args.get("name") or "").strip()
     content = (args.get("content") or "").strip()
     mem_type = (args.get("type") or "").strip()
+    description = (args.get("description") or "").strip()
     tags = args.get("tags") or []
     ws_id = (args.get("workspace_id") or WORKSPACE_ID or "").strip()
 
@@ -638,6 +639,7 @@ def tool_save_memory(args: dict) -> str:
 
     body = {
         "name": name, "type": mem_type, "content": content,
+        "description": description,
         "workspace_id": ws_id or None, "tags": tags, "source_cli": "commander",
     }
     if match_id:
@@ -649,6 +651,58 @@ def tool_save_memory(args: dict) -> str:
     if isinstance(result, dict) and result.get("error"):
         return json.dumps({"ok": False, **result})
     return json.dumps({"ok": True, "id": (result or {}).get("id"), "created": True})
+
+
+def tool_recall_memory(args: dict) -> str:
+    """Fetch the full body of a memory entry by name.
+
+    The Remembered Context block in the system prompt may render as an
+    *index* (one line per entry) when the workspace has more memory than
+    fits inline. Use this to expand any entry whose description is
+    relevant to the current routing decision or task.
+    """
+    name = (args.get("name") or "").strip()
+    ws_id = (args.get("workspace_id") or WORKSPACE_ID or "").strip()
+    if not name:
+        return json.dumps({"ok": False, "error": "name is required"})
+
+    qs = ""
+    if ws_id:
+        qs = f"?workspace={urllib.parse.quote(ws_id)}&include_global=1"
+    entries = api_call("GET", f"/memory{qs}")
+    if not isinstance(entries, list):
+        return json.dumps({"ok": False, "error": "memory list unavailable"})
+
+    target = name.lower()
+    workspace_match = None
+    global_match = None
+    for e in entries:
+        if (e.get("name") or "").strip().lower() != target:
+            continue
+        if (e.get("workspace_id") or "") == ws_id:
+            workspace_match = e
+            break
+        if not e.get("workspace_id"):
+            global_match = e
+
+    hit = workspace_match or global_match
+    if not hit:
+        return json.dumps({
+            "ok": False,
+            "error": f"no memory entry named {name!r}",
+        })
+
+    return json.dumps({
+        "ok": True,
+        "id": hit.get("id"),
+        "name": hit.get("name"),
+        "type": hit.get("type"),
+        "description": hit.get("description") or "",
+        "content": hit.get("content") or "",
+        "tags": hit.get("tags") or [],
+        "updated_at": hit.get("updated_at") or "",
+        "scope": "workspace" if workspace_match else "global",
+    })
 
 
 def tool_headsup(args: dict) -> str:
@@ -677,6 +731,41 @@ def tool_headsup(args: dict) -> str:
     if isinstance(result, dict) and result.get("error"):
         return json.dumps({"ok": False, **result})
     return json.dumps({"ok": True, "id": (result or {}).get("id"), "to": to})
+
+
+_KNOWLEDGE_CATEGORIES = (
+    "architecture", "convention", "gotcha", "pattern",
+    "api", "setup", "orchestration",
+)
+
+
+def tool_contribute_knowledge(args: dict) -> str:
+    """Commander-side: write a routing/orchestration insight to the workspace KB.
+
+    Same backend as the worker-side tool, just exposed on the commander MCP
+    so commander can persist routing patterns, team-formation insights, and
+    cross-task observations. Use category='orchestration' for commander-
+    specific lessons (e.g. "frontend tasks succeed faster on Sonnet workers
+    when scoped to a single panel"); other categories are also accepted but
+    workers usually own those.
+    """
+    category = (args.get("category") or "").strip()
+    content = (args.get("content") or "").strip()
+    if not content or not category:
+        return json.dumps({"ok": False, "error": "category and content required"})
+    ws_id = (args.get("workspace_id") or WORKSPACE_ID or "").strip()
+    if not ws_id:
+        return json.dumps({"ok": False, "error": "workspace_id required"})
+    body = {
+        "category": category,
+        "content": content,
+        "scope": args.get("scope", ""),
+        "contributed_by": COMMANDER_SESSION_ID or "",
+    }
+    result = api_call("POST", f"/workspaces/{ws_id}/knowledge", body)
+    if isinstance(result, dict) and result.get("error"):
+        return json.dumps({"ok": False, **result})
+    return json.dumps({"ok": True, "id": (result or {}).get("id"), "category": category})
 
 
 def tool_list_worker_digests(args: dict) -> str:
@@ -1232,10 +1321,36 @@ TOOLS["save_memory"] = {
             "name": {"type": "string", "description": "Short title (dedup key within workspace)."},
             "type": {"type": "string", "enum": ["user", "feedback", "project", "reference"]},
             "content": {"type": "string", "description": "The insight."},
+            "description": {
+                "type": "string",
+                "description": (
+                    "One-line summary used in the Remembered Context index. Make it "
+                    "specific enough that a future Commander scanning a list can "
+                    "decide whether to recall_memory the full body."
+                ),
+            },
             "tags": {"type": "array", "items": {"type": "string"}},
             "workspace_id": {"type": "string"},
         },
         "required": ["name", "type", "content"],
+    },
+}
+TOOLS["recall_memory"] = {
+    "handler": tool_recall_memory,
+    "description": (
+        "Expand a memory entry from the Remembered Context index. When the system "
+        "prompt shows entries as one-liners ('name — description'), call this with "
+        "the name to fetch the full body before acting on it. Don't call for entries "
+        "you already have inlined — only when an index description looks relevant and "
+        "you need the details."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Exact entry name from the index."},
+            "workspace_id": {"type": "string"},
+        },
+        "required": ["name"],
     },
 }
 TOOLS["headsup"] = {
@@ -1256,6 +1371,31 @@ TOOLS["headsup"] = {
             "workspace_id": {"type": "string"},
         },
         "required": ["to", "message"],
+    },
+}
+TOOLS["contribute_knowledge"] = {
+    "handler": tool_contribute_knowledge,
+    "description": (
+        "Persist a routing/orchestration insight or codebase fact to the workspace "
+        "knowledge base. The entry shows up in every future session's system prompt "
+        "under the category header. Use category='orchestration' for commander-only "
+        "lessons (which worker class fits which task, model-tier patterns, team "
+        "formation rules); other categories work but are usually written by workers. "
+        "Keep entries terse and actionable — one fact, one line."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "enum": list(_KNOWLEDGE_CATEGORIES),
+                "description": "Knowledge category. Commanders typically use 'orchestration'.",
+            },
+            "content": {"type": "string", "description": "The insight (one line, factual)."},
+            "scope": {"type": "string", "description": "Optional module/subsystem scope."},
+            "workspace_id": {"type": "string"},
+        },
+        "required": ["category", "content"],
     },
 }
 TOOLS["check_coordination"] = {

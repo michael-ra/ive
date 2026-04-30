@@ -365,8 +365,6 @@ def _get_state(session_id: str) -> dict:
             "idle_count": 0,
             "titled": False,
             "tool_uses_since_reflection": 0,
-            "reflected_at": 0.0,
-            "auto_extracted_idle": False,
         }
     s = _hook_sessions[session_id]
     if "subagents" not in s:
@@ -381,10 +379,6 @@ def _get_state(session_id: str) -> dict:
         s["titled"] = False
     if "tool_uses_since_reflection" not in s:
         s["tool_uses_since_reflection"] = 0
-    if "reflected_at" not in s:
-        s["reflected_at"] = 0.0
-    if "auto_extracted_idle" not in s:
-        s["auto_extracted_idle"] = False
     return s
 
 
@@ -392,6 +386,11 @@ def cleanup_session(session_id: str):
     """Remove all hook state for a session. Called from handle_pty_exit."""
     _hook_sessions.pop(session_id, None)
     _pending_pty_warnings.pop(session_id, None)
+    try:
+        from idle_reflection import clear_session as _ir_clear
+        _ir_clear(session_id)
+    except Exception:
+        pass
 
 
 def clear_native_id_cache(session_id: str):
@@ -1219,75 +1218,16 @@ async def _generate_title(session_id: str, cli_type: str, context: str):
         logger.debug("Auto-title generation failed for %s: %s", session_id[:8], e)
 
 
-# ─── Stop reflection (Worker-to-Worker tool nudge) ──────────────────
-
-# Throttle: minimum monotonic seconds between reflections per session.
-# Bumped from 5min → 30min — the prompt was firing after virtually every
-# substantive Commander turn, which felt like spam.
-_REFLECTION_THROTTLE_SECS = 1800.0
-# Floor: only reflect when the agent did real work (≥ this many tool uses
-# since the last reflection). Keeps the prompt off short clarifying turns
-# and routine read/grep turns. Bumped from 3 → 12.
-_REFLECTION_MIN_TOOL_USES = 12
-_REFLECTION_CACHE_TTL = 30.0
-_reflection_enabled_cache: dict[str, float] = {}
-
-
-async def _is_stop_reflection_enabled() -> bool:
-    """Check whether the Stop hook reflection prompt is enabled (cached 30s)."""
-    cached_ts = _reflection_enabled_cache.get("ts", 0.0)
-    if time.monotonic() - cached_ts < _REFLECTION_CACHE_TTL:
-        return bool(_reflection_enabled_cache.get("enabled", True))
-    try:
-        from db import get_db
-        db = await get_db()
-        try:
-            cur = await db.execute(
-                "SELECT value FROM app_settings WHERE key = 'experimental_stop_reflection'"
-            )
-            row = await cur.fetchone()
-            # Default ON — only disabled when explicitly "off"
-            enabled = not (row and row["value"] == "off")
-            _reflection_enabled_cache["enabled"] = enabled
-            _reflection_enabled_cache["ts"] = time.monotonic()
-            return enabled
-        finally:
-            await db.close()
-    except Exception:
-        return True
-
-
-_REFLECTION_PROMPT = (
-    "[Commander reflection] Before you stop, take one quiet moment.\n"
-    "\n"
-    "Did this turn surface anything worth saving for future you, your peers, "
-    "or the workspace? Specifically — and only call a tool if the answer is yes:\n"
-    "\n"
-    "  • Durable user preference, project decision, or non-obvious gotcha "
-    "→ save_memory (type=user/feedback/project/reference).\n"
-    "  • Concrete progress, current focus, files touched, or a discovery another "
-    "agent should know about → update_digest.\n"
-    "  • You're about to keep editing the same files in the next turn → "
-    "coord_check_overlap to see if a peer is touching them.\n"
-    "  • A peer agent is about to step on a footgun you just hit → headsup.\n"
-    "  • A live blocker that would waste anyone else's turn until resolved → "
-    "blocking_bulletin.\n"
-    "\n"
-    "Default action: do nothing. Most turns don't need any of these. "
-    "If you do call a tool, keep it terse — one entry, factual, no narration."
-)
-
-
 # ─── Event handlers ──────────────────────────────────────────────────
 
 async def _handle_stop(session_id: str, payload: dict):
     """Claude finished responding — definitive 'idle' signal.
 
-    Returns an optional decision dict. When the reflection prompt fires,
-    we return ``{"decision": "block", "reason": ...}`` so Claude Code
-    re-engages the model with the prompt instead of fully stopping. The
-    HTTP layer (``handle_hook_event``) propagates the dict as the response
-    body, which is the contract Claude's Stop hook honors.
+    Schedules a delayed idle reflection (``idle_reflection.schedule``) that
+    only fires if the session stays quiet for IDLE_DELAY seconds. PreToolUse
+    cancels the timer if the agent picks back up. No decision dict is
+    returned — the reflection arrives via PTY injection instead, which means
+    it works for Gemini sessions too.
     """
     s = _get_state(session_id)
     s["state"] = "idle"
@@ -1375,42 +1315,39 @@ async def _handle_stop(session_id: str, payload: dict):
     except Exception as e:
         logger.debug("Auto-title check failed: %s", e)
 
-    # Idle-trigger auto knowledge extraction (mirrors the clean-exit path
-    # in server._maybe_auto_extract_knowledge but for sessions that stay alive).
-    # Fires at most once per Stop, and once per session per "idle window" —
-    # PreToolUse resets the flag so the next idle after more work can fire again.
+    # Idle reflection: schedule a delayed prompt that fires only after the
+    # session has been *truly* quiet for IDLE_DELAY seconds. PreToolUse
+    # cancels the timer the moment the agent does anything else. Replaces the
+    # old per-Stop decision-dict reflection AND the per-Stop auto-knowledge
+    # extractor — one mechanism, fires only on real pauses.
     try:
-        if not s.get("auto_extracted_idle"):
-            s["auto_extracted_idle"] = True
-            from server import _maybe_auto_extract_knowledge
-            import asyncio as _ke_aio
-            _ke_aio.create_task(_maybe_auto_extract_knowledge(session_id, 0))
-    except Exception as e:
-        logger.debug("Idle auto-extract dispatch failed: %s", e)
-
-    # Stop-reflection: nudge the agent to call save_memory / update_digest /
-    # coord_check_overlap when the turn produced something worth persisting.
-    # Throttled by both wall time and tool-use count so we never spam after
-    # short clarifying turns.
-    try:
-        if not await _is_stop_reflection_enabled():
-            return None
+        from idle_reflection import schedule as _idle_schedule
         tool_uses = int(s.get("tool_uses_since_reflection", 0))
-        last_reflected = float(s.get("reflected_at", 0.0))
-        if tool_uses < _REFLECTION_MIN_TOOL_USES:
-            return None
-        if last_reflected and (now - last_reflected) < _REFLECTION_THROTTLE_SECS:
-            return None
-        s["reflected_at"] = now
-        s["tool_uses_since_reflection"] = 0
-        logger.info(
-            "Stop reflection firing for session %s (tool_uses=%d)",
-            session_id[:8], tool_uses,
-        )
-        return {"decision": "block", "reason": _REFLECTION_PROMPT}
+        cli_type = None
+        workspace_id = None
+        try:
+            db_ir = await get_db()
+            try:
+                cur_ir = await db_ir.execute(
+                    "SELECT cli_type, workspace_id FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+                row_ir = await cur_ir.fetchone()
+                if row_ir:
+                    cli_type = row_ir["cli_type"]
+                    workspace_id = row_ir["workspace_id"]
+            finally:
+                await db_ir.close()
+        except Exception:
+            pass
+        _idle_schedule(session_id, cli_type, tool_uses, workspace_id)
+        # Reset the work counter once we've committed to the next reflection
+        # window. Tool uses after this point accumulate toward the *next* one.
+        if tool_uses >= 12:
+            s["tool_uses_since_reflection"] = 0
     except Exception as e:
-        logger.debug("Stop reflection decision failed: %s", e)
-        return None
+        logger.debug("Idle reflection schedule failed: %s", e)
+    return None
 
 
 def _extract_options(payload: dict) -> list[dict]:
@@ -1584,6 +1521,13 @@ async def _handle_pre_tool_use(session_id: str, payload: dict):
     tool_name = payload.get("tool_name", "unknown")
     s["tool_stack"].append(tool_name)
 
+    # Session is active again — drop any pending idle-reflection timer.
+    try:
+        from idle_reflection import cancel as _idle_cancel
+        _idle_cancel(session_id)
+    except Exception:
+        pass
+
     agent_id = payload.get("agent_id")
     agent_type = payload.get("agent_type")
 
@@ -1619,19 +1563,11 @@ async def _handle_pre_tool_use(session_id: str, payload: dict):
             })
     await _broadcast(tool_event)
 
-    # Memory sync: if a Write/Edit targets a memory file, schedule sync.
-    # PreToolUse fires before the write but debounce delay (~3s) ensures
-    # the file is written by the time we actually read it.
-    if tool_name in ("Write", "Edit", "write_file", "edit_file"):
-        file_path = payload.get("tool_input", {}).get("file_path", "")
-        if file_path:
-            try:
-                from memory_sync import is_memory_path, on_memory_file_changed
-                if is_memory_path(file_path):
-                    import asyncio as _aio
-                    _aio.create_task(on_memory_file_changed(session_id, file_path))
-            except Exception as exc:
-                logger.debug("Memory sync check failed: %s", exc)
+    # Memory sync moved to PostToolUse — PreToolUse fires *before* the
+    # write happens, so the auto-memory entry importer (which globs the
+    # directory inline, no debounce) saw an empty/stale tree and silently
+    # imported nothing. PostToolUse runs after the tool has actually
+    # touched the disk.
 
 
 async def _handle_post_tool_use(session_id: str, payload: dict):
@@ -1644,9 +1580,6 @@ async def _handle_post_tool_use(session_id: str, payload: dict):
     # no-op on turns that didn't really do anything, so we count tool uses
     # instead of just trusting Stop frequency.
     s["tool_uses_since_reflection"] = s.get("tool_uses_since_reflection", 0) + 1
-    # New work means a fresh idle window — let auto-knowledge fire again
-    # at the next Stop.
-    s["auto_extracted_idle"] = False
 
     agent_id = payload.get("agent_id")
     agent_type = payload.get("agent_type")
@@ -1672,6 +1605,21 @@ async def _handle_post_tool_use(session_id: str, payload: dict):
         _c_aio.create_task(_scan_packages(session_id, tool_name, tool_input))
     except Exception:
         pass
+
+    # Memory sync: if a Write/Edit just touched a memory file, import the
+    # entry into the Commander DB so it shows up in the next session's
+    # Remembered Context. Runs in PostToolUse because PreToolUse fires
+    # before the write completes.
+    if tool_name in ("Write", "Edit", "write_file", "edit_file"):
+        try:
+            file_path = (payload.get("tool_input") or {}).get("file_path", "")
+            if file_path:
+                from memory_sync import is_memory_path, on_memory_file_changed
+                if is_memory_path(file_path):
+                    import asyncio as _aio
+                    _aio.create_task(on_memory_file_changed(session_id, file_path))
+        except Exception as exc:
+            logger.debug("Memory sync check failed: %s", exc)
 
     # Safety Gate: correlate PostToolUse with pending safety decisions.
     # If PostToolUse fires, the user approved the tool execution.
@@ -1835,7 +1783,14 @@ async def _w2w_check_file_conflict(session_id: str, file_path: str):
             names.append(f"{name}" + (f" ({task[:40]})" if task else ""))
 
         file_short = file_path.split("/")[-1] if "/" in file_path else file_path
-        warning = f"File conflict: {file_short} was recently edited by {', '.join(names)}. Coordinate to avoid overwriting their changes."
+        warning = (
+            f"File conflict: {file_short} was recently edited by {', '.join(names)}. "
+            "Before editing, run `git diff` (or read their session digest) and check BOTH: "
+            "(1) line overlap with your planned edit, and (2) semantic overlap — different "
+            "hunks can still collide behaviorally if they renamed a field, changed a function "
+            "signature, or moved shared state you depend on. Don't conclude 'no conflict' from "
+            "line numbers alone."
+        )
 
         # Broadcast to UI
         await _broadcast({

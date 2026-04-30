@@ -1161,6 +1161,13 @@ SEED_MCP_SERVERS = [
             "WORKER_SESSION_ID": "{session_id}",
             "WORKER_WORKSPACE_ID": "{workspace_id}",
             "WORKER_SESSION_TYPE": "{session_type}",
+            # W2W flags plumbed at PTY spawn so the worker MCP doesn't have
+            # to API-call the commander server at startup. Removes the
+            # silent-fail mode where a startup race left zero W2W tools
+            # registered but the prompt still referenced them.
+            "WORKER_W2W_COMMS": "{w2w_comms}",
+            "WORKER_W2W_CONTEXT": "{w2w_context}",
+            "WORKER_W2W_COORDINATION": "{w2w_coordination}",
         },
         "auto_approve": 1,
         "default_enabled": 0,
@@ -1569,6 +1576,9 @@ async def init_db():
                 for key, default in (
                     ("WORKER_WORKSPACE_ID", "{workspace_id}"),
                     ("WORKER_SESSION_TYPE", "{session_type}"),
+                    ("WORKER_W2W_COMMS", "{w2w_comms}"),
+                    ("WORKER_W2W_CONTEXT", "{w2w_context}"),
+                    ("WORKER_W2W_COORDINATION", "{w2w_coordination}"),
                 ):
                     if key not in env:
                         env[key] = default
