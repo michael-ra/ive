@@ -2724,6 +2724,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     extra_env["COMMANDER_SESSION_ID"] = session_id
                     extra_env["COMMANDER_API_URL"] = f"http://{HOST}:{PORT}"
                     extra_env["COMMANDER_WORKSPACE_ID"] = config.get("workspace_id", "")
+                    extra_env["COMMANDER_CLI_TYPE"] = cli_type
 
                     # Myelin coordination: when the experimental flag is on,
                     # inject agent identity + DB path so the coordination
@@ -3727,6 +3728,7 @@ async def _autostart_session_pty(session_id: str):
     extra_env["COMMANDER_SESSION_ID"] = session_id
     extra_env["COMMANDER_API_URL"] = f"http://{HOST}:{PORT}"
     extra_env["COMMANDER_WORKSPACE_ID"] = config.get("workspace_id", "")
+    extra_env["COMMANDER_CLI_TYPE"] = cli_type
 
     try:
         pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"])
@@ -10172,6 +10174,7 @@ async def pop_out_session(request: web.Request) -> web.Response:
         f'export COMMANDER_SESSION_ID="{session_id}"; '
         f'export COMMANDER_API_URL="http://{HOST}:{PORT}"; '
         f'export COMMANDER_WORKSPACE_ID="{workspace_id}"; '
+        f'export COMMANDER_CLI_TYPE="{cli_type}"; '
     )
     cli_cmd = " ".join(shlex.quote(c) for c in cmd)
     full_cmd = f'{env_exports}cd {shlex.quote(workspace_path)} && {cli_cmd}'

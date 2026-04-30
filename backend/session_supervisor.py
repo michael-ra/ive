@@ -337,6 +337,7 @@ async def _spawn_pty_from_row(row: dict) -> None:
     extra_env = {
         "COMMANDER_SESSION_ID": row["id"],
         "COMMANDER_WORKSPACE_ID": row.get("workspace_id") or "",
+        "COMMANDER_CLI_TYPE": cli_type,
     }
 
     await _pty_manager.start_session(

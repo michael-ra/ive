@@ -540,8 +540,21 @@ INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_name',''))" 2>/dev/null)
 [ -z "$TOOL_NAME" ] && exit 0
 
-# Detect CLI type
-CLI_TYPE="${COMMANDER_CLI_TYPE:-claude}"
+# Detect CLI type. The env var wins when explicitly set (e.g. by Commander
+# when it spawns a session). Otherwise inspect the parent process command
+# line — both CLIs are Node scripts so they share comm="node", but their
+# argv differs. Without this fallback, Gemini sessions get the Claude-format
+# JSON output below and Gemini reports "Hook(s) [...] failed for event
+# BeforeTool" because it doesn't recognize Claude's hook protocol.
+CLI_TYPE="${COMMANDER_CLI_TYPE:-}"
+if [ -z "$CLI_TYPE" ]; then
+  CLI_TYPE="claude"
+  # Use `command=` (full argv) not `comm=` — Gemini CLI is a Node script, so
+  # `comm=` returns "node" while `command=` is "node /opt/homebrew/bin/gemini …".
+  if ps -p $PPID -o command= 2>/dev/null | grep -qi '\\bgemini\\b'; then
+    CLI_TYPE="gemini"
+  fi
+fi
 
 # ── Tier 1: Local critical pattern check ──────────────────────────────
 # These patterns are checked locally with zero network dependency.

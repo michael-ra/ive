@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Square, StickyNote, RotateCcw, Shuffle } from 'lucide-react'
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
@@ -7,6 +7,31 @@ export default function TopBar() {
   const session = useStore((s) => s.sessions[s.activeSessionId])
   const activeSessionId = useStore((s) => s.activeSessionId)
   const [showSwitcher, setShowSwitcher] = useState(false)
+  const switcherBtnRef = useRef(null)
+  const switcherMenuRef = useRef(null)
+  const [switcherPos, setSwitcherPos] = useState(null)
+
+  useEffect(() => {
+    if (!showSwitcher) return
+    // Anchor the menu in viewport coords so it escapes the TopBar's
+    // overflow-x-auto container, which would otherwise clip it.
+    const r = switcherBtnRef.current?.getBoundingClientRect()
+    if (r) setSwitcherPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
+    const onDocClick = (e) => {
+      if (switcherMenuRef.current?.contains(e.target)) return
+      if (switcherBtnRef.current?.contains(e.target)) return
+      setShowSwitcher(false)
+    }
+    const onResize = () => setShowSwitcher(false)
+    document.addEventListener('mousedown', onDocClick)
+    window.addEventListener('resize', onResize)
+    window.addEventListener('scroll', onResize, true)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('scroll', onResize, true)
+    }
+  }, [showSwitcher])
 
   if (!session) return null
 
@@ -50,8 +75,9 @@ export default function TopBar() {
       {/* Actions */}
       <div className="flex items-center gap-1">
         {/* Switch CLI */}
-        <div className="relative">
+        <div>
           <button
+            ref={switcherBtnRef}
             data-chrome-button
             onClick={() => setShowSwitcher((s) => !s)}
             className="flex items-center gap-1.5 px-2 py-1 text-text-faint hover:text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
@@ -60,8 +86,12 @@ export default function TopBar() {
             <Shuffle size={11} />
             <span className="text-[11px]">switch</span>
           </button>
-          {showSwitcher && (
-            <div className="absolute top-full right-0 mt-1 ide-panel p-2 z-50 w-52 space-y-1 scale-in">
+          {showSwitcher && switcherPos && (
+            <div
+              ref={switcherMenuRef}
+              className="fixed ide-panel p-2 z-[60] w-52 space-y-1 scale-in"
+              style={{ top: switcherPos.top, right: switcherPos.right }}
+            >
               <div className="text-[10px] text-text-faint font-medium uppercase tracking-wider mb-1">Switch to:</div>
               {[
                 { cli: 'claude', model: 'sonnet', label: 'Claude Sonnet' },
