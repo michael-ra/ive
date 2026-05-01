@@ -257,6 +257,8 @@ COMMANDER_EVENT_LABELS: dict[CommanderEvent, str] = {
     CommanderEvent.GUIDELINE_EFFECTIVENESS_UPDATED:  "Guideline effectiveness updated",
     # Skill Suggester
     CommanderEvent.SKILL_SUGGESTED:                  "Skills suggested for session",
+    # Idle reflection
+    CommanderEvent.IDLE_REFLECTION_FIRED:             "Idle reflection fired",
     # Safety Gate
     CommanderEvent.SAFETY_RULE_TRIGGERED: "Safety rule triggered",
     CommanderEvent.SAFETY_RULE_PROPOSED:  "Safety rule proposed from patterns",
@@ -366,6 +368,8 @@ COMMANDER_EVENT_CATEGORIES: dict[CommanderEvent, str] = {
     CommanderEvent.GUIDELINE_EFFECTIVENESS_UPDATED:  "advisor",
     # Skill Suggester
     CommanderEvent.SKILL_SUGGESTED:                  "advisor",
+    # Idle reflection
+    CommanderEvent.IDLE_REFLECTION_FIRED:             "session",
     # Safety Gate
     CommanderEvent.SAFETY_RULE_TRIGGERED: "safety",
     CommanderEvent.SAFETY_RULE_PROPOSED:  "safety",
