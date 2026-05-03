@@ -71,6 +71,8 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
   const [sourceFilter, setSourceFilter] = useState('all')
   const [feedSearch, setFeedSearch] = useState('')
   const [scanning, setScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState(null) // { done, total } during a scan
+  const scanPollRef = useRef(null)
 
   // ── Active ────────────────────────────────────────────────
   const [jobs, setJobs] = useState([])
@@ -159,6 +161,15 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
   useEffect(() => { loadEntries(); loadJobs(); loadScheds() }, [activeWorkspaceId, featureFilter])
   useEffect(() => { if (tab === 'feed') loadFindings() }, [tab, loadFindings])
   useEffect(() => { if (showSchedules) loadObsSettings() }, [showSchedules, activeWorkspaceId])
+
+  // Cancel any in-flight scan-poll timer when the panel unmounts so we don't
+  // leak setTimeouts (and don't keep refreshing findings against a stale ws).
+  useEffect(() => () => {
+    if (scanPollRef.current) {
+      clearTimeout(scanPollRef.current)
+      scanPollRef.current = null
+    }
+  }, [])
 
   // Poll jobs while Active tab is visible
   useEffect(() => {
@@ -394,12 +405,63 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
     }
   }
 
+  // POST /observatory/scan is fire-and-forget — it returns 200 in ~200ms while
+  // the per-source LLM work continues in the background for 30s+. Without
+  // polling, the spinner flickers and the user thinks nothing happened. We
+  // poll observatory_scans (status='running' → 'completed'/'failed') until all
+  // per-source rows for this workspace flip, refreshing findings each tick so
+  // they appear progressively.
   const handleScan = async () => {
+    if (scanning) return
     setScanning(true)
+    setScanProgress(null)
+    const startedAt = Date.now()
+    let resp
     try {
-      await api.triggerObservatoryScan({ workspace_id: activeWorkspaceId })
-      await loadFindings()
-    } catch {} finally { setScanning(false) }
+      resp = await api.triggerObservatoryScan({ workspace_id: activeWorkspaceId })
+    } catch {
+      setScanning(false)
+      return
+    }
+    const expectedSources = Array.isArray(resp?.sources) ? resp.sources.length : 3
+    setScanProgress({ done: 0, total: expectedSources })
+    // SQLite datetime('now') format: 'YYYY-MM-DD HH:MM:SS' (UTC). Build a
+    // matching string from our trigger time minus a 3s grace window so the
+    // INSERT we just caused is on or after this floor.
+    const t = new Date(startedAt - 3000)
+    const pad = (n) => String(n).padStart(2, '0')
+    const sinceIso = `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())} `
+      + `${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:${pad(t.getUTCSeconds())}`
+
+    const tick = async () => {
+      try {
+        const [allScans] = await Promise.all([
+          api.getObservatoryScans(),
+          loadFindings(),
+        ])
+        const mine = (allScans || []).filter(
+          (s) => s.workspace_id === activeWorkspaceId && (s.started_at || '') >= sinceIso,
+        )
+        const running = mine.filter((s) => s.status === 'running').length
+        const finished = mine.length - running
+        const total = Math.max(mine.length, expectedSources)
+        setScanProgress({ done: finished, total })
+
+        const allDone = mine.length > 0 && running === 0
+        const timedOut = Date.now() - startedAt > 90_000
+        if (allDone || timedOut) {
+          setScanning(false)
+          setScanProgress(null)
+          scanPollRef.current = null
+          return
+        }
+      } catch {
+        // Transient failure — keep polling so a single 5xx doesn't strand the
+        // spinner forever; the timeout above is the upper bound.
+      }
+      scanPollRef.current = setTimeout(tick, 2000)
+    }
+    scanPollRef.current = setTimeout(tick, 1500)
   }
 
   // Active: steer
@@ -755,18 +817,30 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
                     className="w-full pl-6 pr-2 py-1 text-xs bg-bg-inset border border-border-secondary rounded-md text-text-secondary placeholder-text-faint focus:outline-none ide-focus-ring font-mono" />
                 </div>
                 <button onClick={handleScan} disabled={scanning}
+                  title={scanning ? 'Scan in progress — sources are being polled. Findings appear as each source completes.' : 'Run all enabled observatory sources now'}
                   className={`flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md border transition-colors ${
                     scanning ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30' : 'text-text-faint hover:text-text-secondary hover:bg-bg-hover border-border-secondary'
                   }`}>
                   <RefreshCw size={10} className={scanning ? 'animate-spin' : ''} />
-                  {scanning ? 'Scanning...' : 'Scan Now'}
+                  {scanning
+                    ? (scanProgress && scanProgress.total > 0
+                        ? `Scanning… ${scanProgress.done}/${scanProgress.total}`
+                        : 'Scanning…')
+                    : 'Scan Now'}
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
                 {filteredFindings.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full text-text-faint text-xs gap-2">
-                    <Telescope size={24} className="text-text-faint/30" />
-                    <div>No findings yet. Click <span className="text-text-secondary">Scan Now</span> to discover tools and features.</div>
+                    <Telescope size={24} className={`text-text-faint/30 ${scanning ? 'animate-pulse' : ''}`} />
+                    {scanning ? (
+                      <div className="text-cyan-400">
+                        Scanning {scanProgress?.total || 3} source{(scanProgress?.total || 3) > 1 ? 's' : ''}…
+                        {scanProgress?.done > 0 && ` (${scanProgress.done} done)`} findings will appear as they're ingested.
+                      </div>
+                    ) : (
+                      <div>No findings yet. Click <span className="text-text-secondary">Scan Now</span> to discover tools and features.</div>
+                    )}
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
