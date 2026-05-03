@@ -142,6 +142,24 @@ export default function useWebSocket() {
           return
         }
 
+        // Commander event bus envelope. The bus broadcasts every emit() as
+        // {type: "commander_event", event: {event_type, payload, workspace_id, ...}}.
+        // Most consumers go through the activity-feed query, but a few panels
+        // want push semantics (e.g. ResearchHub refreshing on observatory scan
+        // completion so scheduled scans don't require a tab bounce). Unwrap
+        // and re-dispatch the inner event_type as a DOM CustomEvent so panels
+        // can listen without us coupling them to the WS hook.
+        if (data.type === 'commander_event' && data.event?.event_type) {
+          const evt = data.event
+          const detail = { ...evt.payload, event_type: evt.event_type, workspace_id: evt.workspace_id }
+          window.dispatchEvent(new CustomEvent('cc-' + evt.event_type, { detail }))
+          const dashType = 'cc-' + evt.event_type.replace(/_/g, '-')
+          if (dashType !== 'cc-' + evt.event_type) {
+            window.dispatchEvent(new CustomEvent(dashType, { detail }))
+          }
+          return
+        }
+
         // Session Advisor: guideline recommendations
         if (data.type === 'guideline_recommendation') {
           window.dispatchEvent(new CustomEvent('cc-guideline_recommendation', { detail: data }))

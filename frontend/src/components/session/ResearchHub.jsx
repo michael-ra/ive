@@ -262,6 +262,21 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
     return () => pairs.forEach(([ev, fn]) => window.removeEventListener(ev, fn))
   }, [activeWorkspaceId, selected?.id])
 
+  // Live-refresh on observatory scan completion (manual + scheduled). The bus
+  // emits per-source completed events; useWebSocket.js unwraps the
+  // commander_event envelope into cc-observatory_scan_completed. Without this
+  // hook, findings from cron-fired scans stayed invisible until a tab bounce.
+  useEffect(() => {
+    if (!activeWorkspaceId) return
+    const onScanCompleted = (e) => {
+      if (e?.detail?.workspace_id !== activeWorkspaceId) return
+      loadFindings()
+    }
+    const evs = ['cc-observatory_scan_completed', 'cc-observatory-scan-completed']
+    evs.forEach((ev) => window.addEventListener(ev, onScanCompleted))
+    return () => evs.forEach((ev) => window.removeEventListener(ev, onScanCompleted))
+  }, [activeWorkspaceId, loadFindings])
+
   // Auto-scroll progress log
   useEffect(() => { progressEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [progressLog, selected?.id])
 
