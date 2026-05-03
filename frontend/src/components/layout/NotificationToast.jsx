@@ -511,14 +511,38 @@ function Toast({ notif }) {
   }
 
   // Generic notification
+  const borderClass =
+    notif.type === 'error' ? 'border-red-500/30'
+    : notif.type === 'warning' ? 'border-amber-500/30'
+    : notif.type === 'success' ? 'border-green-500/30'
+    : 'border-zinc-700'
+  const textClass =
+    notif.type === 'error' ? 'text-red-300/90'
+    : notif.type === 'warning' ? 'text-amber-300/90'
+    : notif.type === 'success' ? 'text-green-300/90'
+    : 'text-zinc-300'
+
   return (
-    <div className="bg-[#161622] border border-zinc-700 rounded-lg shadow-2xl p-3">
+    <div className={`bg-[#161622] border ${borderClass} rounded-lg shadow-2xl p-3`}>
       <div className="flex items-start gap-1">
-        <span className="text-[11px] font-mono text-zinc-300 flex-1">{notif.message}</span>
+        <span className={`text-[11px] font-mono flex-1 ${textClass}`}>{notif.message}</span>
         <button onClick={dismiss} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 shrink-0 transition-colors">
           <X size={12} />
         </button>
       </div>
+      {notif.action && typeof notif.action.onClick === 'function' && (
+        <div className="flex items-center gap-1.5 mt-1.5 pt-1.5 border-t border-zinc-800">
+          <button
+            onClick={() => { notif.action.onClick(); dismiss() }}
+            className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded transition-colors"
+          >
+            {notif.action.label || 'Confirm'}
+          </button>
+          <button onClick={dismiss} className="ml-auto text-[11px] font-mono text-zinc-500 hover:text-zinc-300 px-2 py-1 rounded hover:bg-zinc-800 transition-colors">
+            dismiss
+          </button>
+        </div>
+      )}
     </div>
   )
 }

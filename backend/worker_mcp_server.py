@@ -41,7 +41,19 @@ def api_call(method: str, path: str, body: dict | None = None) -> dict | list:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        return {"error": e.read().decode(), "status": e.code}
+        # Try to surface the structured body for 4xx/5xx responses so callers
+        # see the same shape as a successful response (e.g. the dedup-on-create
+        # gate returns 409 with {error, warning, candidates} that workers must
+        # be able to inspect). Fall back to the raw string for non-JSON bodies.
+        raw = e.read().decode()
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                parsed.setdefault("status", e.code)
+                return parsed
+        except Exception:
+            pass
+        return {"error": raw, "status": e.code}
     except Exception as e:
         return {"error": str(e)}
 
@@ -240,6 +252,8 @@ def tool_document_to_board(args: dict) -> str:
         return json.dumps({"ok": True, "action_recorded": "skipped"})
 
     if action == "create":
+        if not WORKSPACE_ID:
+            return json.dumps({"ok": False, "error": "no workspace bound to this session"})
         title = (args.get("title") or "").strip()
         if not title:
             return json.dumps({"ok": False, "error": "title required for action='create'"})

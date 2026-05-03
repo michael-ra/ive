@@ -140,16 +140,23 @@ async def _mark_board_action(
 ) -> None:
     db = await get_db()
     try:
-        updates: dict = {"board_action": action, "board_action_note": note}
+        # board_action_at uses a SQL literal so the timestamp is server-
+        # generated, matching what the worker MCP path writes.
+        fields = [
+            "board_action = ?",
+            "board_action_note = ?",
+            "board_action_at = datetime('now')",
+        ]
+        values: list = [action, note]
         if task_id is not None:
-            updates["task_id"] = task_id
+            fields.append("task_id = ?")
+            values.append(task_id)
         if active_ticket_id is not None:
-            updates["active_ticket_id"] = active_ticket_id
-
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [session_id]
+            fields.append("active_ticket_id = ?")
+            values.append(active_ticket_id)
+        values.append(session_id)
         await db.execute(
-            f"UPDATE sessions SET {set_clause} WHERE id = ?", values
+            f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?", values
         )
         await db.commit()
     finally:
@@ -179,7 +186,7 @@ async def _append_task_result(task_id: str, note: str, status: str) -> bool:
 
 
 async def _create_task(ws_id: str, session_id: str, name: str,
-                        digest_text: str) -> str | None:
+                        digest_text: str, status: str = "backlog") -> str | None:
     import uuid as _uuid
     task_id = str(_uuid.uuid4())
     db = await get_db()
@@ -193,7 +200,7 @@ async def _create_task(ws_id: str, session_id: str, name: str,
                 task_id, ws_id,
                 f"[auto-triage] {name}",
                 digest_text,
-                "backlog",
+                status,
                 "auto-triage",
                 session_id,
             ),
@@ -242,7 +249,8 @@ async def _process_session(s: dict, ws_id: str, existing_col: str, new_col: str)
             target = None
 
     if not target:
-        task_id = await _create_task(ws_id, sid, s.get("name", sid[:8]), digest_text)
+        task_id = await _create_task(ws_id, sid, s.get("name", sid[:8]), digest_text,
+                                     status=new_col)
         if task_id:
             await _mark_board_action(sid, "created", "backstop",
                                      task_id=task_id, active_ticket_id=task_id)

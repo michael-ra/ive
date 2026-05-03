@@ -417,6 +417,7 @@ def cleanup_session(session_id: str):
     """Remove all hook state for a session. Called from handle_pty_exit."""
     _hook_sessions.pop(session_id, None)
     _pending_pty_warnings.pop(session_id, None)
+    _native_id_cache.pop(session_id, None)
     try:
         from idle_reflection import clear_session as _ir_clear
         _ir_clear(session_id)

@@ -302,7 +302,7 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
     )
   }
 
-  const handlePromoteToBoard = async () => {
+  const handlePromoteToBoard = async (opts = {}) => {
     if (!selected || !activeWorkspaceId) return
     try {
       await api.createTask({
@@ -311,8 +311,30 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
         description: selected.findings_summary || `Research on: ${selected.topic}`,
         status: 'backlog',
         labels: JSON.stringify(['research']),
+        ...(opts.force && { force: true }),
       })
-    } catch {}
+      useStore.getState().addNotification({
+        type: 'success',
+        message: `Promoted "${selected.topic}" to board.`,
+      })
+    } catch (err) {
+      if (err?.status === 409 && err.body?.candidates?.length) {
+        const titles = err.body.candidates.slice(0, 3).map((c) => `"${c.title}"`).join(', ')
+        useStore.getState().addNotification({
+          type: 'warning',
+          message: `Possible duplicate: ${titles}. Click promote again to create anyway.`,
+          action: {
+            label: 'Create anyway',
+            onClick: () => handlePromoteToBoard({ force: true }),
+          },
+        })
+      } else {
+        useStore.getState().addNotification({
+          type: 'error',
+          message: `Promote failed: ${err?.message || 'unknown error'}`,
+        })
+      }
+    }
   }
 
   // Create: decompose

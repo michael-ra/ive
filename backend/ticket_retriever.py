@@ -183,6 +183,7 @@ async def find_related(
 
     cosine_rank = {n.id: i for i, (n, _) in enumerate(cosine_ranked)}
     jaccard_rank = {n.id: i for i, (n, _) in enumerate(jaccard_ranked)}
+    jaccard_by_id = {n.id: j for n, j in jaccard_scored}
     fused: list[tuple[Any, float, float, float]] = []
     for node, cos in cosine_ranked:
         cr = cosine_rank.get(node.id, len(cosine_ranked))
@@ -190,10 +191,10 @@ async def find_related(
         # RRF: contributions decay by 1/(k+rank). Cosine still dominates
         # via its raw value used as the candidate's reported score.
         rrf = 1.0 / (RRF_K + cr) + 1.0 / (RRF_K + jr)
-        jac = next((j for n, j in jaccard_scored if n.id == node.id), 0.0)
+        jac = jaccard_by_id.get(node.id, 0.0)
         fused.append((node, cos, jac, rrf))
 
-    fused.sort(key=lambda t: -t[3])
+    fused.sort(key=lambda t: (-t[3], -t[1]))
     out: list[TicketCandidate] = []
     for node, cos, jac, rrf in fused[:limit]:
         cand = _node_to_candidate(node, cos, OverlapLevel)

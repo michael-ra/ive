@@ -13,6 +13,7 @@ export default function NewTaskForm({ workspaceId, onCreated, onClose }) {
   const [labelsStr, setLabelsStr] = useState('')
   const [pipelineOn, setPipelineOn] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [duplicates, setDuplicates] = useState(null)
   const formRef = useRef(null)
 
   // ⌘↑ / ⌘↓ → cycle fields. Plain Tab also works, but the description textarea
@@ -48,7 +49,7 @@ export default function NewTaskForm({ workspaceId, onCreated, onClose }) {
     }
   })
 
-  const handleCreate = async (e) => {
+  const handleCreate = async (e, opts = {}) => {
     e?.preventDefault?.()
     if (!title.trim() || !workspaceId) return
     setCreating(true)
@@ -61,10 +62,19 @@ export default function NewTaskForm({ workspaceId, onCreated, onClose }) {
         priority,
         labels: labels.length > 0 ? labels : undefined,
         ...(pipelineOn && { pipeline: 1 }),
+        ...(opts.force && { force: true }),
       })
+      setDuplicates(null)
       onCreated?.(task)
-    } catch (e) {
-      console.error('Failed to create task:', e)
+    } catch (err) {
+      // Backend dedup gate returns 409 with {candidates} when an open ticket
+      // already covers this intent. Surface the candidates inline so the user
+      // can either reuse one or click "Create anyway" (force=true).
+      if (err?.status === 409 && err.body?.candidates) {
+        setDuplicates(err.body.candidates)
+      } else {
+        console.error('Failed to create task:', err)
+      }
     } finally {
       setCreating(false)
     }
@@ -162,6 +172,42 @@ export default function NewTaskForm({ workspaceId, onCreated, onClose }) {
             <span className="text-[11px] text-zinc-300 font-mono">Pipeline</span>
             <span className="text-[11px] text-zinc-600 font-mono">— auto: implement → test → document</span>
           </label>
+
+          {duplicates && duplicates.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2 space-y-1.5">
+              <div className="text-[11px] text-amber-300 font-mono">
+                Possible duplicate{duplicates.length > 1 ? 's' : ''} already open:
+              </div>
+              <ul className="space-y-0.5">
+                {duplicates.map((c) => (
+                  <li key={c.task_id} className="text-[11px] text-zinc-400 font-mono">
+                    • {c.title}
+                    {c.status && <span className="text-zinc-600"> ({c.status})</span>}
+                    {typeof c.score === 'number' && (
+                      <span className="text-zinc-600"> — {c.score.toFixed(2)}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-1 pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleCreate(undefined, { force: true })}
+                  disabled={creating}
+                  className="px-2.5 py-1 text-[11px] bg-amber-500/20 hover:bg-amber-500/30 disabled:opacity-40 text-amber-300 rounded font-mono transition-colors"
+                >
+                  Create anyway
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDuplicates(null)}
+                  className="px-2.5 py-1 text-[11px] bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded font-mono transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-1 pt-1">
             <button

@@ -5402,6 +5402,16 @@ async def update_session(request: web.Request) -> web.Response:
                 values.append(val)
         if not fields:
             return web.json_response({"error": "no fields to update"}, status=400)
+
+        # Read pre-update state for fields whose change we emit events for.
+        old_active_ticket_id: str | None = None
+        if "active_ticket_id" in body:
+            pre_cur = await db.execute(
+                "SELECT active_ticket_id FROM sessions WHERE id = ?", (session_id,),
+            )
+            pre_row = await pre_cur.fetchone()
+            old_active_ticket_id = (pre_row["active_ticket_id"] if pre_row else None)
+
         values.append(session_id)
         await db.execute(
             f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?", values
@@ -5420,6 +5430,23 @@ async def update_session(request: web.Request) -> web.Response:
                 "session_id": session_id,
                 "summary": body["summary"],
             })
+
+        # Emit SESSION_TICKET_REBOUND only when the bound ticket actually
+        # changed. switch_active_ticket and document_to_board both PUT
+        # through this route, so a single emit point covers worker tools
+        # and direct UI edits.
+        if "active_ticket_id" in body:
+            new_active_ticket_id = body.get("active_ticket_id")
+            if new_active_ticket_id != old_active_ticket_id:
+                try:
+                    await bus.emit(CommanderEvent.SESSION_TICKET_REBOUND, {
+                        "session_id": session_id,
+                        "old_ticket_id": old_active_ticket_id,
+                        "new_ticket_id": new_active_ticket_id,
+                    }, source="api", actor="user")
+                except Exception as e:
+                    logger.debug("SESSION_TICKET_REBOUND emit failed: %s", e)
+
         cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = await cur.fetchone()
         if not row:
@@ -5987,7 +6014,16 @@ async def create_task(request: web.Request) -> web.Response:
     # warning instead of inserting. Caller re-POSTs with ?force=1 to skip.
     # Advisory only — empty index, retriever errors, and non-CONFLICT hits
     # all let the create proceed normally.
-    if not request.query.get("force") and not body.get("force"):
+    def _truthy_force(v) -> bool:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return v != 0
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "on")
+        return False
+    force_flag = _truthy_force(request.query.get("force")) or _truthy_force(body.get("force"))
+    if not force_flag:
         try:
             import ticket_retriever
             from myelin.coordination.workspace import OverlapLevel
@@ -6003,8 +6039,14 @@ async def create_task(request: web.Request) -> web.Response:
             )
             conflicts = [c for c in existing if c.level == OverlapLevel.CONFLICT.value]
             if conflicts:
+                # 409 so the frontend's request helper raises ApiError instead
+                # of treating the response as "task created." `error` is what
+                # ApiError surfaces in its `message`; `warning` and `candidates`
+                # stay so MCP workers and any structured caller see the same
+                # shape they did when this returned 200.
                 return web.json_response(
                     {
+                        "error": "possible_duplicate",
                         "warning": "possible_duplicate",
                         "message": (
                             "A near-duplicate open ticket already exists. "
@@ -6013,7 +6055,7 @@ async def create_task(request: web.Request) -> web.Response:
                         ),
                         "candidates": [c.to_dict() for c in conflicts],
                     },
-                    status=200,
+                    status=409,
                 )
         except Exception as e:
             logger.debug("dedup-on-create gate skipped: %s", e)
@@ -15401,6 +15443,24 @@ async def on_startup(app: web.Application):
         )
 
     await init_db()
+
+    # Hydrate os.environ with DB-stored API keys so in-process code that
+    # reads env vars directly (peer_comms _build_workspace, ticket/knowledge
+    # indexers, model libs) honors keys configured in the IVE settings UI
+    # without each module having to call api_keys.resolve itself.
+    try:
+        import api_keys as _api_keys_startup
+        env_overrides = await _api_keys_startup.resolve_env_overrides()
+        for _k, _v in env_overrides.items():
+            os.environ[_k] = _v
+        if env_overrides:
+            logger.info(
+                "Hydrated %d API key(s) from app_settings into os.environ",
+                len(env_overrides),
+            )
+    except Exception as e:
+        logger.debug("API-key env hydration skipped: %s", e)
+
     pty_mgr.on_output(handle_pty_output)
     pty_mgr.on_output(capture_proc.process)
     pty_mgr.on_exit(handle_pty_exit)
@@ -16751,20 +16811,26 @@ async def _digest_drift_check(session_id: str, workspace_id: str, current_focus:
     db = await get_db()
     try:
         cur = await db.execute(
-            "SELECT active_ticket_id FROM sessions WHERE id = ?", (session_id,),
+            "SELECT active_ticket_id, task_id FROM sessions WHERE id = ?", (session_id,),
         )
         srow = await cur.fetchone()
     finally:
         await db.close()
-    active_ticket_id = (srow["active_ticket_id"] if srow else None) or None
+    # Match worker_mcp_server.tool_document_to_board's binding rule: prefer
+    # the explicit active_ticket_id but fall back to the commander-assigned
+    # task_id so sessions that never called switch_active_ticket still get
+    # drift checks against the work they were dispatched on.
+    bound_ticket_id = (
+        (srow["active_ticket_id"] or srow["task_id"]) if srow else None
+    ) or None
 
     import ticket_retriever
     from myelin.coordination.workspace import OverlapLevel
     from myelin import _cosine_sim
 
-    if active_ticket_id:
+    if bound_ticket_id:
         focus_emb = await ticket_retriever.embed_text(workspace_id, current_focus)
-        ticket_emb = await ticket_retriever.get_ticket_embedding(workspace_id, active_ticket_id)
+        ticket_emb = await ticket_retriever.get_ticket_embedding(workspace_id, bound_ticket_id)
         if focus_emb is None or ticket_emb is None:
             return {}
         score = _cosine_sim(focus_emb, ticket_emb)
@@ -16776,7 +16842,7 @@ async def _digest_drift_check(session_id: str, workspace_id: str, current_focus:
                 workspace_id=workspace_id,
                 query=current_focus,
                 status_filter="open",
-                exclude_task_id=active_ticket_id,
+                exclude_task_id=bound_ticket_id,
                 limit=3,
             )
             return {
@@ -16784,7 +16850,7 @@ async def _digest_drift_check(session_id: str, workspace_id: str, current_focus:
                     "detected": True,
                     "score": round(score, 4),
                     "level": level.value,
-                    "current_ticket_id": active_ticket_id,
+                    "current_ticket_id": bound_ticket_id,
                     "message": (
                         "Your current_focus doesn't match the ticket you're bound to. "
                         "Consider switching tickets via switch_active_ticket, or update "
@@ -16798,7 +16864,7 @@ async def _digest_drift_check(session_id: str, workspace_id: str, current_focus:
                 "detected": False,
                 "score": round(score, 4),
                 "level": level.value,
-                "current_ticket_id": active_ticket_id,
+                "current_ticket_id": bound_ticket_id,
             },
         }
 
