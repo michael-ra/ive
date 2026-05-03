@@ -53,6 +53,8 @@ from pathlib import Path
 from typing import Any
 
 from db import get_db
+from event_bus import bus
+from commander_events import CommanderEvent
 
 logger = logging.getLogger(__name__)
 
@@ -400,35 +402,50 @@ async def build_profile(workspace_id: str) -> dict[str, Any]:
     """Generate a fresh profile for the workspace via LLM. Upserts the row."""
     from llm_router import llm_call_json
 
-    inputs = await _collect_inputs(workspace_id)
-    if not inputs:
-        raise ValueError(f"workspace {workspace_id} not found")
+    await bus.emit(CommanderEvent.OBSERVATORY_PROFILE_BUILD_STARTED, {
+        "workspace_id": workspace_id,
+    })
 
-    prompt = _build_profile_prompt(inputs)
-    profile = await llm_call_json(
-        cli="claude", model="sonnet", prompt=prompt, system=_PROFILE_SYSTEM, timeout=180
-    )
-
-    profile_clean = {k: str(profile.get(k, "")).strip() for k in PROFILE_SECTIONS}
-
-    db = await get_db()
     try:
-        await db.execute(
-            "INSERT INTO observatory_profiles "
-            "(workspace_id, profile, inputs_hash, generated_at, updated_at) "
-            "VALUES (?, ?, ?, datetime('now'), datetime('now')) "
-            "ON CONFLICT(workspace_id) DO UPDATE SET "
-            "profile = excluded.profile, "
-            "inputs_hash = excluded.inputs_hash, "
-            "generated_at = excluded.generated_at, "
-            "updated_at = excluded.updated_at",
-            (workspace_id, json.dumps(profile_clean), inputs["inputs_hash"]),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+        inputs = await _collect_inputs(workspace_id)
+        if not inputs:
+            raise ValueError(f"workspace {workspace_id} not found")
 
-    return await get_profile(workspace_id) or {}
+        prompt = _build_profile_prompt(inputs)
+        profile = await llm_call_json(
+            cli="claude", model="sonnet", prompt=prompt, system=_PROFILE_SYSTEM, timeout=180
+        )
+
+        profile_clean = {k: str(profile.get(k, "")).strip() for k in PROFILE_SECTIONS}
+
+        db = await get_db()
+        try:
+            await db.execute(
+                "INSERT INTO observatory_profiles "
+                "(workspace_id, profile, inputs_hash, generated_at, updated_at) "
+                "VALUES (?, ?, ?, datetime('now'), datetime('now')) "
+                "ON CONFLICT(workspace_id) DO UPDATE SET "
+                "profile = excluded.profile, "
+                "inputs_hash = excluded.inputs_hash, "
+                "generated_at = excluded.generated_at, "
+                "updated_at = excluded.updated_at",
+                (workspace_id, json.dumps(profile_clean), inputs["inputs_hash"]),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+        result = await get_profile(workspace_id) or {}
+        await bus.emit(CommanderEvent.OBSERVATORY_PROFILE_BUILD_COMPLETED, {
+            "workspace_id": workspace_id,
+        })
+        return result
+    except Exception as e:
+        await bus.emit(CommanderEvent.OBSERVATORY_PROFILE_BUILD_FAILED, {
+            "workspace_id": workspace_id,
+            "error": str(e),
+        })
+        raise
 
 
 async def get_profile(workspace_id: str) -> dict[str, Any] | None:

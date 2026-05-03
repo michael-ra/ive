@@ -6,6 +6,17 @@ import {
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
 
+// Module-level so an in-flight profile build survives panel close/reopen.
+// The backend regenerate endpoint awaits the LLM (~30s+); local useState
+// would be torn down on unmount and the spinner would vanish. Keyed by
+// workspace_id; cleared when the request resolves or when the backend
+// emits a build-completed/failed bus event.
+const inFlightProfileBuilds = new Set()
+const profileBuildSubscribers = new Set()
+function notifyProfileBuild() {
+  profileBuildSubscribers.forEach((fn) => { try { fn() } catch {} })
+}
+
 const SOURCES = ['github', 'reddit', 'hackernews', 'producthunt', 'x']
 const TARGET_TYPES_BY_SOURCE = {
   github: ['topic', 'search_query'],
@@ -70,7 +81,18 @@ export default function SmartObservatoryPanel({ onClose }) {
   const [profileDraft, setProfileDraft] = useState({})
   const [editingSection, setEditingSection] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
-  const [profileBuilding, setProfileBuilding] = useState(false)
+  const [, setBuildTick] = useState(0)
+  const profileBuilding = activeWorkspaceId
+    ? inFlightProfileBuilds.has(activeWorkspaceId)
+    : false
+
+  // Subscribe to module-level build state so this panel re-renders when
+  // another mount of the panel (or the backend bus event below) toggles it.
+  useEffect(() => {
+    const sub = () => setBuildTick((x) => x + 1)
+    profileBuildSubscribers.add(sub)
+    return () => { profileBuildSubscribers.delete(sub) }
+  }, [])
 
   const [targets, setTargets] = useState([])
   const [targetSourceFilter, setTargetSourceFilter] = useState('all')
@@ -124,14 +146,38 @@ export default function SmartObservatoryPanel({ onClose }) {
 
   const buildProfile = async () => {
     if (!activeWorkspaceId) return
-    setProfileBuilding(true)
+    if (inFlightProfileBuilds.has(activeWorkspaceId)) return
+    inFlightProfileBuilds.add(activeWorkspaceId)
+    notifyProfileBuild()
     try {
       const r = await api.regenerateObservatoryProfile(activeWorkspaceId)
       setProfile(r || null)
       setProfileDraft((r && r.profile) || {})
-    } catch (err) { alert('Profile build failed: ' + err.message) }
-    setProfileBuilding(false)
+    } catch (err) {
+      alert('Profile build failed: ' + err.message)
+    } finally {
+      inFlightProfileBuilds.delete(activeWorkspaceId)
+      notifyProfileBuild()
+    }
   }
+
+  // Backend bus signal: clears the in-flight flag for ANY workspace_id
+  // (handles the case where another tab kicked off the build, or the
+  // request landed but the panel was closed before the await resolved).
+  useEffect(() => {
+    const handler = (e) => {
+      const wsId = e?.detail?.workspace_id
+      if (!wsId) return
+      if (inFlightProfileBuilds.delete(wsId)) notifyProfileBuild()
+      if (wsId === activeWorkspaceId) loadProfile()
+    }
+    const events = [
+      'cc-observatory_profile_build_completed',
+      'cc-observatory_profile_build_failed',
+    ]
+    events.forEach((ev) => window.addEventListener(ev, handler))
+    return () => events.forEach((ev) => window.removeEventListener(ev, handler))
+  }, [activeWorkspaceId, loadProfile])
 
   const saveProfileSection = async (section) => {
     try {
