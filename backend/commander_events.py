@@ -58,6 +58,7 @@ class CommanderEvent(str, Enum):
     SESSION_IMPORTED        = "session_imported"
     SESSION_EXPORTED        = "session_exported"
     SESSION_CLI_SWITCHED    = "session_cli_switched"    # claude ⇄ gemini
+    SESSION_TICKET_REBOUND  = "session_ticket_rebound"   # active_ticket_id changed
 
     # ── Commander orchestrator ────────────────────────────────────────
     COMMANDER_STARTED       = "commander_started"
@@ -196,6 +197,7 @@ COMMANDER_EVENT_LABELS: dict[CommanderEvent, str] = {
     CommanderEvent.SESSION_IMPORTED:        "Session imported",
     CommanderEvent.SESSION_EXPORTED:        "Session exported",
     CommanderEvent.SESSION_CLI_SWITCHED:    "Session CLI switched",
+    CommanderEvent.SESSION_TICKET_REBOUND:  "Session active ticket rebound",
     # Commander orchestrator
     CommanderEvent.COMMANDER_STARTED:         "Commander session started",
     CommanderEvent.COMMANDER_BROADCAST:       "Commander broadcast sent",
@@ -314,6 +316,7 @@ COMMANDER_EVENT_CATEGORIES: dict[CommanderEvent, str] = {
     CommanderEvent.SESSION_IMPORTED:        "session",
     CommanderEvent.SESSION_EXPORTED:        "session",
     CommanderEvent.SESSION_CLI_SWITCHED:    "session",
+    CommanderEvent.SESSION_TICKET_REBOUND:  "session",
     CommanderEvent.COMMANDER_STARTED:         "commander",
     CommanderEvent.COMMANDER_BROADCAST:       "commander",
     CommanderEvent.COMMANDER_SPAWNED_WORKER:  "commander",

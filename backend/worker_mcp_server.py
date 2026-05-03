@@ -101,6 +101,203 @@ def tool_update_my_task(args: dict) -> str:
     return json.dumps(result, indent=2)
 
 
+# ─── Active ticket binding + completion-time documentation ─────────────
+
+def _get_my_session() -> dict | None:
+    """Fetch this session's row. Returns dict or None on failure."""
+    result = api_call("GET", f"/sessions/{SESSION_ID}")
+    if isinstance(result, dict) and not result.get("error"):
+        return result
+    return None
+
+
+def _ticket_in_my_workspace(ticket_id: str) -> dict | None:
+    """Validate that a ticket exists and belongs to this worker's workspace."""
+    task = api_call("GET", f"/tasks/{ticket_id}")
+    if not isinstance(task, dict) or task.get("error"):
+        return None
+    if WORKSPACE_ID and task.get("workspace_id") != WORKSPACE_ID:
+        return None
+    return task
+
+
+def tool_switch_active_ticket(args: dict) -> str:
+    """Bind/unbind this session to a feature-board ticket.
+
+    The active ticket is shown in the session's per-turn system-prompt block as
+    ambient context. Pass ``ticket_id=null`` to unbind. Cross-workspace bindings
+    are rejected.
+    """
+    raw_id = args.get("ticket_id")
+    new_id: str | None
+    if raw_id is None or raw_id == "":
+        new_id = None
+    else:
+        new_id = str(raw_id).strip() or None
+
+    sess = _get_my_session()
+    if not sess:
+        return json.dumps({"ok": False, "error": "session lookup failed"})
+    previous_id = sess.get("active_ticket_id") or None
+
+    if new_id is not None:
+        ticket = _ticket_in_my_workspace(new_id)
+        if not ticket:
+            return json.dumps({"ok": False, "error": "ticket not in workspace or not found"})
+
+    if (previous_id or None) == (new_id or None):
+        return json.dumps({
+            "ok": True, "previous_ticket_id": previous_id, "new_ticket_id": new_id,
+            "noop": True,
+        })
+
+    body = {"active_ticket_id": new_id}
+    result = api_call("PUT", f"/sessions/{SESSION_ID}", body)
+    if isinstance(result, dict) and result.get("error"):
+        return json.dumps({"ok": False, **result})
+
+    return json.dumps({
+        "ok": True,
+        "previous_ticket_id": previous_id,
+        "new_ticket_id": new_id,
+        "reason": (args.get("reason") or "").strip(),
+    })
+
+
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _ws_doc_settings() -> dict:
+    """Read the workspace's board-doc policy. Defaults if anything fails."""
+    defaults = {
+        "mode": "agent_with_backstop",
+        "new_column": "review",
+        "existing_column": "review",
+    }
+    if not WORKSPACE_ID:
+        return defaults
+    workspaces = api_call("GET", "/workspaces")
+    if not isinstance(workspaces, list):
+        return defaults
+    for ws in workspaces:
+        if ws.get("id") == WORKSPACE_ID:
+            return {
+                "mode": ws.get("board_doc_mode") or defaults["mode"],
+                "new_column": ws.get("board_doc_new_column") or defaults["new_column"],
+                "existing_column": ws.get("board_doc_existing_column") or defaults["existing_column"],
+            }
+    return defaults
+
+
+def tool_document_to_board(args: dict) -> str:
+    """Stamp this session's work onto the feature board.
+
+    action='create'  → POST a new ticket (uses workspace.board_doc_new_column).
+    action='update'  → PUT the bound ticket to workspace.board_doc_existing_column,
+                       appending body to result_summary. Target = active_ticket_id
+                       or task_id (back-compat fallback).
+    action='skip'    → mark sessions.board_action='skipped' so the backstop sweeper
+                       and re-fires of the reflection prompt stop checking.
+
+    Idempotent: re-calls return {ok: true, already_documented: true} if the session
+    has already recorded a board_action.
+    """
+    action = (args.get("action") or "").strip()
+    if action not in ("create", "update", "skip"):
+        return json.dumps({"ok": False, "error": "action must be create, update, or skip"})
+
+    sess = _get_my_session()
+    if not sess:
+        return json.dumps({"ok": False, "error": "session lookup failed"})
+
+    prior = sess.get("board_action")
+    if prior:
+        return json.dumps({
+            "ok": True,
+            "already_documented": True,
+            "action_recorded": prior,
+            "ticket_id": sess.get("active_ticket_id") or sess.get("task_id"),
+        })
+
+    settings = _ws_doc_settings()
+    if settings["mode"] == "off":
+        return json.dumps({"ok": True, "action_recorded": "noop", "mode": "off"})
+
+    now = _now_iso()
+    skip_reason = (args.get("skip_reason") or "").strip()
+
+    if action == "skip":
+        body = {
+            "board_action": "skipped",
+            "board_action_at": now,
+            "board_action_note": skip_reason or None,
+        }
+        result = api_call("PUT", f"/sessions/{SESSION_ID}", body)
+        if isinstance(result, dict) and result.get("error"):
+            return json.dumps({"ok": False, **result})
+        return json.dumps({"ok": True, "action_recorded": "skipped"})
+
+    if action == "create":
+        title = (args.get("title") or "").strip()
+        if not title:
+            return json.dumps({"ok": False, "error": "title required for action='create'"})
+        body = {
+            "workspace_id": WORKSPACE_ID,
+            "title": title,
+            "description": args.get("body") or "",
+            "status": (args.get("target_column") or settings["new_column"]),
+            "assigned_session_id": SESSION_ID,
+        }
+        if args.get("parent_task_id"):
+            body["parent_task_id"] = args["parent_task_id"]
+        ticket = api_call("POST", "/tasks", body)
+        if not isinstance(ticket, dict) or ticket.get("error") or not ticket.get("id"):
+            return json.dumps({
+                "ok": False,
+                "error": "ticket create failed",
+                **(ticket if isinstance(ticket, dict) else {}),
+            })
+        ticket_id = ticket["id"]
+        sess_body = {
+            "task_id": ticket_id,
+            "active_ticket_id": ticket_id,
+            "board_action": "created",
+            "board_action_at": now,
+        }
+        api_call("PUT", f"/sessions/{SESSION_ID}", sess_body)
+        return json.dumps({"ok": True, "action_recorded": "created", "ticket_id": ticket_id})
+
+    # action == "update"
+    target = sess.get("active_ticket_id") or sess.get("task_id")
+    if not target:
+        return json.dumps({
+            "ok": False,
+            "error": "no active ticket — call switch_active_ticket first or use action='create'",
+        })
+    target_status = (args.get("target_column") or settings["existing_column"])
+    update_body: dict = {"status": target_status}
+    body_text = (args.get("body") or "").strip()
+    if body_text:
+        # Append to result_summary; preserve previous content.
+        existing_task = api_call("GET", f"/tasks/{target}")
+        prev_summary = ""
+        if isinstance(existing_task, dict):
+            prev_summary = (existing_task.get("result_summary") or "").rstrip()
+        joined = (prev_summary + "\n\n" + body_text).strip() if prev_summary else body_text
+        update_body["result_summary"] = joined
+    task_result = api_call("PUT", f"/tasks/{target}", update_body)
+    if isinstance(task_result, dict) and task_result.get("error"):
+        return json.dumps({"ok": False, **task_result})
+    sess_body = {
+        "board_action": "updated",
+        "board_action_at": now,
+    }
+    api_call("PUT", f"/sessions/{SESSION_ID}", sess_body)
+    return json.dumps({"ok": True, "action_recorded": "updated", "ticket_id": target})
+
+
 # ─── W2W: Peer communication tools ──────────────────────────────────────
 
 def tool_post_message(args: dict) -> str:
@@ -206,6 +403,23 @@ def tool_find_similar_tasks(args: dict) -> str:
     if WORKSPACE_ID:
         params += f"&workspace_id={WORKSPACE_ID}"
     result = api_call("GET", f"/tasks/similar{params}")
+    return json.dumps(result, indent=2)
+
+
+def tool_find_related_tickets(args: dict) -> str:
+    """Find OPEN tickets in the current workspace whose intent overlaps with
+    the query. Backed by the myelin semantic index — different from
+    find_similar_tasks (keyword/fallback over completed tasks).
+    """
+    if not WORKSPACE_ID:
+        return json.dumps({"error": "no workspace bound to this session"})
+    body = {
+        "query": args.get("query", ""),
+        "files_touched": args.get("files_touched") or [],
+        "status_filter": args.get("status_filter", "open"),
+        "limit": int(args.get("limit", 10)),
+    }
+    result = api_call("POST", f"/workspaces/{WORKSPACE_ID}/tickets/find_related", body)
     return json.dumps(result, indent=2)
 
 
@@ -663,6 +877,67 @@ TOOLS = {
             "required": ["task_id"],
         },
     },
+    "switch_active_ticket": {
+        "handler": tool_switch_active_ticket,
+        "description": (
+            "Bind this session to a feature-board ticket so it shows up as ambient context "
+            "in your per-turn system prompt, AND so document_to_board(action='update') at "
+            "completion writes to the right ticket. Pass ticket_id=null to unbind. "
+            "Trigger checklist: (1) the active-ticket block in your prompt no longer matches "
+            "what you're actually doing — switch. (2) you started feature-shaped work without "
+            "a binding — switch to the ticket it belongs to (or stay unbound and let "
+            "document_to_board(action='create') file a new one at completion). (3) commander "
+            "redirected you to a different ticket mid-session — switch. Cross-workspace IDs "
+            "are rejected."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ticket_id": {
+                    "type": ["string", "null"],
+                    "description": "Ticket id to bind to, or null to unbind.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional one-line reason — useful when commander or the user reviews the audit trail.",
+                },
+            },
+            "required": ["ticket_id"],
+        },
+    },
+    "document_to_board": {
+        "handler": tool_document_to_board,
+        "description": (
+            "Completion-time stamp for feature-board documentation. Call this once at the end "
+            "of feature-shaped work. Idempotent: re-calls return already_documented=true.\n\n"
+            "action='create' — file a new ticket in the workspace's configured new-ticket column "
+            "(default 'review'). Required: title. Optional: body, parent_task_id, target_column. "
+            "Sets active_ticket_id + task_id on this session to the new ticket.\n\n"
+            "action='update' — move the bound ticket (active_ticket_id, falling back to task_id) "
+            "to the workspace's existing-ticket column (default 'review'). Optional body is "
+            "appended to result_summary.\n\n"
+            "action='skip' — mark this session as 'no board write needed' so the backstop "
+            "sweeper and reflection re-fires stop checking. Use for exploration, doc-only "
+            "edits, or behavior-neutral refactors.\n\n"
+            "If your work drifted from the active ticket, call switch_active_ticket FIRST."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "update", "skip"],
+                    "description": "create | update | skip — see tool description.",
+                },
+                "title": {"type": "string", "description": "Required for create. Optional override for update."},
+                "body": {"type": "string", "description": "Required for create. On update, appended to result_summary."},
+                "parent_task_id": {"type": "string", "description": "Optional, for create — links to a parent story/epic."},
+                "target_column": {"type": "string", "description": "Override the workspace-default column (e.g. 'todo', 'in_progress')."},
+                "skip_reason": {"type": "string", "description": "Optional, for skip — one-line reason persisted on the session."},
+            },
+            "required": ["action"],
+        },
+    },
     "search_memory": {
         "handler": tool_search_memory,
         "description": (
@@ -831,6 +1106,36 @@ W2W_CONTEXT_TOOLS = {
                     "type": "string",
                     "description": "Describe what you're working on. Will match against past task titles, descriptions, and results.",
                 },
+            },
+            "required": ["query"],
+        },
+    },
+    "find_related_tickets": {
+        "handler": tool_find_related_tickets,
+        "description": (
+            "Find OPEN tickets in this workspace whose intent overlaps with your query. "
+            "Backed by the workspace's semantic index. Use before opening a new ticket "
+            "(to spot duplicates) and when picking up new work (to discover the right "
+            "ticket to bind to). Returns each candidate with a `level` field "
+            "(CONFLICT/SHARE/NOTIFY/TANGENT) — CONFLICT means very likely the same task."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What you're considering working on. A sentence describing intent works best.",
+                },
+                "files_touched": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional file paths you're editing — fuses file-set Jaccard with cosine via RRF.",
+                },
+                "status_filter": {
+                    "type": "string",
+                    "description": "'open' (default — excludes done/verified/cancelled), 'all', or a specific status.",
+                },
+                "limit": {"type": "integer", "default": 10},
             },
             "required": ["query"],
         },

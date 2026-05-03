@@ -34,37 +34,42 @@ def strip_ansi(text: str) -> str:
 # SubagentStop/PreCompact/PreCompress). Only quota, error, and the
 # context-low pre-warning still parse output.
 ERROR_RE = re.compile(r'(?:Error|Exception|Traceback|FAILED|panic)', re.IGNORECASE)
-QUOTA_RE = re.compile(r'quota.?exceed|credit.?(?:limit|exhaust)|usage.?limit.?(?:reach|exceed)|resource.?exhausted|RESOURCE_EXHAUSTED|tokens?.?per.?(?:day).?(?:limit|exceed)', re.IGNORECASE)
-
-# --- Quota false-positive guards ---
-# Lines starting with these prefixes are content (documentation, code, JSON,
-# tool-call output) — not CLI error messages.
-_CONTENT_PREFIX_RE = re.compile(
-    r'^\s*(?:'
-    r'[#*\->|`~\[{("]'         # markdown / JSON / code / quoted strings
-    r'|\d+[.)\]]'              # numbered lists
-    r'|/[/*]'                  # code comments
-    r'|[⏺⎿]'                  # Claude tool-call / result markers
-    r')'
+# Anchored on the actual phrasings the two CLIs (and the underlying APIs)
+# emit when usage is exhausted. Bare keywords like "quota_exceeded" or
+# "RESOURCE_EXHAUSTED" appear constantly in implementation discussions,
+# code, and docs — matching them caused a false-positive auto-failover
+# (account marked quota_exceeded with no real signal). Each alternative
+# below is distinctive enough to only show up in real CLI error output.
+QUOTA_RE = re.compile(
+    # Claude Code surface ("Claude AI usage limit reached|<unix-ts>")
+    r'Claude\s+AI\s+usage\s+limit\s+reached'
+    # Claude Code rolling-window banners ("5-hour limit reached", "Weekly limit reached")
+    r'|\d+\s*-?\s*hour\s+limit\s+reached'
+    r'|weekly\s+limit\s+reached'
+    # Anthropic API: low credit balance message
+    r'|credit\s+balance\s+is\s+too\s+low'
+    # Gemini surface: JSON error envelope shape, not bare token
+    r'|"code"\s*:\s*"RESOURCE_EXHAUSTED"'
+    r'|"status"\s*:\s*"RESOURCE_EXHAUSTED"'
+    # Generic 429-with-quota wording emitted by Gemini / OpenAI-compat APIs
+    r'|exceeded\s+your\s+current\s+quota',
+    re.IGNORECASE,
 )
-_MAX_QUOTA_LINE_LEN = 300  # real error messages are short
+
+_MAX_QUOTA_LINE_LEN = 600  # real error messages — Gemini's JSON envelope can be long
 
 
 def _is_quota_error(clean: str) -> bool:
-    """Check for quota/rate-limit errors, line-by-line to avoid false positives.
+    """Check for quota/rate-limit errors, line-by-line.
 
-    Content the agent writes (documentation, code, tool output) often contains
-    strings like ``quota_exceeded`` or ``RESOURCE_EXHAUSTED`` as identifiers.
-    By checking each line individually and filtering out lines that look like
-    content, we only fire on actual CLI error messages.
+    QUOTA_RE is anchored on full CLI error phrasings (e.g. "Claude AI usage
+    limit reached", `"code":"RESOURCE_EXHAUSTED"`) rather than bare keywords,
+    so prose discussions of these concepts no longer match. The line-by-line
+    scan + length cap remain to keep us off pathological inputs.
     """
     for line in clean.split('\n'):
         stripped = line.strip()
-        # Skip blank, very short, or very long lines
         if not stripped or len(stripped) < 8 or len(stripped) > _MAX_QUOTA_LINE_LEN:
-            continue
-        # Skip lines that look like content / documentation / code
-        if _CONTENT_PREFIX_RE.match(stripped):
             continue
         if QUOTA_RE.search(stripped):
             return True
@@ -103,14 +108,6 @@ GEMINI_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Branch detection — matches "claude --resume <uuid>" or "gemini --resume <index>"
-# printed after /branch command. The identifier is the ORIGINAL conversation
-# (pre-branch) that should open as a separate tab so the user keeps both visible.
-BRANCH_RE = re.compile(
-    r'(?:claude|gemini)\s+(?:-r|--resume)\s+([^\s]+)',
-    re.IGNORECASE,
-)
-
 # Warn the UI once per session when context drops to (or below) the
 # CLI-appropriate threshold. The two CLIs compact at different points so
 # the warning needs to fire BEFORE each one's actual trigger:
@@ -132,9 +129,6 @@ class OutputCaptureProcessor:
         # entry is removed when the percentage rebounds (i.e. compaction
         # happened) so the next descent re-arms the warning.
         self._context_warned: set[str] = set()
-        # One-shot guard: only fire branch_detected once per session to avoid
-        # re-triggering when scrollback re-enters the ring buffer.
-        self._branch_detected: set[str] = set()
 
     def on_capture(self, callback):
         self._capture_callbacks.append(callback)
@@ -195,19 +189,6 @@ class OutputCaptureProcessor:
                     "raw_text": m.group(0),
                 })
 
-        # Branch detection — /branch switches the current PTY to the branch
-        # conversation and prints a resume command for the original. We
-        # capture the original's UUID so Commander can open it as a new tab.
-        if session_id not in self._branch_detected:
-            branch_m = BRANCH_RE.search(clean)
-            if branch_m:
-                self._branch_detected.add(session_id)
-                await self._emit_capture(session_id, {
-                    "capture_type": "branch_detected",
-                    "original_native_id": branch_m.group(1),
-                    "raw_text": clean[:500],
-                })
-
     def get_buffer(self, session_id: str, lines: int = 100) -> str:
         """Get the last N lines of clean text from a session."""
         buf = self._buffers.get(session_id, "")
@@ -217,7 +198,6 @@ class OutputCaptureProcessor:
     def clear_buffer(self, session_id: str):
         self._buffers.pop(session_id, None)
         self._context_warned.discard(session_id)
-        self._branch_detected.discard(session_id)
 
     def check_permission_question(self, session_id: str) -> str | None:
         """Check if the session's recent output ends with a permission question.

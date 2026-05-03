@@ -8,28 +8,7 @@ import TaskDetailModal from './TaskDetailModal'
 import NewTaskForm from './NewTaskForm'
 import DependencyGraph from './DependencyGraph'
 import usePanelCreate from '../../hooks/usePanelCreate'
-
-const COLUMNS = [
-  { key: 'backlog', label: 'Backlog' },
-  { key: 'todo', label: 'To Do' },
-  { key: 'planning', label: 'Planning', color: 'text-amber-400' },
-  { key: 'in_progress', label: 'In Progress' },
-  { key: 'review', label: 'Review' },
-  { key: 'testing', label: 'Testing' },
-  { key: 'documenting', label: 'Docs' },
-  { key: 'done', label: 'Done' },
-]
-
-const columnAccent = {
-  backlog: 'text-zinc-500',
-  todo: 'text-zinc-400',
-  planning: 'text-orange-400',
-  in_progress: 'text-indigo-400',
-  review: 'text-amber-400',
-  testing: 'text-cyan-400',
-  documenting: 'text-purple-400',
-  done: 'text-green-400',
-}
+import { COLUMNS, columnAccent } from '../../lib/boardColumns'
 
 export default function FeatureBoard({ onClose }) {
   const workspaces = useStore((s) => s.workspaces)

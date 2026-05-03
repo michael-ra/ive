@@ -4,6 +4,7 @@ import {
   BookOpen, Lightbulb, GripVertical, Settings2, Check,
   Zap, Code, Wand2, Search, RefreshCw, Rocket,
   Pencil, Terminal, Package, Globe, Lock, Star,
+  X, Sparkles,
 } from 'lucide-react'
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
@@ -40,6 +41,11 @@ export default function QuickActions() {
   const prompts = useStore((s) => s.prompts)
   const [editMode, setEditMode] = useState(false)
   const activeSessionId = useStore((s) => s.activeSessionId)
+  const notifications = useStore((s) => s.notifications)
+
+  // Suggestion chips that ride at the end of the bar (replaces the toast popouts)
+  const skillSuggestions = notifications.filter((n) => n.type === 'skill_suggestion')
+  const guidelineSuggestions = notifications.filter((n) => n.type === 'guideline_recommendation')
 
   // Derive quick actions from the global prompts cache
   const actions = prompts
@@ -61,6 +67,20 @@ export default function QuickActions() {
     if (editMode) return
     const cmd = prompt('Slash command or prompt:', '')
     if (cmd?.trim()) sendTerminalCommand(activeSessionId, cmd.trim())
+  }
+
+  const dismissNotif = (id) => useStore.getState().removeNotification(id)
+
+  const openSkillsForNotif = (notif) => {
+    window.dispatchEvent(new CustomEvent('open-marketplace', {
+      detail: { tab: 'skills', suggestedSkills: notif.skills },
+    }))
+    dismissNotif(notif.id)
+  }
+
+  const openGuidelinesForNotif = (notif) => {
+    window.dispatchEvent(new CustomEvent('open-guidelines'))
+    dismissNotif(notif.id)
   }
 
   const onDragStart = (e, idx) => {
@@ -95,7 +115,8 @@ export default function QuickActions() {
     setDragging(null)
   }
 
-  if (actions.length === 0 && !editMode) return null
+  const hasSuggestions = skillSuggestions.length > 0 || guidelineSuggestions.length > 0
+  if (actions.length === 0 && !editMode && !hasSuggestions) return null
 
   return (
     <div className="flex items-center bg-bg-inset border-b border-border-secondary">
@@ -133,6 +154,66 @@ export default function QuickActions() {
           >
             /...
           </button>
+        )}
+
+        {!editMode && skillSuggestions.length > 0 && (
+          <>
+            <span className="mx-1 select-none font-mono text-[14px] leading-none text-amber-400/60 shrink-0" aria-hidden>|</span>
+            {skillSuggestions.map((notif) => {
+              const count = notif.skills?.length || 0
+              const preview = (notif.skills || []).slice(0, 3).map((s) => s.name).join(', ')
+              return (
+                <span key={notif.id} className="flex items-center shrink-0">
+                  <button
+                    data-chrome-button
+                    onClick={() => openSkillsForNotif(notif)}
+                    title={preview ? `Suggested skills: ${preview}` : 'Browse suggested skills'}
+                    className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-[11px] font-mono rounded-md border border-amber-500/30 hover:border-amber-500/60 bg-amber-500/5 hover:bg-amber-500/10 text-amber-300 transition-colors cursor-pointer"
+                  >
+                    <Zap size={11} />
+                    <span>{count} skill{count !== 1 ? 's' : ''}</span>
+                  </button>
+                  <button
+                    onClick={() => dismissNotif(notif.id)}
+                    title="Dismiss"
+                    className="ml-0.5 p-0.5 rounded text-amber-400/50 hover:text-amber-300 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              )
+            })}
+          </>
+        )}
+
+        {!editMode && guidelineSuggestions.length > 0 && (
+          <>
+            <span className="mx-1 select-none font-mono text-[14px] leading-none text-indigo-400/60 shrink-0" aria-hidden>|</span>
+            {guidelineSuggestions.map((notif) => {
+              const count = notif.recommendations?.length || 0
+              const preview = (notif.recommendations || []).slice(0, 3).map((g) => g.name).join(', ')
+              return (
+                <span key={notif.id} className="flex items-center shrink-0">
+                  <button
+                    data-chrome-button
+                    onClick={() => openGuidelinesForNotif(notif)}
+                    title={preview ? `Recommended guidelines: ${preview}` : 'Open recommended guidelines'}
+                    className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-[11px] font-mono rounded-md border border-indigo-500/30 hover:border-indigo-500/60 bg-indigo-500/5 hover:bg-indigo-500/10 text-indigo-300 transition-colors cursor-pointer"
+                  >
+                    <Sparkles size={11} />
+                    <span>{count} guideline{count !== 1 ? 's' : ''}</span>
+                  </button>
+                  <button
+                    onClick={() => dismissNotif(notif.id)}
+                    title="Dismiss"
+                    className="ml-0.5 p-0.5 rounded text-indigo-400/50 hover:text-indigo-300 hover:bg-indigo-500/10 transition-colors cursor-pointer"
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              )
+            })}
+          </>
         )}
       </div>
 

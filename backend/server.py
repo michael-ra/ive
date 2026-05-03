@@ -30,6 +30,7 @@ import plugin_manager
 import experimental
 from event_bus import bus
 from commander_events import CommanderEvent, build_event_catalog
+import ticket_indexer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2247,6 +2248,69 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                                         "Priority levels: info (FYI), heads_up (peer notified at idle), "
                                         "blocking (immediate — file is locked by peer)."
                                     )
+
+                            # ── Active ticket binding ─────────────────────
+                            # Only worker/planner sessions get a per-turn active-ticket
+                            # block. Commander orchestrates (no single ticket); tester
+                            # surfaces bugs via update_my_task; documentor doesn't bind.
+                            if not _is_documentor_w2w and not _is_commander_w2w and not _is_tester_w2w:
+                                try:
+                                    bd_db = await get_db()
+                                    try:
+                                        bd_cur = await bd_db.execute(
+                                            "SELECT board_doc_mode FROM workspaces WHERE id = ?",
+                                            (_ws_id,),
+                                        )
+                                        bd_row = await bd_cur.fetchone()
+                                        bd_mode = (bd_row["board_doc_mode"] if bd_row else "agent_with_backstop") or "agent_with_backstop"
+
+                                        if bd_mode != "off":
+                                            sess_cur = await bd_db.execute(
+                                                "SELECT active_ticket_id, task_id FROM sessions WHERE id = ?",
+                                                (session_id,),
+                                            )
+                                            sess_row = await sess_cur.fetchone()
+                                            active_tid = (sess_row["active_ticket_id"] if sess_row else None) or (sess_row["task_id"] if sess_row else None)
+                                            if active_tid:
+                                                tk_cur = await bd_db.execute(
+                                                    "SELECT id, title, status FROM tasks WHERE id = ?",
+                                                    (active_tid,),
+                                                )
+                                                tk_row = await tk_cur.fetchone()
+                                                if tk_row:
+                                                    short = (tk_row["id"] or "")[:8]
+                                                    title = (tk_row["title"] or "").strip().replace("\n", " ")[:80]
+                                                    status = tk_row["status"] or "?"
+                                                    system_prompt_parts.append(
+                                                        f"## Active Ticket\n\n"
+                                                        f"[Active ticket: #{short} — {status}: \"{title}\"]\n\n"
+                                                        "This is the ticket you're currently bound to. If your work "
+                                                        "drifts from this ticket, call switch_active_ticket(ticket_id) "
+                                                        "to rebind, or switch_active_ticket(null) to unbind. At completion, "
+                                                        "document_to_board(action='update') uses this binding."
+                                                    )
+                                                else:
+                                                    # Stale binding: ticket was deleted
+                                                    system_prompt_parts.append(
+                                                        "## Active Ticket\n\n"
+                                                        "[No active ticket bound — prior binding pointed to a deleted ticket]\n\n"
+                                                        "If feature-shaped work begins, call switch_active_ticket(ticket_id) "
+                                                        "to bind to an existing ticket, or call document_to_board(action='create') "
+                                                        "at completion to create a new one."
+                                                    )
+                                            else:
+                                                system_prompt_parts.append(
+                                                    "## Active Ticket\n\n"
+                                                    "[No active ticket bound]\n\n"
+                                                    "You're working unbound. If feature-shaped work begins, call "
+                                                    "switch_active_ticket(ticket_id) to bind to an existing ticket, "
+                                                    "or just call document_to_board(action='create') at completion "
+                                                    "to create a new one."
+                                                )
+                                    finally:
+                                        await bd_db.close()
+                                except Exception as bd_exc:
+                                    logger.debug("Active ticket block skipped: %s", bd_exc)
                         except Exception as w2w_exc:
                             logger.warning("W2W injection skipped: %s", w2w_exc)
 
@@ -3305,7 +3369,8 @@ async def update_workspace(request: web.Request) -> web.Response:
                    "knowledge_context_limit", "native_terminals_enabled", "auto_register_terminals",
                    "auto_exec_enabled", "commander_max_workers", "tester_max_workers",
                    "research_max_iterations", "pipeline_enabled",
-                   "task_dependencies_enabled", "auto_knowledge_enabled")
+                   "task_dependencies_enabled", "auto_knowledge_enabled",
+                   "board_doc_mode", "board_doc_new_column", "board_doc_existing_column")
         fields, values = [], []
         for key in allowed:
             if key in body:
@@ -3380,6 +3445,29 @@ async def list_sessions(request: web.Request) -> web.Response:
                 d["tags"] = []
             result.append(d)
         return web.json_response(result)
+    finally:
+        await db.close()
+
+
+async def get_session_by_id(request: web.Request) -> web.Response:
+    """Return a single session row as dict. Used by worker MCP for self-lookup
+    (active_ticket_id, task_id, workspace_id) — all of which need a single
+    point of truth that the agent can read mid-turn.
+    """
+    sid = request.match_info["id"]
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM sessions WHERE id = ?", (sid,))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "session not found"}, status=404)
+        d = dict(row)
+        d["status"] = "running" if pty_mgr.is_alive(d["id"]) else "idle"
+        try:
+            d["tags"] = json.loads(d.get("tags") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["tags"] = []
+        return web.json_response(d)
     finally:
         await db.close()
 
@@ -5300,7 +5388,9 @@ async def update_session(request: web.Request) -> web.Response:
                    "add_dirs", "agent", "worktree", "mcp_config", "scratchpad",
                    "account_id", "native_session_id", "native_slug", "auto_approve_mcp", "cli_type",
                    "plan_model", "execute_model", "auto_approve_plan", "output_style", "tags",
-                   "archived", "summary")
+                   "archived", "summary",
+                   "task_id", "active_ticket_id",
+                   "board_action", "board_action_at", "board_action_note")
         fields, values = [], []
         for key in allowed:
             if key in body:
@@ -5892,6 +5982,42 @@ async def create_task(request: web.Request) -> web.Response:
     if not workspace_id or not title:
         return web.json_response({"error": "workspace_id and title required"}, status=400)
 
+    # ── Dedup-on-create gate ─────────────────────────────────────────────
+    # If a CONFLICT-level ticket already exists for this intent, return a
+    # warning instead of inserting. Caller re-POSTs with ?force=1 to skip.
+    # Advisory only — empty index, retriever errors, and non-CONFLICT hits
+    # all let the create proceed normally.
+    if not request.query.get("force") and not body.get("force"):
+        try:
+            import ticket_retriever
+            from myelin.coordination.workspace import OverlapLevel
+            dedup_query_parts = [title]
+            if body.get("description"):
+                dedup_query_parts.append(str(body["description"])[:600])
+            dedup_query = ". ".join(dedup_query_parts)
+            existing = await ticket_retriever.find_related(
+                workspace_id=workspace_id,
+                query=dedup_query,
+                status_filter="open",
+                limit=5,
+            )
+            conflicts = [c for c in existing if c.level == OverlapLevel.CONFLICT.value]
+            if conflicts:
+                return web.json_response(
+                    {
+                        "warning": "possible_duplicate",
+                        "message": (
+                            "A near-duplicate open ticket already exists. "
+                            "Re-POST with ?force=1 (or add force:true to the body) to "
+                            "create anyway."
+                        ),
+                        "candidates": [c.to_dict() for c in conflicts],
+                    },
+                    status=200,
+                )
+        except Exception as e:
+            logger.debug("dedup-on-create gate skipped: %s", e)
+
     task_id = str(uuid.uuid4())
     labels = body.get("labels")
     if isinstance(labels, list):
@@ -5962,6 +6088,8 @@ async def create_task(request: web.Request) -> web.Response:
         "test_with_agent": bool(task.get("test_with_agent")),
         "pipeline": bool(task.get("pipeline")),
     }, source="api", actor="user")
+
+    asyncio.create_task(ticket_indexer.index_ticket(task))
     return web.json_response(task, status=201)
 
 
@@ -6083,6 +6211,22 @@ async def update_task(request: web.Request) -> web.Response:
         await db.close()
 
     await broadcast({"type": "task_update", "action": "updated", "task": task})
+
+    _embed_changed = any(
+        k in body and body[k] != old.get(k)
+        for k in ("title", "description", "acceptance_criteria", "labels")
+    )
+    if _embed_changed:
+        asyncio.create_task(ticket_indexer.reindex_ticket(task))
+    else:
+        _meta_fields = {
+            k: task.get(k) for k in ("status", "assigned_session_id", "labels", "title")
+            if k in body
+        }
+        if _meta_fields:
+            asyncio.create_task(ticket_indexer.update_ticket_metadata(
+                task.get("workspace_id"), task_id, _meta_fields,
+            ))
 
     # Fire canonical events. We emit a general TASK_UPDATED plus specific
     # events for the transitions plugin authors will care most about
@@ -6264,6 +6408,9 @@ async def delete_task(request: web.Request) -> web.Response:
         "title": task.get("title"),
         "status_at_deletion": task.get("status"),
     }, source="api", actor="user")
+    asyncio.create_task(ticket_indexer.delete_ticket_index(
+        task.get("workspace_id"), task_id,
+    ))
     return web.json_response({"ok": True})
 
 
@@ -12612,13 +12759,20 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
             "type": "research_progress", "job_id": job_id,
             "line": "Creating research session...", "entry_id": entry_id,
         })
+        # Derive CLI type from model id (gemini-* → gemini, else claude),
+        # mirroring the convention used by /api/catchup and the LLM model bus.
+        job_model = (job.get("model") or "").strip()
+        sess_cli = "gemini" if job_model.startswith("gemini-") else "claude"
+        sess_model = job_model or ("gemini-2.5-pro" if sess_cli == "gemini" else "sonnet")
         sess = await _rest("POST", "/api/sessions", {
             "name": f"Deep Research — {query[:50]}",
             "workspace_id": workspace_id,
-            "model": "sonnet",
-            "cli_type": "claude",
+            "model": sess_model,
+            "cli_type": sess_cli,
             "permission_mode": "bypassPermissions",
         })
+        if "id" not in sess:
+            raise RuntimeError(f"session create failed: {sess}")
         session_id = sess["id"]
         job["session_id"] = session_id
 
@@ -12738,11 +12892,19 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
                         "line": f"{'Sending initial prompt' if iteration == 0 else f'Iteration {iteration + 1}/{max_iterations} — nudging deeper'}...",
                         "entry_id": entry_id,
                     })
-                    await ws.send_json({
-                        "action": "input",
-                        "session_id": session_id,
-                        "data": prompt + "\r",
-                    })
+                    # Tier B prompt injection: write the multi-line prompt to a
+                    # tmp file and send a single-line wrapper that references it.
+                    # Avoids PTY fragmentation that breaks Claude Code (raw
+                    # newlines become [Pasted text #N] placeholders) and Gemini
+                    # CLI (Ink TUI exits on bracketed paste / Ctrl-U / Escape).
+                    prompt_path = _Path(f"/tmp/ive_research_{job_id}_{iteration}.md")
+                    prompt_path.write_text(prompt)
+                    job.setdefault("tmp_files", []).append(str(prompt_path))
+                    if sess_cli == "gemini":
+                        wrapper = f"@{prompt_path} Execute the instructions in this file."
+                    else:
+                        wrapper = f"Read {prompt_path} and execute the instructions there exactly."
+                    pty_mgr.write(session_id, wrapper.encode("utf-8") + b"\r")
 
                     # Monitor until idle (up to 5 min per iteration)
                     t0 = _time.time()
@@ -12945,6 +13107,13 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
             "type": "research_done", "job_id": job_id,
             "status": "error", "error": str(e), "entry_id": entry_id,
         })
+
+    # Clean up tmp prompt files written during the iteration loop.
+    for path_str in job.get("tmp_files", []) or []:
+        try:
+            _Path(path_str).unlink(missing_ok=True)
+        except Exception:
+            pass
 
     # Clean up session (keep it around for debugging — user can delete manually)
     if session_id:
@@ -15283,6 +15452,38 @@ async def on_startup(app: web.Application):
     idle_reflection.set_broadcast_fn(broadcast)
     idle_reflection.register_subscribers()
 
+    # ── Ticket index backfill: ensure every existing task has a myelin
+    # node so retrieval works on day one (not only for tasks created after
+    # the indexer shipped). Runs once per workspace, in the background.
+    async def _backfill_ticket_index():
+        try:
+            db = await get_db()
+            try:
+                cur = await db.execute("SELECT id FROM workspaces")
+                ws_rows = await cur.fetchall()
+                import knowledge_indexer as _ki
+                for ws_row in ws_rows:
+                    try:
+                        await ticket_indexer.backfill_workspace(ws_row["id"], db)
+                    except Exception as e:
+                        logger.debug("ticket backfill failed for %s: %s", ws_row["id"], e)
+                    try:
+                        await _ki.backfill_workspace(ws_row["id"], db)
+                    except Exception as e:
+                        logger.debug("knowledge backfill failed for %s: %s", ws_row["id"], e)
+            finally:
+                await db.close()
+        except Exception as e:
+            logger.debug("ticket backfill scheduler skipped: %s", e)
+    asyncio.create_task(_backfill_ticket_index())
+
+    # ── Board-doc backstop: hourly sweep that documents finished work
+    # for sessions whose agent didn't call document_to_board themselves.
+    import board_doc_backstop
+    board_doc_backstop.set_broadcast_fn(broadcast)
+    await board_doc_backstop.start(app)
+    app.on_cleanup.append(board_doc_backstop.stop)
+
     # ── Pipeline: implement → test → document loop ──────────────────
     import pipeline
     pipeline.set_pty_manager(pty_mgr)
@@ -15393,14 +15594,6 @@ async def on_startup(app: web.Application):
                     "session_id": session_id,
                     "message": capture.get("raw_text", "Quota exceeded"),
                 })
-
-        # Branch detected → /branch switched this PTY to the branch.
-        # Create a new session for the ORIGINAL conversation so it opens
-        # as a sibling tab.  The current PTY continues as the branch.
-        if capture.get("capture_type") == "branch_detected":
-            original_native_id = capture.get("original_native_id")
-            if original_native_id:
-                _fire_and_forget(_open_original_as_tab(session_id, original_native_id))
 
     capture_proc.on_capture(store_and_broadcast_capture)
 
@@ -15843,6 +16036,41 @@ async def find_similar_tasks(request: web.Request) -> web.Response:
         return web.json_response(results)
     finally:
         await db.close()
+
+
+async def find_related_tickets(request: web.Request) -> web.Response:
+    """Myelin-backed ticket retrieval. Different from find_similar_tasks
+    (keyword/embedder) — this is the dedicated index for *open* work that
+    powers dedup-on-create and the drift gate.
+
+    POST body or GET query string accepted:
+      {query, files_touched=[], status_filter="open"|"all"|<status>|[<...>],
+       exclude_task_id=null, limit=10}
+    """
+    if request.method == "POST":
+        body = await request.json()
+    else:
+        body = {
+            "query": request.query.get("q") or request.query.get("query") or "",
+            "limit": int(request.query.get("limit", "10")),
+        }
+    workspace_id = request.match_info.get("workspace_id") or body.get("workspace_id")
+    if not workspace_id:
+        return web.json_response({"error": "workspace_id required"}, status=400)
+    query = (body.get("query") or "").strip()
+    if not query:
+        return web.json_response({"error": "query required"}, status=400)
+
+    import ticket_retriever
+    candidates = await ticket_retriever.find_related(
+        workspace_id=workspace_id,
+        query=query,
+        files_touched=body.get("files_touched") or [],
+        status_filter=body.get("status_filter"),
+        exclude_task_id=body.get("exclude_task_id"),
+        limit=int(body.get("limit", 10)),
+    )
+    return web.json_response({"candidates": [c.to_dict() for c in candidates]})
 
 
 # ── W2W: Similar sessions search ─────────────────────────────────────────
@@ -16489,9 +16717,106 @@ async def update_session_digest(request: web.Request) -> web.Response:
         except Exception:
             pass
 
+        # ── Drift gate ────────────────────────────────────────────────
+        # Compare the new current_focus to the session's bound ticket.
+        # If the focus has drifted out of the NOTIFY band (<0.55 cosine),
+        # surface candidate tickets the worker should consider switching
+        # to. Advisory only — never blocks the digest write.
+        if "current_focus" in body and body.get("current_focus"):
+            try:
+                d["coordination"] = await _digest_drift_check(
+                    session_id=session_id,
+                    workspace_id=d.get("workspace_id"),
+                    current_focus=body["current_focus"],
+                )
+            except Exception as e:
+                logger.debug("digest drift check failed: %s", e)
+
         return web.json_response(d)
     finally:
         await db.close()
+
+
+async def _digest_drift_check(session_id: str, workspace_id: str, current_focus: str) -> dict:
+    """Inspect the worker's current_focus against the bound ticket.
+
+    Returns a dict the MCP layer relays verbatim to the worker. Two shapes:
+      - bound + drifted: {drift: {detected: true, score, current_ticket_id, candidates}}
+      - unbound + focus reported: {suggestions: [...]}
+      - bound + on-track: {drift: {detected: false, score, current_ticket_id}}
+    """
+    if not workspace_id:
+        return {}
+
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT active_ticket_id FROM sessions WHERE id = ?", (session_id,),
+        )
+        srow = await cur.fetchone()
+    finally:
+        await db.close()
+    active_ticket_id = (srow["active_ticket_id"] if srow else None) or None
+
+    import ticket_retriever
+    from myelin.coordination.workspace import OverlapLevel
+    from myelin import _cosine_sim
+
+    if active_ticket_id:
+        focus_emb = await ticket_retriever.embed_text(workspace_id, current_focus)
+        ticket_emb = await ticket_retriever.get_ticket_embedding(workspace_id, active_ticket_id)
+        if focus_emb is None or ticket_emb is None:
+            return {}
+        score = _cosine_sim(focus_emb, ticket_emb)
+        level = OverlapLevel.from_score(score)
+        # NOTIFY band (0.55) is the lower edge of "still about the same
+        # work." Below that we treat the focus as drifted.
+        if level in (OverlapLevel.TANGENT, OverlapLevel.UNRELATED):
+            candidates = await ticket_retriever.find_related(
+                workspace_id=workspace_id,
+                query=current_focus,
+                status_filter="open",
+                exclude_task_id=active_ticket_id,
+                limit=3,
+            )
+            return {
+                "drift": {
+                    "detected": True,
+                    "score": round(score, 4),
+                    "level": level.value,
+                    "current_ticket_id": active_ticket_id,
+                    "message": (
+                        "Your current_focus doesn't match the ticket you're bound to. "
+                        "Consider switching tickets via switch_active_ticket, or update "
+                        "the ticket description if the scope legitimately grew."
+                    ),
+                    "candidates": [c.to_dict() for c in candidates],
+                },
+            }
+        return {
+            "drift": {
+                "detected": False,
+                "score": round(score, 4),
+                "level": level.value,
+                "current_ticket_id": active_ticket_id,
+            },
+        }
+
+    # Unbound — one-shot suggestion list.
+    candidates = await ticket_retriever.find_related(
+        workspace_id=workspace_id,
+        query=current_focus,
+        status_filter="open",
+        limit=3,
+    )
+    if not candidates:
+        return {}
+    return {
+        "suggestions": {
+            "message": "You're not bound to a ticket. Open tickets that look related:",
+            "candidates": [c.to_dict() for c in candidates],
+        },
+    }
 
 
 # ── W2W: Workspace Knowledge Base ────────────────────────────────────────
@@ -16551,6 +16876,11 @@ async def list_workspace_knowledge(request: web.Request) -> web.Response:
         await db.close()
 
 
+def _kb_norm(text: str) -> str:
+    """Normalize knowledge content for dedup comparison: lowercase + collapse whitespace."""
+    return _re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
 async def create_knowledge_entry(request: web.Request) -> web.Response:
     ws_id = request.match_info["id"]
     body = await request.json()
@@ -16559,14 +16889,68 @@ async def create_knowledge_entry(request: web.Request) -> web.Response:
     if not content or not category:
         return web.json_response({"error": "content and category required"}, status=400)
 
-    entry_id = str(uuid.uuid4())
+    scope = body.get("scope", "") or ""
     db = await get_db()
     try:
+        # Dedup-on-write via the myelin semantic index (CONFLICT >= 0.80
+        # cosine in same category/scope). When myelin is unavailable,
+        # falls back to substring-containment over the same (category,
+        # scope) so the dedup property is preserved offline.
+        match_id = None
+        try:
+            import knowledge_indexer
+            dup = await knowledge_indexer.find_duplicate(
+                workspace_id=ws_id,
+                category=category,
+                scope=scope,
+                content=content,
+            )
+            if dup:
+                match_id = dup["entry_id"]
+        except Exception as e:
+            logger.debug("knowledge dedup via myelin failed: %s", e)
+
+        if match_id is None:
+            cur = await db.execute(
+                """SELECT id, content FROM workspace_knowledge
+                   WHERE workspace_id = ? AND category = ?
+                     AND COALESCE(scope, '') = COALESCE(?, '')""",
+                (ws_id, category, scope),
+            )
+            existing = [dict(r) for r in await cur.fetchall()]
+            new_norm = _kb_norm(content)
+            if len(new_norm) >= 30:
+                for r in existing:
+                    exist_norm = _kb_norm(r.get("content") or "")
+                    if len(exist_norm) >= 30 and (new_norm in exist_norm or exist_norm in new_norm):
+                        match_id = r["id"]
+                        break
+
+        if match_id is not None:
+            await db.execute(
+                "UPDATE workspace_knowledge SET confirmed_count = confirmed_count + 1, updated_at = datetime('now') WHERE id = ?",
+                (match_id,),
+            )
+            await db.commit()
+            try:
+                from event_bus import bus
+                from commander_events import CommanderEvent
+                await bus.emit(
+                    CommanderEvent.KNOWLEDGE_CONFIRMED,
+                    {"entry_id": match_id, "via": "dedup_on_write"},
+                    source="w2w",
+                )
+            except Exception:
+                logger.exception("Failed to emit KNOWLEDGE_CONFIRMED event")
+            cur = await db.execute("SELECT * FROM workspace_knowledge WHERE id = ?", (match_id,))
+            row = await cur.fetchone()
+            return web.json_response(dict(row), status=200)
+
+        entry_id = str(uuid.uuid4())
         await db.execute(
             """INSERT INTO workspace_knowledge (id, workspace_id, category, content, scope, contributed_by)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (entry_id, ws_id, category, content,
-             body.get("scope", ""), body.get("contributed_by", "")),
+            (entry_id, ws_id, category, content, scope, body.get("contributed_by", "")),
         )
         await db.commit()
         cur = await db.execute("SELECT * FROM workspace_knowledge WHERE id = ?", (entry_id,))
@@ -16580,7 +16964,7 @@ async def create_knowledge_entry(request: web.Request) -> web.Response:
                 {
                     "entry_id": entry_id,
                     "category": category,
-                    "scope": body.get("scope", ""),
+                    "scope": scope,
                     "workspace_id": ws_id,
                     "session_id": body.get("contributed_by"),
                 },
@@ -16593,6 +16977,21 @@ async def create_knowledge_entry(request: web.Request) -> web.Response:
         try:
             from embedder import embed_knowledge
             await embed_knowledge(dict(row))
+        except Exception:
+            pass
+
+        # Mirror into the myelin knowledge index so the next dedup call
+        # can match against this entry. Best-effort, fire-and-forget.
+        try:
+            import knowledge_indexer
+            asyncio.create_task(knowledge_indexer.index_entry(
+                workspace_id=ws_id,
+                entry_id=entry_id,
+                category=category,
+                scope=scope,
+                content=content,
+                contributed_by=body.get("contributed_by"),
+            ))
         except Exception:
             pass
 
@@ -17017,6 +17416,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/workspaces/{id}/preview-screenshot", get_workspace_preview_screenshot)
 
     app.router.add_get("/api/sessions", list_sessions)
+    app.router.add_get("/api/sessions/{id}", get_session_by_id)
     app.router.add_post("/api/sessions", _g(create_session, "code", "full"))
     app.router.add_put("/api/sessions/order", reorder_sessions)
     app.router.add_delete("/api/sessions/{id}", _g(delete_session, "code", "full"))
@@ -17093,6 +17493,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/tasks", list_tasks)
     app.router.add_post("/api/tasks", create_task)
     app.router.add_get("/api/tasks/similar", find_similar_tasks)  # before {id} to avoid match
+    app.router.add_post("/api/workspaces/{workspace_id}/tickets/find_related", find_related_tickets)
+    app.router.add_get("/api/workspaces/{workspace_id}/tickets/find_related", find_related_tickets)
     app.router.add_get("/api/tasks/{id}", get_task)
     app.router.add_put("/api/tasks/{id}", update_task)
     app.router.add_delete("/api/tasks/{id}", delete_task)

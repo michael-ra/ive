@@ -3,6 +3,7 @@ import { FolderOpen, X, Save, ChevronDown, ChevronRight, Check, GitBranch, Messa
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
 import { MODELS, GEMINI_MODELS, getWorkspaceColor, WORKSPACE_PALETTE } from '../../lib/constants'
+import { COLUMNS as BOARD_COLUMNS } from '../../lib/boardColumns'
 
 const OVERSIGHT_OPTIONS = [
   { value: 'full_auto', label: 'Auto', desc: 'Commander decides everything autonomously' },
@@ -18,6 +19,12 @@ const TESTER_MODE_OPTIONS = [
 const RESEARCH_MODELS = [
   { group: 'Claude', items: MODELS },
   { group: 'Gemini', items: GEMINI_MODELS },
+]
+
+const BOARD_DOC_MODE_OPTIONS = [
+  { value: 'off', label: 'Off', desc: 'No auto-doc; agents may still create tickets manually' },
+  { value: 'agent_only', label: 'Agent-only', desc: 'Reflection nudges agents to call document_to_board; no fallback sweeper' },
+  { value: 'agent_with_backstop', label: 'Agent + Backstop', desc: 'Agent-driven, plus an hourly sweeper that documents missed sessions' },
 ]
 
 export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) {
@@ -64,6 +71,9 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
         commander_max_workers: ws.commander_max_workers || 3,
         tester_max_workers: ws.tester_max_workers || 2,
         research_max_iterations: ws.research_max_iterations || '',
+        board_doc_mode: ws.board_doc_mode || 'agent_with_backstop',
+        board_doc_new_column: ws.board_doc_new_column || 'review',
+        board_doc_existing_column: ws.board_doc_existing_column || 'review',
       }
     }
     setForms(f)
@@ -630,6 +640,58 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
                           </p>
                         ) : null}
                       </Field>
+
+                      {/* Feature Board Documentation */}
+                      <div className="text-[10px] text-text-muted font-semibold uppercase tracking-wider mt-2 mb-1">Feature Board Documentation</div>
+
+                      <Field label="Mode" hint="How finished work lands on the board">
+                        <div className="grid grid-cols-3 gap-1">
+                          {BOARD_DOC_MODE_OPTIONS.map((opt) => (
+                            <button
+                              key={opt.value}
+                              onClick={() => updateField(ws.id, 'board_doc_mode', opt.value)}
+                              title={opt.desc}
+                              className={`px-2 py-1.5 rounded text-[11px] font-mono border transition-colors ${
+                                form.board_doc_mode === opt.value
+                                  ? 'border-emerald-500 bg-emerald-500/15 text-emerald-400'
+                                  : 'border-border-secondary text-text-faint hover:border-border-primary hover:text-text-secondary'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-text-faint mt-1">
+                          {BOARD_DOC_MODE_OPTIONS.find((o) => o.value === form.board_doc_mode)?.desc}
+                        </p>
+                      </Field>
+
+                      {form.board_doc_mode !== 'off' ? (
+                        <div className="flex gap-4">
+                          <Field label="New ticket → column" hint="Where document_to_board(create) lands" className="flex-1">
+                            <select
+                              value={form.board_doc_new_column || 'review'}
+                              onChange={(e) => updateField(ws.id, 'board_doc_new_column', e.target.value)}
+                              className="ide-input w-full"
+                            >
+                              {BOARD_COLUMNS.map((c) => (
+                                <option key={c.key} value={c.key}>{c.label}</option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label="Existing ticket → column" hint="Where document_to_board(update) moves bound tickets" className="flex-1">
+                            <select
+                              value={form.board_doc_existing_column || 'review'}
+                              onChange={(e) => updateField(ws.id, 'board_doc_existing_column', e.target.value)}
+                              className="ide-input w-full"
+                            >
+                              {BOARD_COLUMNS.map((c) => (
+                                <option key={c.key} value={c.key}>{c.label}</option>
+                              ))}
+                            </select>
+                          </Field>
+                        </div>
+                      ) : null}
 
                       <div className="flex gap-4">
                         <Field label="Max Workers" hint="Commander worker limit" className="flex-1">

@@ -73,6 +73,14 @@ _WORKER_KB_BULLETS = (
     "→ contribute_knowledge.\n"
     "  • A live blocker that would waste anyone else's turn until resolved → "
     "blocking_bulletin.\n"
+    "  • Your work drifted from the active ticket shown in your context → "
+    "switch_active_ticket(ticket_id | null) before document_to_board so the "
+    "write lands on the right ticket.\n"
+    "  • You finished feature-shaped work this turn → document_to_board "
+    "(action='create' for new, 'update' for the bound ticket). "
+    "If the edits weren't feature-shaped (exploration, doc-only, refactor "
+    "with no behavior change), call action='skip' so the system stops "
+    "checking on this session.\n"
 )
 
 # Commander has its own contribute_knowledge (mcp_server.py) for routing/team
@@ -94,6 +102,9 @@ _TESTER_BULLETS = (
     "→ contribute_knowledge (category='gotcha').\n"
     "  • A bug to surface — use update_my_task with reproduction steps; "
     "commander will file follow-up tasks for implementers.\n"
+    "  • Pure verification with no implementer-facing follow-up → "
+    "document_to_board(action='skip'). If your bound ticket was a "
+    "verification task itself, action='update' moves it through.\n"
 )
 
 _WORKER_LIKE_TYPES = {"worker", "planner", ""}  # empty = legacy default
@@ -127,7 +138,10 @@ def _build_prompt(session_type: str | None) -> str:
         f"{body}"
         "\n"
         "Default action: do nothing. Most turns don't need any of these. "
-        "If you do call a tool, keep it terse — one entry, factual, no narration."
+        "If you do call a tool, keep it terse — one entry, factual, no narration. "
+        "For contribute_knowledge specifically: that entry is auto-loaded into "
+        "every future session's system prompt, so reference durable symbols "
+        "(function/class names, file paths) — never line numbers, which rot."
     )
 
 
