@@ -12,6 +12,7 @@ export default function QuickFeatureModal({ prefillText, autoVoice, onCreated, o
   const [description, setDescription] = useState(prefillText || '')
   const [priority, setPriority] = useState('normal')
   const [creating, setCreating] = useState(false)
+  const [duplicates, setDuplicates] = useState(null)
   const titleRef = useRef(null)
   const voiceStarted = useRef(false)
 
@@ -42,7 +43,7 @@ export default function QuickFeatureModal({ prefillText, autoVoice, onCreated, o
     if (!autoVoice && titleRef.current) titleRef.current.focus()
   }, [autoVoice])
 
-  const handleCreate = useCallback(async () => {
+  const handleCreate = useCallback(async (opts = {}) => {
     if (!title.trim() || !workspaceId) return
     setCreating(true)
     try {
@@ -51,13 +52,19 @@ export default function QuickFeatureModal({ prefillText, autoVoice, onCreated, o
         title: title.trim(),
         description: description.trim() || undefined,
         priority,
+        ...(opts.force && { force: true }),
       })
+      setDuplicates(null)
       // Stop voice if still listening
       if (listening) toggleVoice()
       onCreated?.(task)
       onClose()
-    } catch (e) {
-      console.error('Failed to create feature:', e)
+    } catch (err) {
+      if (err?.status === 409 && err.body?.candidates) {
+        setDuplicates(err.body.candidates)
+      } else {
+        console.error('Failed to create feature:', err)
+      }
       setCreating(false)
     }
   }, [title, description, priority, workspaceId, listening, toggleVoice, onCreated, onClose])
@@ -164,6 +171,38 @@ export default function QuickFeatureModal({ prefillText, autoVoice, onCreated, o
             rows={3}
             className={`${inputClass} resize-none leading-relaxed`}
           />
+
+          {duplicates && duplicates.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2 space-y-1.5">
+              <div className="text-[10px] text-amber-300 font-mono">
+                Possible duplicate{duplicates.length > 1 ? 's' : ''} already open:
+              </div>
+              <ul className="space-y-0.5">
+                {duplicates.map((c) => (
+                  <li key={c.task_id} className="text-[10px] text-zinc-400 font-mono truncate">
+                    • {c.title}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleCreate({ force: true })}
+                  disabled={creating}
+                  className="px-2 py-0.5 text-[10px] bg-amber-500/20 hover:bg-amber-500/30 disabled:opacity-40 text-amber-300 rounded font-mono transition-colors"
+                >
+                  Create anyway
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDuplicates(null)}
+                  className="px-2 py-0.5 text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded font-mono transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Priority + Submit row */}
           <div className="flex items-center gap-2">

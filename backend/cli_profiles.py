@@ -322,7 +322,8 @@ CLAUDE_PROFILE = CLIProfile(
     ui_capabilities={"force_send": True},
     # ── Hook installation ─────────────────────────────────────────────
     default_hook_events=[
-        "Stop", "Notification", "PreToolUse", "PostToolUse",
+        "Stop", "Notification", "UserPromptSubmit",
+        "PreToolUse", "PostToolUse",
         "SubagentStart", "SubagentStop", "PreCompact", "PostCompact",
         "WorktreeCreate", "WorktreeRemove",
     ],
@@ -484,7 +485,7 @@ GEMINI_PROFILE = CLIProfile(
     ui_capabilities={"force_send": False},
     # ── Hook installation ─────────────────────────────────────────────
     default_hook_events=[
-        "AfterAgent", "Notification", "BeforeTool", "AfterTool",
+        "AfterAgent", "BeforeAgent", "Notification", "BeforeTool", "AfterTool",
         "SessionStart", "SessionEnd", "PreCompress",
         "WorktreeCreate", "WorktreeRemove",
     ],

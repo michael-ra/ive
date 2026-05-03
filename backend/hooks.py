@@ -71,7 +71,7 @@ def invalidate_w2w_cache(session_id: str = None):
 
 # Sessions whose native_session_id has already been captured from hooks.
 # Prevents a DB query on every subsequent hook event.
-_native_id_resolved: set[str] = set()
+_native_id_cache: dict[str, str] = {}
 
 _hook_sessions: dict[str, dict] = {}
 # session_id -> {
@@ -308,20 +308,28 @@ async def _maybe_capture_native_id(commander_session_id: str, payload: dict):
     """Extract the CLI's native session_id from the hook payload and store it.
 
     Every hook event from Claude Code includes a 'session_id' field — the UUID
-    that identifies the conversation file (e.g. abc123.jsonl). We capture this
-    on first contact so sessions can be resumed with --resume later.
-    This is far more reliable than the file-based detection which races against
-    CLI startup timing.
-    """
-    if commander_session_id in _native_id_resolved:
-        return
+    that identifies the conversation file (e.g. abc123.jsonl). We capture it on
+    first contact so sessions can be resumed with --resume later. Far more
+    reliable than file-based detection, which races against CLI startup timing.
 
+    Also detects /branch by diff: when the same Commander session starts
+    receiving hooks with a *different* native UUID than the one we previously
+    stored, Claude swapped the conversation under the same PTY. The previous
+    UUID is preserved as a sibling Commander tab via _open_original_as_tab so
+    both conversations remain reachable.
+    """
     native_sid = payload.get("session_id", "")
     if not native_sid or not isinstance(native_sid, str):
         return
 
-    # Mark resolved immediately to prevent concurrent DB writes
-    _native_id_resolved.add(commander_session_id)
+    # Fast path: hooks fire often; skip the DB round-trip when the UUID is
+    # unchanged from the last one we processed for this session.
+    if _native_id_cache.get(commander_session_id) == native_sid:
+        return
+
+    # Claim the cache slot now so a concurrent hook for this session sees the
+    # in-progress value and short-circuits. Rolled back on error.
+    _native_id_cache[commander_session_id] = native_sid
 
     from db import get_db
     db = await get_db()
@@ -332,11 +340,34 @@ async def _maybe_capture_native_id(commander_session_id: str, payload: dict):
         )
         row = await cur.fetchone()
         if not row:
+            _native_id_cache.pop(commander_session_id, None)
             return
         existing = row["native_session_id"]
-        if existing:
-            return  # Already set (e.g. by file-based detection)
 
+        if existing == native_sid:
+            # DB already correct (e.g. file-based detection wrote it first).
+            return
+
+        if existing and existing != native_sid:
+            # /branch — Claude swapped the conversation under the same PTY.
+            # _open_original_as_tab creates the sibling for `existing` and
+            # renames the current row to "(branch)" + nulls its native_id.
+            from server import _open_original_as_tab
+            await _open_original_as_tab(commander_session_id, existing)
+            # Then write the new (branch) UUID so future hooks see it as
+            # stable and `existing` reflects current state, not original state.
+            await db.execute(
+                "UPDATE sessions SET native_session_id = ? WHERE id = ?",
+                (native_sid, commander_session_id),
+            )
+            await db.commit()
+            logger.info(
+                f"Branch detected via hook: {commander_session_id[:8]} "
+                f"{existing[:12]} → {native_sid[:12]}"
+            )
+            return
+
+        # First-time capture — DB row had NULL.
         await db.execute(
             "UPDATE sessions SET native_session_id = ? WHERE id = ?",
             (native_sid, commander_session_id),
@@ -347,7 +378,7 @@ async def _maybe_capture_native_id(commander_session_id: str, payload: dict):
         )
     except Exception as e:
         # Non-fatal — file-based detection is still a fallback
-        _native_id_resolved.discard(commander_session_id)
+        _native_id_cache.pop(commander_session_id, None)
         logger.warning(f"Failed to capture native session ID: {e}")
     finally:
         await db.close()
@@ -386,6 +417,7 @@ def cleanup_session(session_id: str):
     """Remove all hook state for a session. Called from handle_pty_exit."""
     _hook_sessions.pop(session_id, None)
     _pending_pty_warnings.pop(session_id, None)
+    _native_id_cache.pop(session_id, None)
     try:
         from idle_reflection import clear_session as _ir_clear
         _ir_clear(session_id)
@@ -394,12 +426,14 @@ def cleanup_session(session_id: str):
 
 
 def clear_native_id_cache(session_id: str):
-    """Allow re-capture of native session ID.
+    """Forget the cached native session ID for a session.
 
-    Called after /branch so the next hook event from the branch conversation
-    can update the session's native_session_id to the branch's UUID.
+    Called by Gemini's /branch handler (which stops + restarts the PTY fresh,
+    so the next hook will assign a new UUID) and by _open_original_as_tab.
+    Claude's native /branch is detected automatically via the UUID-diff path
+    in `_maybe_capture_native_id` and does not require an explicit clear.
     """
-    _native_id_resolved.discard(session_id)
+    _native_id_cache.pop(session_id, None)
 
 
 def get_subagents(session_id: str) -> list[dict]:
@@ -1514,6 +1548,32 @@ async def _handle_notification(session_id: str, payload: dict):
         logger.debug("Push notify (prompting) failed: %s", e)
 
 
+async def _handle_prompt_submit(session_id: str, payload: dict):
+    """User submitted a prompt — clear any pending input-needed state.
+
+    Without this, `state` stays at "prompting" (set by Notification) until
+    the next PreToolUse fires. During extended thinking that gap can be
+    many minutes, leaving the "Input needed" badge stuck after the user
+    has already replied.
+    """
+    s = _get_state(session_id)
+    if s["state"] == "prompting":
+        s["state"] = "working"
+
+    try:
+        from idle_reflection import cancel as _idle_cancel
+        _idle_cancel(session_id)
+    except Exception:
+        pass
+
+    await _broadcast({
+        "type": "session_state",
+        "session_id": session_id,
+        "state": "working",
+        "source": "hook",
+    })
+
+
 async def _handle_pre_tool_use(session_id: str, payload: dict):
     """Tool about to execute — session is working."""
     s = _get_state(session_id)
@@ -2314,6 +2374,7 @@ from cli_features import HookEvent
 from cli_profiles import PROFILES
 
 _CANONICAL_HANDLERS = {
+    HookEvent.PROMPT_SUBMIT:  _handle_prompt_submit,
     HookEvent.TURN_COMPLETE:  _handle_stop,
     HookEvent.NOTIFICATION:   _handle_notification,
     HookEvent.PRE_TOOL:       _handle_pre_tool_use,

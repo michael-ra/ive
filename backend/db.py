@@ -1526,6 +1526,19 @@ async def init_db():
             "ALTER TABLE sessions ADD COLUMN owner_actor_kind TEXT",
             "ALTER TABLE sessions ADD COLUMN owner_actor_id TEXT",
             "ALTER TABLE sessions ADD COLUMN owner_mode TEXT",
+            # Active ticket binding: the session's currently-bound ticket,
+            # injected per-turn into the system prompt as ambient context.
+            # Distinct from task_id (commander-assigned, immutable for audit).
+            # Worker switches via switch_active_ticket; document_to_board
+            # uses this at completion.
+            "ALTER TABLE sessions ADD COLUMN active_ticket_id TEXT",
+            "ALTER TABLE sessions ADD COLUMN board_action TEXT",
+            "ALTER TABLE sessions ADD COLUMN board_action_at TEXT",
+            "ALTER TABLE sessions ADD COLUMN board_action_note TEXT",
+            # Per-workspace feature-board documentation policy.
+            "ALTER TABLE workspaces ADD COLUMN board_doc_mode TEXT DEFAULT 'agent_with_backstop'",
+            "ALTER TABLE workspaces ADD COLUMN board_doc_new_column TEXT DEFAULT 'review'",
+            "ALTER TABLE workspaces ADD COLUMN board_doc_existing_column TEXT DEFAULT 'review'",
         ):
             try:
                 await db.execute(ddl)

@@ -616,9 +616,11 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
   }, [notes])
 
   // ── Create new task from notes ──────────────────────────
+  const dedupForceRef = useRef(false)
   const createTaskFromNotes = useCallback(async () => {
     if (!wsId || notes.length === 0) return
     setSavingTask(true)
+    const force = dedupForceRef.current
     try {
       const hostname = (() => { try { return new URL(notes[0].url).hostname } catch { return 'site' } })()
       const title = taskTitle.trim() || `Preview notes: ${hostname}`
@@ -629,7 +631,9 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
         description: '(uploading preview notes...)',
         priority: 'normal',
         labels: JSON.stringify(['preview-notes']),
+        ...(force && { force: true }),
       })
+      dedupForceRef.current = false
 
       // Upload screenshots + build description with correct attachment URLs
       const { markdown } = await uploadNotesWithScreenshots(task.id, `Preview Notes\n${'—'.repeat(30)}\n`)
@@ -641,8 +645,23 @@ export default function LivePreview({ url: initialUrl, taskId: initialTaskId, on
 
       setNotes([]); setTaskTitle(''); setNotesOpen(false)
     } catch (e) {
-      setError(`Task creation failed: ${e.message}`)
-      setTimeout(() => setError(null), 4000)
+      if (e?.status === 409 && e.body?.candidates?.length) {
+        const top = e.body.candidates[0]
+        // Arm the next click as force-create so the user can confirm by
+        // pressing Save again. Cleared after 8s with the error toast.
+        dedupForceRef.current = true
+        setError(
+          `Possible duplicate: "${top.title}". Edit the title to differentiate, ` +
+          `or click Save again to create anyway.`,
+        )
+        setTimeout(() => {
+          setError(null)
+          dedupForceRef.current = false
+        }, 8000)
+      } else {
+        setError(`Task creation failed: ${e.message}`)
+        setTimeout(() => setError(null), 4000)
+      }
     } finally {
       setSavingTask(false)
     }

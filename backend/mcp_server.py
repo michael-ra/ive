@@ -188,7 +188,7 @@ def tool_deep_research(args: dict) -> str:
         body["model"] = args["model"]
     if args.get("llm_url"):
         body["llm_url"] = args["llm_url"]
-    result = api_call("POST", "/research", body)
+    result = api_call("POST", "/research/jobs", body)
     return json.dumps(result, indent=2)
 
 
