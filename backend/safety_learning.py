@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -83,20 +84,80 @@ class ProposedRule:
     workspace_id: Optional[str] = None
 
 
+_BASE_WITH_SUBCMD = (
+    "git", "npm", "yarn", "pnpm", "pip", "pip3", "python", "python3",
+    "cargo", "go", "docker", "kubectl", "make", "brew",
+)
+_URL_FETCHERS = ("curl", "wget", "http", "https")
+
+# Destructive command shapes — refuse to auto-propose `allow` rules for these
+# even with high consistency. The user has historically approved them on a
+# case-by-case basis, but a learned rule would silently allow every future
+# variant (e.g. `git reset --hard origin/main` after they only ever approved
+# `git reset HEAD file.txt`). Deny proposals are still allowed.
+_DESTRUCTIVE_PREFIXES = (
+    "git reset", "git push", "git checkout", "git clean", "git rebase",
+    "git branch -D", "git branch -d",
+    "rm", "rmdir", "mv",
+    "kill", "pkill",
+    "docker rm", "docker rmi", "docker system prune",
+    "kubectl delete",
+    "dd",
+    "chmod", "chown",
+    "shutdown", "reboot", "halt",
+)
+
+
 def _normalize_command(cmd: str) -> str:
     """Normalize a bash command for grouping.
 
-    Strips variable parts (paths, arguments) to group similar commands.
+    Returns "" when the command lacks enough context to learn an
+    actionable pattern from — bare command names like `curl` or `grep`
+    would otherwise auto-propose rules that match every invocation,
+    which is too broad to be useful (and is what produced the
+    `# / curl / git reset` "Learned Patterns" garbage in the UI).
     """
-    # Extract the base command (first word or first two for git/npm etc.)
     parts = cmd.strip().split()
     if not parts:
         return ""
     base = parts[0]
-    if base in ("git", "npm", "yarn", "pnpm", "pip", "pip3", "python3", "cargo", "go"):
-        if len(parts) > 1:
-            return f"{base} {parts[1]}"
-    return base
+
+    # Drop comment leaks and shell control characters — not real commands.
+    if base.startswith("#") or base in (";", "&&", "||", "|", "&"):
+        return ""
+
+    if base in _BASE_WITH_SUBCMD:
+        if len(parts) < 2:
+            return ""
+        sub = parts[1]
+        # Keep a 3rd token when it's a flag — `git reset --hard` is meaningfully
+        # different from `git reset HEAD` for what we'd auto-allow/deny.
+        if len(parts) >= 3 and parts[2].startswith("-"):
+            return f"{base} {sub} {parts[2]}"
+        return f"{base} {sub}"
+
+    # URL fetchers: key on host so different domains don't collapse together.
+    if base in _URL_FETCHERS:
+        for p in parts[1:]:
+            if p.startswith("http://") or p.startswith("https://"):
+                try:
+                    from urllib.parse import urlparse
+                    host = urlparse(p).hostname
+                    if host:
+                        return f"{base} {host}"
+                except Exception:
+                    pass
+        return ""
+
+    # Plain commands: require a 2nd token. Bare `grep` / `cat` / `ls` is
+    # too broad — every invocation would match the same proposed rule.
+    if len(parts) < 2:
+        return ""
+    second = parts[1]
+    if second.startswith("/") or second.startswith("./") or second.startswith("~/"):
+        import os
+        second = os.path.basename(second) or second
+    return f"{base} {second}"
 
 
 def _normalize_path(path: str) -> str:
@@ -167,11 +228,19 @@ async def analyze_patterns(
                 continue
             response = "denied"
 
-        # Normalize for grouping
+        # Normalize for grouping. Skip rows whose normalized form is empty —
+        # bare commands like `curl` or comment leaks would otherwise produce
+        # auto-rules so broad they catch every future invocation.
         if tool.lower() in ("bash", "execute"):
-            key = f"{tool}:{_normalize_command(summary)}"
+            norm = _normalize_command(summary)
+            if not norm:
+                continue
+            key = f"{tool}:{norm}"
         else:
-            key = f"{tool}:{_normalize_path(summary)}"
+            norm = _normalize_path(summary)
+            if not norm:
+                continue
+            key = f"{tool}:{norm}"
 
         if key not in groups:
             groups[key] = {
@@ -200,19 +269,40 @@ async def analyze_patterns(
         if consistency < min_consistency:
             continue
 
+        suggested_action = "allow" if approve_rate >= min_consistency else "deny"
+
+        # Refuse to auto-propose `allow` for destructive command shapes —
+        # the user might have approved each variant deliberately, but
+        # baking a generic allow-rule could silently green-light a more
+        # dangerous variant they'd otherwise want to review.
+        if suggested_action == "allow":
+            tail = key.split(":", 1)[1] if ":" in key else key
+            if any(tail == p or tail.startswith(p + " ") for p in _DESTRUCTIVE_PREFIXES):
+                continue
+
         # Stable ID from the group key
         proposal_id = hashlib.sha256(key.encode()).hexdigest()[:16]
         if proposal_id in _DISMISSED:
             continue
 
-        # Build suggested pattern
+        # Build suggested pattern.
         tool_name = g["tool_name"]
         summary = g["summary"]
         if tool_name.lower() in ("bash", "execute"):
             base_cmd = _normalize_command(summary)
-            suggested_pattern = rf"^{re.escape(base_cmd)}\b" if base_cmd else summary
+            if not base_cmd:
+                continue
+            tokens = base_cmd.split()
+            # URL-fetcher keys are "curl <host>" — match the URL form, not the literal key.
+            if tokens[0] in _URL_FETCHERS and len(tokens) >= 2:
+                host_re = re.escape(tokens[1])
+                suggested_pattern = rf"^{re.escape(tokens[0])}\b[^\n]*https?://{host_re}\b"
+            else:
+                suggested_pattern = rf"^{re.escape(base_cmd)}\b"
         else:
             norm_path = _normalize_path(summary)
+            if not norm_path:
+                continue
             suggested_pattern = re.escape(norm_path).replace(r"\*", ".*")
 
         proposals.append(ProposedRule(
@@ -222,7 +312,7 @@ async def analyze_patterns(
                            f"`{key.split(':', 1)[1]}` {total} times "
                            f"({g['approved']} approved, {g['denied']} denied)",
             suggested_pattern=suggested_pattern,
-            suggested_action="allow" if approve_rate >= min_consistency else "deny",
+            suggested_action=suggested_action,
             sample_count=total,
             approve_count=g["approved"],
             deny_count=g["denied"],
@@ -239,7 +329,3 @@ async def analyze_patterns(
 def dismiss_proposal(proposal_id: str):
     """Mark a proposal as dismissed (won't appear again this session)."""
     _DISMISSED.add(proposal_id)
-
-
-# Need re for _normalize and suggest_pattern
-import re

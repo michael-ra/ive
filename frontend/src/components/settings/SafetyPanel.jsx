@@ -52,6 +52,9 @@ export default function SafetyPanel({ onClose }) {
   const [tab, setTab] = useState('rules')
   const [rules, setRules] = useState([])
   const [decisions, setDecisions] = useState([])
+  // Auto-allow rows would otherwise drown the audit view in routine
+  // tool calls (every Read/Bash/etc. an agent issues). Default on.
+  const [hideAutoAllow, setHideAutoAllow] = useState(true)
   const [proposals, setProposals] = useState([])
   const [accessLog, setAccessLog] = useState({ entries: [], domains: [] })
   const [accessFilter, setAccessFilter] = useState(null) // null = all, or domain string
@@ -511,16 +514,37 @@ export default function SafetyPanel({ onClose }) {
           )}
 
           {/* ── Decision Log tab ── */}
-          {tab === 'decisions' && (
+          {tab === 'decisions' && (() => {
+            const visible = hideAutoAllow
+              ? decisions.filter((d) => !(d.decision === 'allow' && !d.matched_rule_id))
+              : decisions
+            const hiddenCount = decisions.length - visible.length
+            return (
             <div className="space-y-1">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-[10px] text-text-faint">{decisions.length} recent evaluations</span>
+                <span className="text-[10px] text-text-faint">
+                  {visible.length} of {decisions.length} evaluations
+                  {hiddenCount > 0 && (
+                    <span className="text-text-faint/60"> · {hiddenCount} auto-allowed hidden</span>
+                  )}
+                </span>
+                <button
+                  onClick={() => setHideAutoAllow(!hideAutoAllow)}
+                  className={`px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
+                    hideAutoAllow
+                      ? 'bg-bg-secondary text-text-faint border-border-secondary hover:text-text-secondary'
+                      : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30'
+                  }`}
+                  title="Auto-allow rows are decisions where no rule matched and the action defaulted to allow — usually routine tool calls."
+                >
+                  {hideAutoAllow ? 'Show all' : 'Hide auto-allow'}
+                </button>
                 <button onClick={loadDecisions} className="p-1 hover:bg-bg-hover rounded text-text-faint ml-auto">
                   <RefreshCw size={11} />
                 </button>
               </div>
 
-              {decisions.map(d => {
+              {visible.map(d => {
                 const host = (d.decision === 'ask' || d.decision === 'deny') ? extractHost(d.tool_input_summary) : null
                 return (
                 <div key={d.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-bg-secondary border border-border-secondary/50 text-[10px]">
@@ -557,8 +581,15 @@ export default function SafetyPanel({ onClose }) {
                   No decisions recorded yet. Evaluations appear here once the Safety Gate intercepts tool calls.
                 </div>
               )}
+              {decisions.length > 0 && visible.length === 0 && (
+                <div className="text-center py-6 text-[11px] text-text-faint">
+                  All {decisions.length} recent decision{decisions.length === 1 ? ' was' : 's were'} auto-allowed.
+                  Click "Show all" above to see them.
+                </div>
+              )}
             </div>
-          )}
+            )
+          })()}
 
           {/* ── Proposals tab ── */}
           {tab === 'proposals' && (

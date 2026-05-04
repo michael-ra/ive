@@ -4,12 +4,13 @@ import {
   ChevronDown, ChevronRight, ExternalLink, Globe, Tag, ZoomIn,
   Telescope, BookOpen, ToggleLeft, ToggleRight,
   GitBranch, Rocket, Newspaper, Layers, Loader2, Shuffle, Users,
-  Copy, Timer, Settings, ArrowUpRight, Activity,
+  Copy, Timer, Settings, ArrowUpRight, Activity, MessageCircle, Hash,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
 import useListKeyboardNav from '../../hooks/useListKeyboardNav'
 import FindingCard from '../observatory/FindingCard'
+import MonitorView from '../observatory/MonitorView'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import MermaidBlock from './MermaidBlock'
@@ -25,14 +26,18 @@ const SOURCE_TABS = [
 
 const DEFAULT_OBS = {
   github: { enabled: false, interval_hours: 24, mode: 'both', keywords: '' },
-  producthunt: { enabled: false, interval_hours: 24, mode: 'integrate', keywords: '' },
+  reddit: { enabled: false, interval_hours: 12, mode: 'both', keywords: '' },
   hackernews: { enabled: false, interval_hours: 12, mode: 'both', keywords: '' },
+  producthunt: { enabled: false, interval_hours: 24, mode: 'integrate', keywords: '' },
+  x: { enabled: false, interval_hours: 24, mode: 'both', keywords: '' },
 }
 
 const OBS_META = {
   github: { icon: GitBranch, label: 'GitHub', color: 'text-zinc-400' },
-  producthunt: { icon: Rocket, label: 'Product Hunt', color: 'text-orange-400' },
+  reddit: { icon: MessageCircle, label: 'Reddit', color: 'text-orange-500' },
   hackernews: { icon: Newspaper, label: 'Hacker News', color: 'text-amber-400' },
+  producthunt: { icon: Rocket, label: 'Product Hunt', color: 'text-orange-400' },
+  x: { icon: Hash, label: 'X', color: 'text-zinc-300' },
 }
 
 const PHASE_ICON = {
@@ -617,10 +622,14 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
           <Telescope size={14} className="text-cyan-400" />
           <span className="text-xs text-text-primary font-medium">Research</span>
           <span className="text-[10px] text-text-faint">{wsName}</span>
+          <span className="text-[10px] text-text-faint/70 ml-2 hidden md:inline">
+            <span className="text-text-secondary">Monitor</span> = continuous scans · <span className="text-text-secondary">Feed</span> = findings · <span className="text-text-secondary">Active/Library</span> = on-demand deep dives.
+          </span>
 
           {/* Tabs */}
           <div className="flex items-center gap-0.5 ml-4">
             {[
+              { key: 'monitor', label: 'Monitor', icon: Telescope },
               { key: 'feed', label: 'Feed', badge: newCount, icon: Globe },
               { key: 'active', label: 'Active', badge: runningJobs.length, icon: Activity },
               { key: 'library', label: 'Library', badge: entries.length, icon: BookOpen },
@@ -770,8 +779,8 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
                   <button onClick={handleSaveObs} className="px-2 py-0.5 text-[10px] text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded hover:bg-cyan-500/20">Save</button>
                 )}
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                {['github', 'producthunt', 'hackernews'].map((src) => {
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                {['github', 'reddit', 'hackernews', 'producthunt', 'x'].map((src) => {
                   const cfg = obsSettings[src] || DEFAULT_OBS[src]
                   const meta = OBS_META[src]
                   const SrcIcon = meta.icon
@@ -808,6 +817,9 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
 
         {/* ═════ Tab content ═════════════════════════════════ */}
         <div className="flex-1 min-h-0 overflow-hidden">
+
+          {/* ── MONITOR ──────────────────────────────────── */}
+          {tab === 'monitor' && <MonitorView />}
 
           {/* ── FEED ─────────────────────────────────────── */}
           {tab === 'feed' && (

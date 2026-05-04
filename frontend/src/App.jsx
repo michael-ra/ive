@@ -36,7 +36,6 @@ import InboxPanel from './components/session/Inbox'
 import PlanViewer from './components/session/PlanViewer'
 import FeatureBoard from './components/board/FeatureBoard'
 import ResearchHub from './components/session/ResearchHub'
-import SmartObservatoryPanel from './components/observatory/SmartObservatoryPanel'
 import WorkspaceVisionOnboarding from './components/workspace/WorkspaceVisionOnboarding'
 import PipelineEditor from './components/pipeline/PipelineEditor'
 import QuickFeatureModal from './components/board/QuickFeatureModal'
@@ -153,7 +152,7 @@ export default function App() {
       closeExclusivePanels()
       if (panel === 'feature-board') setShowBoard(true)
       if (panel === 'observatory') { setResearchHubTab('feed'); setShowResearchHub(true) }
-      if (panel === 'smart-observatory') { setShowSmartObservatory(true) }
+      if (panel === 'smart-observatory') { setResearchHubTab('monitor'); setShowResearchHub(true) }
       if (panel === 'pipeline-editor') setShowPipelineEditor(true)
       if (panel === 'agent-tree') setShowTree(true)
       if (panel === 'research') { setResearchHubTab('library'); setShowResearchHub(true) }
@@ -463,7 +462,6 @@ export default function App() {
   const [showConfig, setShowConfig] = useState(false)
   const [showResearchHub, setShowResearchHub] = useState(false)
   const [researchHubTab, setResearchHubTab] = useState('library')
-  const [showSmartObservatory, setShowSmartObservatory] = useState(false)
   const [visionOnboardingFor, setVisionOnboardingFor] = useState(null)
   const [showDocs, setShowDocs] = useState(false)
   const [showKnowledge, setShowKnowledge] = useState(false)
@@ -532,7 +530,6 @@ export default function App() {
     setShowAccounts(false)
     setShowConfig(false)
     setShowResearchHub(false)
-    setShowSmartObservatory(false)
     setShowDocs(false)
     setShowKnowledge(false)
     setShowPeerMessages(false)
@@ -714,7 +711,7 @@ export default function App() {
       'plan-viewer': () => setShowPlan(true),
       'feature-board': () => setShowBoard(true),
       'observatory': () => { setResearchHubTab('feed'); setShowResearchHub(true) },
-      'smart-observatory': () => setShowSmartObservatory(true),
+      'smart-observatory': () => { setResearchHubTab('monitor'); setShowResearchHub(true) },
       'pipeline-editor': () => setShowPipelineEditor(true),
       'agent-tree': () => setShowTree(true),
       'manage-templates': () => setShowTemplates(true),
@@ -1392,7 +1389,6 @@ export default function App() {
       {showAccounts && <AccountManager onClose={() => setShowAccounts(false)} />}
       {showConfig && <ConfigViewer onClose={() => setShowConfig(false)} />}
       {showResearchHub && <PanelBoundary onClose={() => setShowResearchHub(false)}><ResearchHub initialTab={researchHubTab} onClose={() => setShowResearchHub(false)} /></PanelBoundary>}
-      {showSmartObservatory && <PanelBoundary onClose={() => setShowSmartObservatory(false)}><SmartObservatoryPanel onClose={() => setShowSmartObservatory(false)} /></PanelBoundary>}
       {visionOnboardingFor && (
         <PanelBoundary onClose={() => setVisionOnboardingFor(null)}>
           <WorkspaceVisionOnboarding

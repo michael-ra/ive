@@ -152,6 +152,7 @@ class CommanderEvent(str, Enum):
 
     # ── Observatory ─────────────────────────────────────────────────
     OBSERVATORY_SCAN_STARTED    = "observatory_scan_started"
+    OBSERVATORY_SCAN_PROGRESS   = "observatory_scan_progress"
     OBSERVATORY_SCAN_COMPLETED  = "observatory_scan_completed"
     OBSERVATORY_FINDING_CREATED = "observatory_finding_created"
     OBSERVATORY_FINDING_PROMOTED = "observatory_finding_promoted"
@@ -276,6 +277,7 @@ COMMANDER_EVENT_LABELS: dict[CommanderEvent, str] = {
     CommanderEvent.DOCS_BUILD_COMPLETED: "Documentation site built",
     # Observatory
     CommanderEvent.OBSERVATORY_SCAN_STARTED:    "Observatory scan started",
+    CommanderEvent.OBSERVATORY_SCAN_PROGRESS:   "Observatory scan progress",
     CommanderEvent.OBSERVATORY_SCAN_COMPLETED:  "Observatory scan completed",
     CommanderEvent.OBSERVATORY_FINDING_CREATED: "Observatory finding created",
     CommanderEvent.OBSERVATORY_FINDING_PROMOTED: "Observatory finding promoted to task",
@@ -391,6 +393,7 @@ COMMANDER_EVENT_CATEGORIES: dict[CommanderEvent, str] = {
     CommanderEvent.DOCS_BUILD_COMPLETED: "documentor",
     # Observatory
     CommanderEvent.OBSERVATORY_SCAN_STARTED:    "observatory",
+    CommanderEvent.OBSERVATORY_SCAN_PROGRESS:   "observatory",
     CommanderEvent.OBSERVATORY_SCAN_COMPLETED:  "observatory",
     CommanderEvent.OBSERVATORY_FINDING_CREATED: "observatory",
     CommanderEvent.OBSERVATORY_FINDING_PROMOTED: "observatory",

@@ -9192,6 +9192,7 @@ async def get_observatory_settings(request: web.Request) -> web.Response:
                 "interval_hours": row.get("interval_hours", 24),
                 "mode": row.get("mode", "both"),
                 "keywords": kw_str,
+                "last_scan_at": row.get("last_scan_at"),
             }
     return web.json_response({"sources": sources})
 
@@ -11216,34 +11217,39 @@ async def evaluate_safety(request: web.Request) -> web.Response:
                         },
                     ))
 
-    # Log decision asynchronously if rule matched or decision is not allow
-    if result.action != "allow" or result.rule_id:
-        async def _log():
+    # Log every evaluation so the Decision Log shows what sessions actually
+    # do (including auto-allowed Bash/Read/etc. from research and worker
+    # agents). Earlier this only logged non-allow / rule-matched decisions,
+    # which made research sessions look invisible. UI default-hides the
+    # `allow + no rule` rows so the audit view stays useful; toggle in panel
+    # surfaces them. NB: the standalone-research path bypasses hooks entirely,
+    # so its tool calls still won't show up here — needs a separate stream.
+    async def _log():
+        try:
+            from safety_learning import log_decision
+            # Use matched_input as summary — it's the exact field the rule
+            # matched against, so approval lookups correlate correctly.
+            summary = result.matched_input or _extract_match_field(tool_name, tool_input)
+            d = await get_db()
             try:
-                from safety_learning import log_decision
-                # Use matched_input as summary — it's the exact field the rule
-                # matched against, so approval lookups correlate correctly.
-                summary = result.matched_input or _extract_match_field(tool_name, tool_input)
-                d = await get_db()
-                try:
-                    await log_decision(
-                        d,
-                        tool_use_id=tool_use_id or None,
-                        session_id=session_id or None,
-                        workspace_id=workspace_id or None,
-                        tool_name=tool_name,
-                        tool_input_summary=summary,
-                        decision=result.action,
-                        reason=result.reason,
-                        matched_rule_id=result.rule_id,
-                        latency_ms=result.latency_ms,
-                    )
-                finally:
-                    await d.close()
-            except Exception as e:
-                logger.warning("Failed to log safety decision: %s", e)
+                await log_decision(
+                    d,
+                    tool_use_id=tool_use_id or None,
+                    session_id=session_id or None,
+                    workspace_id=workspace_id or None,
+                    tool_name=tool_name,
+                    tool_input_summary=summary,
+                    decision=result.action,
+                    reason=result.reason,
+                    matched_rule_id=result.rule_id,
+                    latency_ms=result.latency_ms,
+                )
+            finally:
+                await d.close()
+        except Exception as e:
+            logger.warning("Failed to log safety decision: %s", e)
 
-        _asyncio.ensure_future(_log())
+    _asyncio.ensure_future(_log())
 
     # Emit event if rule triggered
     if result.rule_id:

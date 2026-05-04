@@ -957,7 +957,15 @@ async def run_smart_scan(
         "findings_created": 0, "insights_touched": 0,
     }
 
+    async def _progress(phase: str, **extra):
+        """Emit a per-phase scan progress event for the live UI."""
+        await bus.emit(CommanderEvent.OBSERVATORY_SCAN_PROGRESS, {
+            "scan_id": scan_id, "source": source, "workspace_id": workspace_id,
+            "phase": phase, **extra,
+        })
+
     try:
+        await _progress("plan")
         # 1. Plan: pick / propose / retire targets via LLM.
         plan = await observatory_profile.plan_targets(workspace_id, source)
         scan_target_ids = plan.get("to_scan_target_ids", []) or []
@@ -977,6 +985,7 @@ async def run_smart_scan(
             finally:
                 await db.close()
 
+        await _progress("scrape", target_count=len(scan_target_ids))
         # 2. Scrape each target. Tag scraped items with their target_id.
         all_items: list[dict] = []
         for tid in scan_target_ids:
@@ -988,6 +997,14 @@ async def run_smart_scan(
                 it["_target_id"] = tid
             all_items.extend(items)
             summary["targets_scanned"] += 1
+            await _progress(
+                "scrape_target",
+                target=tgt.get("value"),
+                target_type=tgt.get("target_type"),
+                items_found=len(items),
+                progress=summary["targets_scanned"],
+                total=len(scan_target_ids),
+            )
 
         summary["items_scraped"] = len(all_items)
 
@@ -1004,6 +1021,7 @@ async def run_smart_scan(
         new_items = [i for i in all_items if i.get("source_url") and i["source_url"] not in existing_urls]
 
         # 4. Batched triage.
+        await _progress("triage", new_items=len(new_items))
         triaged: list[dict] = []
         if new_items:
             triaged = await observatory_profile.triage_items(workspace_id, new_items)
@@ -1017,6 +1035,8 @@ async def run_smart_scan(
                 target_hits[tid] = target_hits.get(tid, 0) + 1
 
         # 5. Process per-verdict.
+        kept = [it for it in triaged if it.get("verdict") != "skip"]
+        await _progress("analyze", to_analyze=len(kept))
         for it in triaged:
             verdict = it.get("verdict", "skip")
             if verdict == "skip":
@@ -1089,6 +1109,15 @@ async def run_smart_scan(
             summary["findings_created"] += 1
             if tid:
                 target_yields[tid] = target_yields.get(tid, 0) + 1
+
+            # Stream the finding to the panel so the Insights tab can populate
+            # in real-time rather than waiting for SCAN_COMPLETED.
+            await bus.emit(CommanderEvent.OBSERVATORY_FINDING_CREATED, {
+                "finding_id": finding_id, "scan_id": scan_id,
+                "workspace_id": workspace_id, "source": it["source"],
+                "title": it["title"], "category": analysis["category"],
+                "relevance_score": analysis["relevance_score"],
+            })
 
             # 6. Insight merge (only on findings that survived deep analysis)
             if score >= 0.4:

@@ -35,7 +35,7 @@ export const ACTIONS = [
   { id: 'pipeline-editor', label: 'Pipeline Editor', icon: GitCompareArrows, section: 'Orchestration', shortcut: '⌘⇧L' },
   { id: 'quick-feature', label: 'Quick Feature', icon: Zap, section: 'Orchestration', shortcut: '⌘⇧N' },
   { id: 'observatory', label: 'Research Hub — Feed', icon: Telescope, section: 'Research', shortcut: '⌘⇧O' },
-  { id: 'smart-observatory', label: 'Smart Observatory (profile + targets)', icon: Telescope, section: 'Research' },
+  { id: 'smart-observatory', label: 'Research Hub — Monitor (profile + sources + schedule)', icon: Telescope, section: 'Research' },
   { id: 'agent-tree', label: 'Agent Tree', icon: GitBranch, section: 'Orchestration', shortcut: '⌘T' },
   { id: 'start-commander', label: 'Start Commander', icon: Crown, section: 'Orchestration' },
   { id: 'start-documentor', label: 'Start Documentor', icon: BookOpenCheck, section: 'Orchestration' },
