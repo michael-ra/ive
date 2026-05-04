@@ -132,6 +132,7 @@ class CommanderEvent(str, Enum):
     CODE_CATALOG_BOOTSTRAP_STARTED    = "code_catalog_bootstrap_started"
     CODE_CATALOG_BOOTSTRAP_PROGRESS   = "code_catalog_bootstrap_progress"
     CODE_CATALOG_BOOTSTRAP_COMPLETED  = "code_catalog_bootstrap_completed"
+    CODE_CATALOG_BOOTSTRAP_FAILED     = "code_catalog_bootstrap_failed"
 
     # ── Session Advisor ──────────────────────────────────────────────
     GUIDELINE_RECOMMENDED           = "guideline_recommended"
@@ -270,6 +271,7 @@ COMMANDER_EVENT_LABELS: dict[CommanderEvent, str] = {
     CommanderEvent.CODE_CATALOG_BOOTSTRAP_STARTED:   "Code catalog bootstrap started",
     CommanderEvent.CODE_CATALOG_BOOTSTRAP_PROGRESS:  "Code catalog bootstrap progress",
     CommanderEvent.CODE_CATALOG_BOOTSTRAP_COMPLETED: "Code catalog bootstrap completed",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_FAILED:    "Code catalog bootstrap failed",
     # Session Advisor
     CommanderEvent.GUIDELINE_RECOMMENDED:           "Guideline recommended for session",
     CommanderEvent.SESSION_ANALYZED:                 "Session quality analyzed",
@@ -392,6 +394,7 @@ COMMANDER_EVENT_CATEGORIES: dict[CommanderEvent, str] = {
     CommanderEvent.CODE_CATALOG_BOOTSTRAP_STARTED:   "code_catalog",
     CommanderEvent.CODE_CATALOG_BOOTSTRAP_PROGRESS:  "code_catalog",
     CommanderEvent.CODE_CATALOG_BOOTSTRAP_COMPLETED: "code_catalog",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_FAILED:    "code_catalog",
     # Session Advisor
     CommanderEvent.GUIDELINE_RECOMMENDED:           "advisor",
     CommanderEvent.SESSION_ANALYZED:                 "advisor",

@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   FileCode2, X, Search, ChevronDown, ChevronRight, ThumbsUp,
-  RefreshCw, History, AlertTriangle, Trash2, Pencil,
+  RefreshCw, History, AlertTriangle, Trash2, Pencil, Sparkles, Loader2,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
@@ -46,6 +46,10 @@ export default function CodeCatalogPanel({ onClose }) {
   const [showStaleOnly, setShowStaleOnly] = useState(false)
   const [collapsed, setCollapsed] = useState({}) // file → boolean
   const [busyFile, setBusyFile] = useState(null)
+  const [bootstrapJob, setBootstrapJob] = useState(null)
+  const [bootstrapEstimate, setBootstrapEstimate] = useState(null)
+  const [confirmingBootstrap, setConfirmingBootstrap] = useState(false)
+  const [bootstrapBusy, setBootstrapBusy] = useState(false)
   const panelRef = useRef(null)
 
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId)
@@ -54,29 +58,97 @@ export default function CodeCatalogPanel({ onClose }) {
 
   useEffect(() => { panelRef.current?.focus() }, [])
 
-  useEffect(() => {
+  const loadEntries = useCallback(async () => {
     if (!viewWsId) return
-    loadEntries()
-    if (view === 'history') loadHistory()
-  }, [viewWsId, view])
-
-  const loadEntries = async () => {
     try {
       const data = await api.getCodeCatalog(viewWsId)
       setEntries(Array.isArray(data) ? data : [])
     } catch {
       setEntries([])
     }
-  }
+  }, [viewWsId])
 
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
+    if (!viewWsId) return
     try {
       const data = await api.getCodeCatalogHistory(viewWsId, { limit: 100 })
       setHistory(Array.isArray(data) ? data : [])
     } catch {
       setHistory([])
     }
-  }
+  }, [viewWsId])
+
+  const loadBootstrap = useCallback(async () => {
+    if (!viewWsId) return
+    try {
+      const data = await api.getCodeCatalogBootstrap(viewWsId)
+      setBootstrapJob(data?.job || null)
+      setBootstrapEstimate(data?.estimate || null)
+    } catch {
+      setBootstrapJob(null)
+      setBootstrapEstimate(null)
+    }
+  }, [viewWsId])
+
+  useEffect(() => {
+    if (!viewWsId) return
+    loadEntries()
+    loadBootstrap()
+    if (view === 'history') loadHistory()
+  }, [viewWsId, view, loadEntries, loadBootstrap, loadHistory])
+
+  // Live updates from the event bus.
+  useEffect(() => {
+    if (!viewWsId) return
+    const matches = (e) => !e?.detail?.workspace_id || e.detail.workspace_id === viewWsId
+
+    const onCatalogUpdated = (e) => { if (matches(e)) loadEntries() }
+    const onBootstrapStarted = (e) => {
+      if (!matches(e)) return
+      setBootstrapJob((prev) => ({
+        ...(prev || {}),
+        workspace_id: viewWsId,
+        status: 'running',
+        total_files: e.detail?.total_files,
+        completed_files: 0,
+        model: e.detail?.model,
+        cli: e.detail?.cli,
+        counts: { inserted: 0, confirmed: 0, replaced: 0, rejected: 0 },
+        started_at: new Date().toISOString(),
+      }))
+    }
+    const onBootstrapProgress = (e) => {
+      if (!matches(e)) return
+      setBootstrapJob((prev) => ({
+        ...(prev || {}),
+        status: 'running',
+        completed_files: e.detail?.completed_files,
+        total_files: e.detail?.total_files,
+        counts: e.detail?.counts || prev?.counts,
+        current_files: e.detail?.recent_files || [],
+      }))
+      // Each batch upserts new rows; refresh the catalog list too.
+      loadEntries()
+    }
+    const onBootstrapDone = (e) => {
+      if (!matches(e)) return
+      loadEntries()
+      loadBootstrap()
+    }
+
+    window.addEventListener('cc-code_catalog_updated', onCatalogUpdated)
+    window.addEventListener('cc-code_catalog_bootstrap_started', onBootstrapStarted)
+    window.addEventListener('cc-code_catalog_bootstrap_progress', onBootstrapProgress)
+    window.addEventListener('cc-code_catalog_bootstrap_completed', onBootstrapDone)
+    window.addEventListener('cc-code_catalog_bootstrap_failed', onBootstrapDone)
+    return () => {
+      window.removeEventListener('cc-code_catalog_updated', onCatalogUpdated)
+      window.removeEventListener('cc-code_catalog_bootstrap_started', onBootstrapStarted)
+      window.removeEventListener('cc-code_catalog_bootstrap_progress', onBootstrapProgress)
+      window.removeEventListener('cc-code_catalog_bootstrap_completed', onBootstrapDone)
+      window.removeEventListener('cc-code_catalog_bootstrap_failed', onBootstrapDone)
+    }
+  }, [viewWsId, loadEntries, loadBootstrap])
 
   const filtered = useMemo(() => {
     let result = entries
@@ -156,12 +228,52 @@ export default function CodeCatalogPanel({ onClose }) {
     }
   }
 
+  const openBootstrapConfirm = async () => {
+    // Refresh estimate first so the dialog reflects the current file count.
+    try {
+      const data = await api.getCodeCatalogBootstrap(viewWsId, 'estimate')
+      if (data?.estimate) setBootstrapEstimate(data.estimate)
+    } catch {}
+    setConfirmingBootstrap(true)
+  }
+
+  const handleStartBootstrap = async () => {
+    setBootstrapBusy(true)
+    try {
+      const result = await api.startCodeCatalogBootstrap(viewWsId)
+      if (result?.job) setBootstrapJob(result.job)
+      setConfirmingBootstrap(false)
+    } catch (err) {
+      console.error('start bootstrap failed:', err)
+    } finally {
+      setBootstrapBusy(false)
+    }
+  }
+
+  const handleCancelBootstrap = async () => {
+    setBootstrapBusy(true)
+    try {
+      const result = await api.cancelCodeCatalogBootstrap(viewWsId)
+      if (result?.job) setBootstrapJob(result.job)
+      else await loadBootstrap()
+    } catch (err) {
+      console.error('cancel bootstrap failed:', err)
+    } finally {
+      setBootstrapBusy(false)
+    }
+  }
+
+  const isRunning = bootstrapJob?.status === 'running'
+  const progressPct = isRunning && bootstrapJob.total_files
+    ? Math.min(100, Math.round((bootstrapJob.completed_files / bootstrapJob.total_files) * 100))
+    : 0
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="bg-bg-primary border border-border-primary rounded-lg shadow-xl w-[820px] max-h-[85vh] flex flex-col outline-none scale-in"
+        className="relative bg-bg-primary border border-border-primary rounded-lg shadow-xl w-[820px] max-h-[85vh] flex flex-col outline-none scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -188,6 +300,15 @@ export default function CodeCatalogPanel({ onClose }) {
             </span>
           </div>
           <div className="flex items-center gap-1">
+            {entries.length > 0 && !isRunning && view === 'by-file' && (
+              <button
+                onClick={openBootstrapConfirm}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-text-faint hover:text-accent-primary hover:bg-accent-primary/10 rounded-md transition-colors"
+                title="Re-bootstrap catalog from scratch"
+              >
+                <Sparkles size={11} /> re-bootstrap
+              </button>
+            )}
             <button
               onClick={() => setView(view === 'by-file' ? 'history' : 'by-file')}
               className="flex items-center gap-1 px-2 py-1 text-xs text-text-faint hover:text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
@@ -200,6 +321,50 @@ export default function CodeCatalogPanel({ onClose }) {
             </button>
           </div>
         </div>
+
+        {isRunning && (
+          <div className="px-4 py-2.5 border-b border-border-secondary bg-accent-primary/5">
+            <div className="flex items-center justify-between mb-1.5 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Loader2 size={11} className="animate-spin text-accent-primary shrink-0" />
+                <span className="text-[11px] font-mono text-text-secondary">
+                  Bootstrapping catalog…{' '}
+                  <span className="text-text-faint">
+                    {bootstrapJob.completed_files || 0}/{bootstrapJob.total_files || 0} files
+                  </span>
+                </span>
+                {bootstrapJob.model && (
+                  <span className="text-[10px] font-mono text-text-faint shrink-0">
+                    · {bootstrapJob.model}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={handleCancelBootstrap}
+                disabled={bootstrapBusy}
+                className="px-2 py-0.5 text-[10px] font-mono text-text-faint hover:text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-40"
+              >
+                cancel
+              </button>
+            </div>
+            <div className="h-1 w-full rounded bg-bg-inset overflow-hidden">
+              <div
+                className="h-full bg-accent-primary transition-all duration-500"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+            {bootstrapJob.counts && (
+              <div className="mt-1.5 text-[10px] font-mono text-text-faint flex items-center gap-3">
+                <span>+{bootstrapJob.counts.inserted || 0} new</span>
+                <span>~{bootstrapJob.counts.confirmed || 0} confirmed</span>
+                <span>↻{bootstrapJob.counts.replaced || 0} replaced</span>
+                {(bootstrapJob.counts.rejected || 0) > 0 && (
+                  <span className="text-amber-400">×{bootstrapJob.counts.rejected} rejected</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {view === 'by-file' && (
           <>
@@ -232,10 +397,31 @@ export default function CodeCatalogPanel({ onClose }) {
             <div className="flex-1 overflow-y-auto">
               {fileList.length === 0 ? (
                 <div className="px-4 py-10 text-xs text-text-faint text-center">
-                  {search.trim() || showStaleOnly
-                    ? 'No catalog entries match the current filters'
-                    : <>No code catalog entries yet — run <span className="text-text-secondary font-mono">/code-catalog-init</span> in a worker session to seed</>
-                  }
+                  {search.trim() || showStaleOnly ? (
+                    'No catalog entries match the current filters'
+                  ) : isRunning ? (
+                    <>Bootstrap in progress — first symbols will appear after the first batch finishes…</>
+                  ) : (
+                    <div className="flex flex-col items-center gap-3">
+                      <div>No code catalog entries yet.</div>
+                      <button
+                        onClick={openBootstrapConfirm}
+                        disabled={!bootstrapEstimate || (bootstrapEstimate.total_files || 0) === 0}
+                        className="flex items-center gap-2 px-3 py-2 text-[11px] font-mono rounded-md border border-accent-primary/40 bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <Sparkles size={12} />
+                        Bootstrap catalog
+                        {bootstrapEstimate && (
+                          <span className="text-text-faint">
+                            ({bootstrapEstimate.total_files} files · {bootstrapEstimate.model})
+                          </span>
+                        )}
+                      </button>
+                      <div className="text-[10px] text-text-faint">
+                        Or run <span className="text-text-secondary font-mono">/code-catalog-init</span> in a worker session.
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 fileList.map((file) => {
@@ -298,6 +484,54 @@ export default function CodeCatalogPanel({ onClose }) {
                 <HistoryRow key={h.id} row={h} />
               ))
             )}
+          </div>
+        )}
+
+        {confirmingBootstrap && (
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 rounded-lg"
+            onClick={() => !bootstrapBusy && setConfirmingBootstrap(false)}
+          >
+            <div
+              className="bg-bg-secondary border border-border-primary rounded-md shadow-lg w-[420px] p-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles size={13} className="text-accent-primary" />
+                <h3 className="text-sm font-semibold text-text-primary">Bootstrap catalog?</h3>
+              </div>
+              {bootstrapEstimate ? (
+                <div className="text-[11px] font-mono text-text-secondary space-y-1 mb-3">
+                  <div>Files: <span className="text-text-primary">{bootstrapEstimate.total_files}</span> {bootstrapEstimate.total_files >= bootstrapEstimate.max_files && <span className="text-amber-400">(capped)</span>}</div>
+                  <div>Model: <span className="text-text-primary">{bootstrapEstimate.model}</span> <span className="text-text-faint">via {bootstrapEstimate.cli}</span></div>
+                  <div>Source: <span className="text-text-faint">{bootstrapEstimate.model_source}</span></div>
+                  <div>Batches: ~<span className="text-text-primary">{Math.ceil(bootstrapEstimate.total_files / bootstrapEstimate.files_per_batch)}</span> LLM calls</div>
+                </div>
+              ) : (
+                <div className="text-[11px] text-text-faint mb-3">Loading estimate…</div>
+              )}
+              <p className="text-[11px] text-text-faint mb-3 leading-relaxed">
+                This walks your repo and asks the model to emit one wire-format line per public symbol.
+                Existing rows are confirmed/replaced — duplicates are dedup'd. You can cancel any time.
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setConfirmingBootstrap(false)}
+                  disabled={bootstrapBusy}
+                  className="px-2.5 py-1 text-[11px] font-mono text-text-faint hover:text-text-secondary hover:bg-bg-hover rounded transition-colors disabled:opacity-40"
+                >
+                  cancel
+                </button>
+                <button
+                  onClick={handleStartBootstrap}
+                  disabled={bootstrapBusy || !bootstrapEstimate || (bootstrapEstimate.total_files || 0) === 0}
+                  className="flex items-center gap-1.5 px-3 py-1 text-[11px] font-mono rounded border border-accent-primary/40 bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 transition-colors disabled:opacity-40"
+                >
+                  {bootstrapBusy ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                  Start bootstrap
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

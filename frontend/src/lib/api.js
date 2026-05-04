@@ -547,6 +547,16 @@ export const api = {
     request(`/workspaces/${workspaceId}/code_catalog/refresh_file`, {
       method: 'POST', body: JSON.stringify({ file }),
     }),
+  getCodeCatalogBootstrap: (workspaceId, view) => {
+    const qs = view ? `?view=${encodeURIComponent(view)}` : ''
+    return request(`/workspaces/${workspaceId}/code_catalog/bootstrap${qs}`)
+  },
+  startCodeCatalogBootstrap: (workspaceId, contributor) =>
+    request(`/workspaces/${workspaceId}/code_catalog/bootstrap`, {
+      method: 'POST', body: JSON.stringify(contributor ? { contributor } : {}),
+    }),
+  cancelCodeCatalogBootstrap: (workspaceId) =>
+    request(`/workspaces/${workspaceId}/code_catalog/bootstrap`, { method: 'DELETE' }),
 
   // ── W2W: File activity ──────────────────────────────────────────
   getRecentFileActivity: (workspaceId, params = {}) => {

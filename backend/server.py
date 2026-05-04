@@ -17569,6 +17569,63 @@ async def refresh_file_code_catalog(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "stale_marked": n})
 
 
+async def bootstrap_code_catalog(request: web.Request) -> web.Response:
+    """Kick off a server-driven catalog bootstrap for the workspace.
+
+    Idempotent — returns 409 if a bootstrap is already running for this
+    workspace. Body is optional: {"contributor": "<session_id>"?}.
+    """
+    ws_id = request.match_info["id"]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    contributor = (body.get("contributor") or "bootstrap").strip() or "bootstrap"
+
+    from code_catalog_bootstrap import start
+    result = await start(ws_id, contributor=contributor)
+    status = result.get("status")
+    if status == "already_running":
+        return web.json_response(result, status=409)
+    if status == "not_found":
+        return web.json_response({"error": "workspace not found"}, status=404)
+    if status == "no_files":
+        return web.json_response({"error": "no eligible files in workspace"}, status=400)
+    return web.json_response(result)
+
+
+async def get_code_catalog_bootstrap_status(request: web.Request) -> web.Response:
+    """Return current bootstrap job state, or an estimate if no job exists.
+
+    `?view=estimate` forces the estimate path (used by the confirm dialog so
+    it always gets a fresh count even if the last job is still hanging
+    around in memory).
+    """
+    ws_id = request.match_info["id"]
+    view = (request.query.get("view") or "").strip()
+    from code_catalog_bootstrap import estimate, get_status
+    if view == "estimate":
+        est = await estimate(ws_id)
+        if "error" in est:
+            return web.json_response(est, status=404 if est["error"] == "workspace not found" else 400)
+        return web.json_response({"job": None, "estimate": est})
+    job = get_status(ws_id)
+    if job:
+        return web.json_response({"job": job})
+    est = await estimate(ws_id)
+    if "error" in est:
+        return web.json_response(est, status=404 if est["error"] == "workspace not found" else 400)
+    return web.json_response({"job": None, "estimate": est})
+
+
+async def cancel_code_catalog_bootstrap(request: web.Request) -> web.Response:
+    """Flag the active bootstrap as cancelled. The job exits at the next batch boundary."""
+    ws_id = request.match_info["id"]
+    from code_catalog_bootstrap import cancel, get_status
+    flagged = await cancel(ws_id)
+    return web.json_response({"cancelled": flagged, "job": get_status(ws_id)})
+
+
 async def get_knowledge_prompt(request: web.Request) -> web.Response:
     """Export workspace knowledge as a system prompt fragment for injection at PTY start."""
     ws_id = request.match_info["id"]
@@ -18308,6 +18365,9 @@ def create_app() -> web.Application:
     app.router.add_get("/api/workspaces/{id}/code_catalog/history", get_code_catalog_history)
     app.router.add_post("/api/workspaces/{id}/code_catalog/bulk_upsert", bulk_upsert_code_catalog)
     app.router.add_post("/api/workspaces/{id}/code_catalog/refresh_file", refresh_file_code_catalog)
+    app.router.add_post("/api/workspaces/{id}/code_catalog/bootstrap", bootstrap_code_catalog)
+    app.router.add_get("/api/workspaces/{id}/code_catalog/bootstrap", get_code_catalog_bootstrap_status)
+    app.router.add_delete("/api/workspaces/{id}/code_catalog/bootstrap", cancel_code_catalog_bootstrap)
 
     # W2W: File activity
     app.router.add_get("/api/workspaces/{id}/file-activity", list_recent_file_activity)
