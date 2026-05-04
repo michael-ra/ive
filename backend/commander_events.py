@@ -126,6 +126,13 @@ class CommanderEvent(str, Enum):
     KNOWLEDGE_CONTRIBUTED   = "knowledge_contributed"
     KNOWLEDGE_CONFIRMED     = "knowledge_confirmed"
 
+    # ── Code Catalog ─────────────────────────────────────────────────
+    CODE_CATALOG_UPDATED              = "code_catalog_updated"
+    CODE_CATALOG_REPLACED             = "code_catalog_replaced"
+    CODE_CATALOG_BOOTSTRAP_STARTED    = "code_catalog_bootstrap_started"
+    CODE_CATALOG_BOOTSTRAP_PROGRESS   = "code_catalog_bootstrap_progress"
+    CODE_CATALOG_BOOTSTRAP_COMPLETED  = "code_catalog_bootstrap_completed"
+
     # ── Session Advisor ──────────────────────────────────────────────
     GUIDELINE_RECOMMENDED           = "guideline_recommended"
     SESSION_ANALYZED                = "session_analyzed"
@@ -257,6 +264,12 @@ COMMANDER_EVENT_LABELS: dict[CommanderEvent, str] = {
     CommanderEvent.DIGEST_UPDATED:        "Session digest updated",
     CommanderEvent.KNOWLEDGE_CONTRIBUTED: "Knowledge entry contributed",
     CommanderEvent.KNOWLEDGE_CONFIRMED:   "Knowledge entry confirmed",
+    # Code Catalog
+    CommanderEvent.CODE_CATALOG_UPDATED:             "Code catalog entry upserted",
+    CommanderEvent.CODE_CATALOG_REPLACED:            "Code catalog entry replaced (prior archived)",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_STARTED:   "Code catalog bootstrap started",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_PROGRESS:  "Code catalog bootstrap progress",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_COMPLETED: "Code catalog bootstrap completed",
     # Session Advisor
     CommanderEvent.GUIDELINE_RECOMMENDED:           "Guideline recommended for session",
     CommanderEvent.SESSION_ANALYZED:                 "Session quality analyzed",
@@ -373,6 +386,12 @@ COMMANDER_EVENT_CATEGORIES: dict[CommanderEvent, str] = {
     CommanderEvent.DIGEST_UPDATED:        "w2w",
     CommanderEvent.KNOWLEDGE_CONTRIBUTED: "w2w",
     CommanderEvent.KNOWLEDGE_CONFIRMED:   "w2w",
+    # Code Catalog
+    CommanderEvent.CODE_CATALOG_UPDATED:             "code_catalog",
+    CommanderEvent.CODE_CATALOG_REPLACED:            "code_catalog",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_STARTED:   "code_catalog",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_PROGRESS:  "code_catalog",
+    CommanderEvent.CODE_CATALOG_BOOTSTRAP_COMPLETED: "code_catalog",
     # Session Advisor
     CommanderEvent.GUIDELINE_RECOMMENDED:           "advisor",
     CommanderEvent.SESSION_ANALYZED:                 "advisor",

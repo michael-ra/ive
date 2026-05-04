@@ -1191,17 +1191,27 @@ W2W_CONTEXT_TOOLS = {
         "description": (
             "Contribute a codebase insight to the workspace knowledge base. "
             "Future sessions will receive this knowledge in their system prompt. "
-            "Use this when you discover something about the codebase that would help others."
+            "Use this when you discover something about the codebase that would help others. "
+            "\n\nFor `category=\"code_catalog\"`, `content` MUST be a single wire-format line: "
+            "`<file>::<symbol>(<args>?): <purpose> [| →dep ←caller ↔shared] [◆effect]`. "
+            "Examples: "
+            "`backend/server.py::create_app(): registers routes | →get_db ◆reads config` ; "
+            "`src/Foo.tsx::Foo(): renders panel | ←App.jsx`. "
+            "Catalog rows are deduped by (workspace, file, symbol) — re-emitting the same line confirms it; "
+            "emitting different content for the same symbol replaces it (prior version archived to history)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["architecture", "convention", "gotcha", "pattern", "api", "setup"],
-                    "description": "Category of knowledge.",
+                    "enum": [
+                        "architecture", "convention", "gotcha", "pattern", "api", "setup",
+                        "code_catalog",
+                    ],
+                    "description": "Category of knowledge. `code_catalog` requires a single wire-format line in `content` (see tool description).",
                 },
-                "content": {"type": "string", "description": "The insight or knowledge to share."},
+                "content": {"type": "string", "description": "The insight to share, OR a single catalog wire-format line if category='code_catalog'."},
                 "scope": {"type": "string", "description": "Module or subsystem scope (e.g., 'backend/hooks', 'frontend/state'). Optional."},
             },
             "required": ["category", "content"],
@@ -1215,7 +1225,14 @@ W2W_CONTEXT_TOOLS = {
             "properties": {
                 "query": {"type": "string", "description": "Search query."},
                 "scope": {"type": "string", "description": "Filter by module/subsystem scope."},
-                "category": {"type": "string", "enum": ["architecture", "convention", "gotcha", "pattern", "api", "setup"], "description": "Filter by category."},
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "architecture", "convention", "gotcha", "pattern", "api", "setup",
+                        "code_catalog",
+                    ],
+                    "description": "Filter by category.",
+                },
             },
         },
     },

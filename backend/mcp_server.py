@@ -735,7 +735,7 @@ def tool_headsup(args: dict) -> str:
 
 _KNOWLEDGE_CATEGORIES = (
     "architecture", "convention", "gotcha", "pattern",
-    "api", "setup", "orchestration",
+    "api", "setup", "orchestration", "code_catalog",
 )
 
 
@@ -1382,6 +1382,10 @@ TOOLS["contribute_knowledge"] = {
         "lessons (which worker class fits which task, model-tier patterns, team "
         "formation rules); other categories work but are usually written by workers. "
         "Keep entries terse and actionable — one fact, one line."
+        "\n\nFor `category=\"code_catalog\"`, `content` MUST be a single wire-format line: "
+        "`<file>::<symbol>(<args>?): <purpose> [| →dep ←caller ↔shared] [◆effect]`. "
+        "Catalog rows dedup by (workspace, file, symbol) — same content confirms; "
+        "different content replaces (prior version archived to history)."
     ),
     "inputSchema": {
         "type": "object",

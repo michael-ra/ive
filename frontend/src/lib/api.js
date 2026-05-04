@@ -528,6 +528,26 @@ export const api = {
     return request(`/workspaces/${workspaceId}/knowledge/prompt${qs ? '?' + qs : ''}`)
   },
 
+  // ── Code catalog ────────────────────────────────────────────────
+  getCodeCatalog: (workspaceId, params = {}) => {
+    const qs = new URLSearchParams(params).toString()
+    return request(`/workspaces/${workspaceId}/code_catalog${qs ? '?' + qs : ''}`)
+  },
+  getCodeCatalogSummary: (workspaceId) =>
+    request(`/workspaces/${workspaceId}/code_catalog?view=summary`),
+  getCodeCatalogHistory: (workspaceId, params = {}) => {
+    const qs = new URLSearchParams(params).toString()
+    return request(`/workspaces/${workspaceId}/code_catalog/history${qs ? '?' + qs : ''}`)
+  },
+  bulkUpsertCodeCatalog: (workspaceId, data) =>
+    request(`/workspaces/${workspaceId}/code_catalog/bulk_upsert`, {
+      method: 'POST', body: JSON.stringify(data),
+    }),
+  refreshFileCodeCatalog: (workspaceId, file) =>
+    request(`/workspaces/${workspaceId}/code_catalog/refresh_file`, {
+      method: 'POST', body: JSON.stringify({ file }),
+    }),
+
   // ── W2W: File activity ──────────────────────────────────────────
   getRecentFileActivity: (workspaceId, params = {}) => {
     const qs = new URLSearchParams(params).toString()

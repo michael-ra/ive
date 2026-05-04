@@ -5,7 +5,7 @@ import {
   Kanban, GitBranch, GitCompareArrows, Crown, StickyNote, User, RotateCcw, Package,
   FlaskConical, Zap, Volume2, MessageSquareQuote, ListOrdered, Server, Sparkles,
   Brain, MessagesSquare, ExternalLink, BookOpenCheck, Key, Telescope,
-  Newspaper, Share2
+  Newspaper, Share2, FileCode2
 } from 'lucide-react'
 
 export const ACTIONS = [
@@ -61,6 +61,7 @@ export const ACTIONS = [
   { id: 'annotate', label: 'Annotate Output', icon: MessageSquareQuote, section: 'Sessions', shortcut: '⌘⇧A' },
   { id: 'memory-search', label: 'Memory Search', icon: Brain, section: 'W2W' },
   { id: 'knowledge', label: 'Workspace Knowledge', icon: BookOpen, section: 'W2W' },
+  { id: 'code-catalog', label: 'Code Catalog', icon: FileCode2, section: 'W2W', hint: 'Symbol-level map of files (purpose, deps, callers)' },
   { id: 'peer-messages', label: 'Peer Messages', icon: MessagesSquare, section: 'W2W' },
   { id: 'pop-out-terminal', label: 'Pop Out Terminal', icon: ExternalLink, section: 'Sessions', hint: 'Open in native OS terminal' },
   { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard, section: 'Help' },

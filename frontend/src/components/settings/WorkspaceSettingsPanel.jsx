@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { FolderOpen, X, Save, ChevronDown, ChevronRight, Check, GitBranch, MessageSquare, Shield, Brain, ExternalLink, Monitor, Play, Users, RotateCcw, Layers, Plus, Trash2, Link, BookOpen } from 'lucide-react'
+import { FolderOpen, X, Save, ChevronDown, ChevronRight, Check, GitBranch, MessageSquare, Shield, Brain, ExternalLink, Monitor, Play, Users, RotateCcw, Layers, Plus, Trash2, Link, BookOpen, FileCode2, Sparkles } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
 import { MODELS, GEMINI_MODELS, getWorkspaceColor, WORKSPACE_PALETTE } from '../../lib/constants'
@@ -68,6 +68,9 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
         pipeline_enabled: ws.pipeline_enabled || 0,
         task_dependencies_enabled: ws.task_dependencies_enabled || 0,
         auto_knowledge_enabled: ws.auto_knowledge_enabled || 0,
+        code_catalog_auto_extract: ws.code_catalog_auto_extract == null ? 1 : ws.code_catalog_auto_extract,
+        code_catalog_verify_session_end: ws.code_catalog_verify_session_end || 0,
+        code_catalog_model: ws.code_catalog_model || '',
         commander_max_workers: ws.commander_max_workers || 3,
         tester_max_workers: ws.tester_max_workers || 2,
         research_max_iterations: ws.research_max_iterations || '',
@@ -98,7 +101,7 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
     setSavingId(wsId)
     try {
       const payload = { ...form }
-      for (const k of ['research_model', 'research_llm_url', 'preview_url', 'coordination_namespace', 'color', 'research_max_iterations']) {
+      for (const k of ['research_model', 'research_llm_url', 'preview_url', 'coordination_namespace', 'color', 'research_max_iterations', 'code_catalog_model']) {
         if (!payload[k]) payload[k] = null
       }
       const updated = await api.updateWorkspace(wsId, payload)
@@ -560,6 +563,78 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
                             Disable if you want manual curation only.
                           </p>
                         ) : null}
+                      </Field>
+
+                      {/* Code Catalog */}
+                      <div className="text-[10px] text-text-muted font-semibold uppercase tracking-wider mt-2 mb-1">Code Catalog</div>
+                      <p className="text-[10px] text-text-faint leading-relaxed mb-2">
+                        Symbol-level map of files (purpose, deps, callers, effects).
+                        Workers emit catalog rows via <span className="font-mono text-text-secondary">contribute_knowledge(category="code_catalog")</span>;
+                        future workers + research see them filtered to the files they're touching.
+                        Bootstrap with <span className="font-mono text-text-secondary">/code-catalog-init</span>.
+                      </p>
+
+                      <Field label="Auto-Extract on Session End" hint="LLM-extracts catalog deltas for files this session touched">
+                        <button
+                          onClick={() => updateField(ws.id, 'code_catalog_auto_extract', form.code_catalog_auto_extract ? 0 : 1)}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded text-[11px] font-mono border transition-colors w-full ${
+                            form.code_catalog_auto_extract
+                              ? 'border-emerald-500 bg-emerald-500/15 text-emerald-400'
+                              : 'border-border-secondary text-text-faint hover:border-border-primary hover:text-text-secondary'
+                          }`}
+                        >
+                          <FileCode2 size={12} />
+                          <span>{form.code_catalog_auto_extract ? 'Enabled' : 'Disabled'}</span>
+                          <span className="flex-1" />
+                          <span className="text-[10px] opacity-60">
+                            {form.code_catalog_auto_extract
+                              ? 'Each clean exit emits catalog deltas for touched files'
+                              : 'Catalog only grows via /code-catalog-init or manual contribute_knowledge'}
+                          </span>
+                        </button>
+                      </Field>
+
+                      <Field label="Verify Pass on Session End" hint="Cross-check that prior catalog rows for touched files still match the code (extra LLM call)">
+                        <button
+                          onClick={() => updateField(ws.id, 'code_catalog_verify_session_end', form.code_catalog_verify_session_end ? 0 : 1)}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded text-[11px] font-mono border transition-colors w-full ${
+                            form.code_catalog_verify_session_end
+                              ? 'border-amber-500 bg-amber-500/15 text-amber-400'
+                              : 'border-border-secondary text-text-faint hover:border-border-primary hover:text-text-secondary'
+                          }`}
+                          disabled={!form.code_catalog_auto_extract}
+                        >
+                          <Shield size={12} />
+                          <span>{form.code_catalog_verify_session_end ? 'Enabled' : 'Disabled'}</span>
+                          <span className="flex-1" />
+                          <span className="text-[10px] opacity-60">
+                            {!form.code_catalog_auto_extract
+                              ? 'Requires auto-extract enabled'
+                              : form.code_catalog_verify_session_end
+                                ? 'Stale rows flagged when code drifts'
+                                : 'No drift detection (cheaper)'}
+                          </span>
+                        </button>
+                      </Field>
+
+                      <Field label="Catalog Model" hint="Model used for extract + verify passes (defaults to research model)">
+                        <div className="flex items-center gap-2">
+                          <Sparkles size={12} className="text-text-faint shrink-0" />
+                          <select
+                            value={form.code_catalog_model || ''}
+                            onChange={(e) => updateField(ws.id, 'code_catalog_model', e.target.value)}
+                            className="ide-input w-full"
+                          >
+                            <option value="">Default (research model)</option>
+                            {RESEARCH_MODELS.map((g) => (
+                              <optgroup key={g.group} label={g.group}>
+                                {g.items.map((m) => (
+                                  <option key={m.id} value={m.id}>{m.label}</option>
+                                ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </div>
                       </Field>
 
                       {/* Automation */}

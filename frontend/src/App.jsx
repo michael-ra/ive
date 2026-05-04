@@ -45,6 +45,7 @@ import AccountManager from './components/command/AccountManager'
 import ConfigViewer from './components/session/ConfigViewer'
 import DocsPanel from './components/session/DocsPanel'
 import KnowledgePanel from './components/session/KnowledgePanel'
+import CodeCatalogPanel from './components/session/CodeCatalogPanel'
 import PeerMessagesPanel from './components/session/PeerMessagesPanel'
 import MemoryWindow from './components/session/MemoryWindow'
 import ShortcutsPanel from './components/command/ShortcutsPanel'
@@ -158,6 +159,7 @@ export default function App() {
       if (panel === 'research') { setResearchHubTab('library'); setShowResearchHub(true) }
       if (panel === 'docs-panel') setShowDocs(true)
       if (panel === 'knowledge') setShowKnowledge(true)
+      if (panel === 'code-catalog') setShowCodeCatalog(true)
       if (panel === 'peer-messages') setShowPeerMessages(true)
       if (panel === 'memory') setShowMemory(true)
       if (panel === 'code-review') setShowCodeReview(true)
@@ -465,6 +467,7 @@ export default function App() {
   const [visionOnboardingFor, setVisionOnboardingFor] = useState(null)
   const [showDocs, setShowDocs] = useState(false)
   const [showKnowledge, setShowKnowledge] = useState(false)
+  const [showCodeCatalog, setShowCodeCatalog] = useState(false)
   const [showPeerMessages, setShowPeerMessages] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
@@ -532,6 +535,7 @@ export default function App() {
     setShowResearchHub(false)
     setShowDocs(false)
     setShowKnowledge(false)
+    setShowCodeCatalog(false)
     setShowPeerMessages(false)
     setShowMemory(false)
     setShowShortcuts(false)
@@ -586,6 +590,7 @@ export default function App() {
         [showResearchHub, () => setShowResearchHub(false)],
         [showDocs, () => setShowDocs(false)],
         [showKnowledge, () => setShowKnowledge(false)],
+        [showCodeCatalog, () => setShowCodeCatalog(false)],
         [showPeerMessages, () => setShowPeerMessages(false)],
         [showMemory, () => setShowMemory(false)],
         [showMarketplace, () => { setShowMarketplace(false); setMarketplaceTab(null) }],
@@ -720,6 +725,7 @@ export default function App() {
       'research': () => { setResearchHubTab('library'); setShowResearchHub(true) },
       'docs-panel': () => setShowDocs(true),
       'knowledge': () => setShowKnowledge(true),
+      'code-catalog': () => setShowCodeCatalog(true),
       'peer-messages': () => setShowPeerMessages(true),
       'memory-search': () => setShowMemory(true),
       'shortcuts': () => setShowShortcuts(true),
@@ -1400,6 +1406,7 @@ export default function App() {
       )}
       {showDocs && <DocsPanel onClose={() => setShowDocs(false)} />}
       {showKnowledge && <KnowledgePanel onClose={() => setShowKnowledge(false)} />}
+      {showCodeCatalog && <CodeCatalogPanel onClose={() => setShowCodeCatalog(false)} />}
       {showPeerMessages && <PeerMessagesPanel onClose={() => setShowPeerMessages(false)} />}
       {showMemory && <MemoryWindow onClose={() => setShowMemory(false)} />}
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}

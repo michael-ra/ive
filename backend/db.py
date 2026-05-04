@@ -591,6 +591,28 @@ CREATE TABLE IF NOT EXISTS workspace_knowledge (
 CREATE INDEX IF NOT EXISTS idx_workspace_knowledge_workspace
     ON workspace_knowledge(workspace_id, category);
 
+-- ─── Code Catalog: replace history (sidecar to workspace_knowledge) ──
+-- When a code_catalog row is replaced (latest-write-wins), the prior
+-- content snapshot lands here so the UI / audit views can show "this
+-- entry was rewritten by session X at time Y, prior content was Z."
+-- Confirmations don't write here; only true content disagreements.
+CREATE TABLE IF NOT EXISTS code_catalog_history (
+    id TEXT PRIMARY KEY,
+    knowledge_id TEXT REFERENCES workspace_knowledge(id) ON DELETE CASCADE,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    symbol_name TEXT,
+    prior_content TEXT NOT NULL,
+    prior_contributed_by TEXT,
+    prior_confirmed_count INTEGER DEFAULT 1,
+    replaced_by_session TEXT,
+    replaced_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_catalog_history_knowledge
+    ON code_catalog_history(knowledge_id);
+CREATE INDEX IF NOT EXISTS idx_code_catalog_history_workspace
+    ON code_catalog_history(workspace_id, replaced_at);
+
 -- ─── W2W: File activity log ─────────────────────────────────────────
 -- Real-time "git blame with intent." Every Edit/Write auto-records the
 -- file path plus the worker's current task context (from digest or task
@@ -1539,6 +1561,20 @@ async def init_db():
             "ALTER TABLE workspaces ADD COLUMN board_doc_mode TEXT DEFAULT 'agent_with_backstop'",
             "ALTER TABLE workspaces ADD COLUMN board_doc_new_column TEXT DEFAULT 'review'",
             "ALTER TABLE workspaces ADD COLUMN board_doc_existing_column TEXT DEFAULT 'review'",
+            # Code catalog: structural function-level memory layered on
+            # workspace_knowledge. category='code_catalog' rows carry these
+            # extra columns; all other categories leave them NULL.
+            "ALTER TABLE workspace_knowledge ADD COLUMN symbol_name TEXT",
+            "ALTER TABLE workspace_knowledge ADD COLUMN symbol_file TEXT",
+            "ALTER TABLE workspace_knowledge ADD COLUMN symbol_kind TEXT",
+            "ALTER TABLE workspace_knowledge ADD COLUMN stale_since TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_wk_symbol_lookup ON workspace_knowledge(workspace_id, symbol_file, symbol_name)",
+            "CREATE INDEX IF NOT EXISTS idx_wk_catalog_stale ON workspace_knowledge(workspace_id, stale_since)",
+            # Per-workspace toggles for code-catalog auto-extract on session end
+            # and the optional verify pass (default OFF for cost reasons).
+            "ALTER TABLE workspaces ADD COLUMN code_catalog_auto_extract INTEGER DEFAULT 1",
+            "ALTER TABLE workspaces ADD COLUMN code_catalog_verify_session_end INTEGER DEFAULT 0",
+            "ALTER TABLE workspaces ADD COLUMN code_catalog_model TEXT",
         ):
             try:
                 await db.execute(ddl)

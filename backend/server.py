@@ -990,6 +990,286 @@ async def _maybe_auto_extract_knowledge(session_id: str, exit_code: int):
         len(saved_ids), session_id[:8],
     )
 
+    # Second pass: code catalog extraction (separate prompt, separate gate).
+    # Only fires when (1) workspace toggle is on, (2) the session actually
+    # touched files, (3) the LLM emits at least one wire-format line.
+    try:
+        await _maybe_extract_code_catalog(
+            session_id=session_id,
+            workspace_id=ws_id,
+            cli=cli,
+            conversation=conversation,
+        )
+    except Exception:
+        logger.exception("code_catalog auto-extract failed for %s", session_id[:8])
+
+
+_CODE_CATALOG_EXTRACTION_PROMPT = """You are analyzing a coding session to update a workspace-wide CODE CATALOG.
+
+The catalog is a per-symbol index — one line per function / method / component / hook / type / event / SQL query / etc. Format (strict, one symbol per line):
+
+    <file>::<symbol>(<args>?): <purpose> [| →dep ←caller ↔shared] [◆effect]
+
+Examples:
+    backend/server.py::create_app(): wires routes + middlewares | →get_db ◆reads config
+    src/CatchUpPanel.jsx::CatchUpPanel(): renders briefing | ←App.jsx →useCatchUp
+    backend/db.py::workspaces.code_catalog_auto_extract: column toggling auto-extraction
+    backend/migrations/0042.sql::add_user_index: queries idx_users_email
+
+Glyph legend:
+    →  this symbol calls / depends on the target
+    ←  the target calls / triggers this symbol
+    ↔  this symbol shares state with the target
+    ◆  side effect (writes file, emits event, mutates table). Repeat for multiple effects.
+
+The optional `|` separates purpose prose from flow tokens. Skip it if there are no flow tokens.
+
+<conversation>
+{conversation}
+</conversation>
+
+<files_touched_in_session>
+{files_touched}
+</files_touched_in_session>
+
+Extract entries ONLY for symbols that were ADDED, RENAMED, or whose PURPOSE/EFFECTS materially changed in this session. Do NOT inventory the entire codebase — assume other sessions handle other symbols.
+
+Rules:
+- Each line is independent. Do NOT mix multiple symbols on one line.
+- `<file>` is a workspace-relative path. `<symbol>` is the function / class.method / component / type name.
+- `<purpose>` is one short clause — what the symbol does, not what was done in this task.
+- Drop test files, generated files, and pure config files unless the test/config IS the durable artifact.
+- Skip symbols you only read but did not change.
+- If the session was a refactor that renamed a symbol, emit ONE line for the new name (the upsert layer handles the rename via different content).
+
+Return JSON in this exact shape:
+{{
+  "entries": [
+    "<file>::<symbol>(<args>?): <purpose> [| <flow>] [◆<effect>]",
+    "..."
+  ]
+}}
+
+- 0 to 20 entries. {{"entries": []}} is fine if nothing genuinely changed.
+- Each entry MUST be a single string in the wire format above. No nested objects.
+- No markdown fences, no commentary. Return ONLY the JSON object."""
+
+
+async def _maybe_extract_code_catalog(
+    *,
+    session_id: str,
+    workspace_id: str,
+    cli: str,
+    conversation: str,
+) -> None:
+    """Optional second pass on session end: emit code_catalog deltas.
+
+    Gate: workspace.code_catalog_auto_extract == 1. Reads files_touched from
+    the session digest to anchor the LLM in the surface area the worker
+    actually changed (avoids the LLM cataloging the entire repo).
+
+    On top of the extraction, when workspace.code_catalog_verify_session_end
+    is enabled AND the worker actually changed catalog symbols, also runs a
+    verify pass: ask the LLM whether the *prior* catalog entries for the
+    touched files are still accurate. Drift flagged → mark stale.
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT code_catalog_auto_extract, code_catalog_verify_session_end,
+                      code_catalog_model
+                 FROM workspaces WHERE id = ?""",
+            (workspace_id,),
+        )
+        ws = await cur.fetchone()
+        if not ws or not ws["code_catalog_auto_extract"]:
+            return
+
+        # files_touched lives on session_digests as a JSON array.
+        cur = await db.execute(
+            "SELECT files_touched FROM session_digests WHERE session_id = ?",
+            (session_id,),
+        )
+        drow = await cur.fetchone()
+    finally:
+        await db.close()
+
+    files_touched: list[str] = []
+    if drow and drow["files_touched"]:
+        try:
+            files_touched = json.loads(drow["files_touched"]) or []
+        except Exception:
+            files_touched = []
+
+    if not files_touched:
+        # Worker didn't touch any files we know about. Skip — running an LLM
+        # extraction with no scope produces low-signal "catalog the whole repo"
+        # output that the upsert layer will reject anyway.
+        return
+
+    catalog_model = ws["code_catalog_model"] if ws else None
+
+    prompt = _CODE_CATALOG_EXTRACTION_PROMPT.format(
+        conversation=conversation,
+        files_touched=", ".join(files_touched[:50]),
+    )
+    try:
+        from llm_router import llm_call_json
+        result = await llm_call_json(
+            cli=cli, model=catalog_model, prompt=prompt, timeout=180,
+        )
+    except Exception as exc:
+        logger.warning(
+            "code_catalog auto-extract LLM call failed for %s: %s",
+            session_id[:8], exc,
+        )
+        return
+
+    entries = result.get("entries") if isinstance(result, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return
+
+    from code_catalog import upsert_catalog_entry, mark_file_stale
+    counts = {"inserted": 0, "confirmed": 0, "replaced": 0, "noop_invalid": 0}
+    for raw in entries[:50]:
+        if not isinstance(raw, str):
+            continue
+        try:
+            row = await upsert_catalog_entry(
+                workspace_id=workspace_id,
+                raw_line=raw,
+                contributed_by=f"auto:{session_id}",
+            )
+            kind = row.get("change_kind", "noop_invalid")
+            counts[kind] = counts.get(kind, 0) + 1
+        except Exception:
+            logger.exception("code_catalog auto upsert failed: %r", raw[:120])
+            counts["noop_invalid"] += 1
+
+    logger.info(
+        "code_catalog auto-extract for %s: %s",
+        session_id[:8], counts,
+    )
+
+    # Verify pass: only run when the toggle is on AND we actually changed
+    # something this session. The contract is "verify on session-end" — if
+    # nothing was emitted, prior entries are still as-fresh-as-they-were.
+    if ws and ws["code_catalog_verify_session_end"] and (
+        counts["inserted"] + counts["confirmed"] + counts["replaced"]
+    ) > 0:
+        try:
+            await _run_catalog_verify_pass(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                cli=cli,
+                model=catalog_model,
+                conversation=conversation,
+                files_touched=files_touched,
+            )
+        except Exception:
+            logger.exception(
+                "code_catalog verify pass failed for %s", session_id[:8],
+            )
+
+
+_CODE_CATALOG_VERIFY_PROMPT = """You are reviewing existing CODE CATALOG entries against a coding session that just modified some of those files.
+
+Each entry is a single line:
+    <file>::<symbol>(<args>?): <purpose> [| →dep ←caller ↔shared] [◆effect]
+
+For each entry, mark it as one of:
+    "ok"      — still accurate after the session's changes
+    "stale"   — the symbol's purpose / args / flow / effects no longer match reality
+
+Do NOT rewrite entries. Just classify them. Stale entries get re-extracted later.
+
+<conversation>
+{conversation}
+</conversation>
+
+<existing_entries>
+{entries}
+</existing_entries>
+
+Return JSON in this exact shape:
+{{
+  "verdicts": [
+    {{"id": "<entry_id>", "status": "ok"}},
+    {{"id": "<entry_id>", "status": "stale"}}
+  ]
+}}
+
+Rules:
+- Default to "ok" when uncertain. "stale" requires concrete evidence in the conversation that the symbol's behavior changed.
+- Do NOT add new entries here. Just verdicts on the supplied list.
+- No markdown fences, no commentary. Return ONLY the JSON object."""
+
+
+async def _run_catalog_verify_pass(
+    *,
+    session_id: str,
+    workspace_id: str,
+    cli: str,
+    model: str | None,
+    conversation: str,
+    files_touched: list[str],
+) -> None:
+    """Ask the LLM whether prior catalog entries for touched files are still accurate.
+
+    Stale verdicts → mark_file_stale on the file (UI shows a yellow dot).
+    """
+    from code_catalog import get_catalog_for_files, mark_file_stale
+
+    existing = await get_catalog_for_files(
+        workspace_id=workspace_id,
+        files=files_touched,
+        include_stale=False,  # already-stale rows don't need re-classification
+    )
+    if not existing:
+        return
+
+    # Render entries in a compact form the LLM can refer to by id.
+    rendered = "\n".join(
+        f"id={r['id']}  {r.get('content') or ''}" for r in existing[:80]
+    )
+    prompt = _CODE_CATALOG_VERIFY_PROMPT.format(
+        conversation=conversation, entries=rendered,
+    )
+    try:
+        from llm_router import llm_call_json
+        result = await llm_call_json(
+            cli=cli, model=model, prompt=prompt, timeout=180,
+        )
+    except Exception as exc:
+        logger.warning(
+            "code_catalog verify LLM call failed for %s: %s",
+            session_id[:8], exc,
+        )
+        return
+
+    verdicts = result.get("verdicts") if isinstance(result, dict) else None
+    if not isinstance(verdicts, list):
+        return
+
+    stale_files: set[str] = set()
+    by_id = {r["id"]: r for r in existing}
+    for v in verdicts:
+        if not isinstance(v, dict):
+            continue
+        if (v.get("status") or "").lower() != "stale":
+            continue
+        eid = v.get("id")
+        row = by_id.get(eid)
+        if row and row.get("symbol_file"):
+            stale_files.add(row["symbol_file"])
+
+    if stale_files:
+        n = await mark_file_stale(workspace_id, sorted(stale_files))
+        logger.info(
+            "code_catalog verify marked %d rows stale across %d files in %s",
+            n, len(stale_files), session_id[:8],
+        )
+
 
 async def _maybe_auto_summarize(session_id: str):
     """Generate a 1-2 sentence summary for a session on exit.
@@ -3370,7 +3650,8 @@ async def update_workspace(request: web.Request) -> web.Response:
                    "auto_exec_enabled", "commander_max_workers", "tester_max_workers",
                    "research_max_iterations", "pipeline_enabled",
                    "task_dependencies_enabled", "auto_knowledge_enabled",
-                   "board_doc_mode", "board_doc_new_column", "board_doc_existing_column")
+                   "board_doc_mode", "board_doc_new_column", "board_doc_existing_column",
+                   "code_catalog_auto_extract", "code_catalog_verify_session_end", "code_catalog_model")
         fields, values = [], []
         for key in allowed:
             if key in body:
@@ -5646,6 +5927,15 @@ def _build_worker_handoff_prompt(task: dict) -> str:
     parts.append(
         f"Call get_my_tasks to see full details. "
         f'Update status via update_my_task(task_id="{task["id"]}") as you work.'
+    )
+    parts.append("")
+    parts.append(
+        "Code catalog: this workspace maintains a per-symbol catalog "
+        "(workspace_knowledge category=code_catalog). Before touching unfamiliar "
+        "code, query_knowledge(category='code_catalog') for the relevant file. "
+        "After your changes, contribute_knowledge(category='code_catalog', content=...) "
+        "with one wire-format line per added/changed symbol: "
+        "`<file>::<symbol>(<args>?): <purpose> [| →dep ←caller] [◆effect]`."
     )
     return "\n".join(parts)
 
@@ -16225,6 +16515,12 @@ async def unified_memory_search(request: web.Request) -> web.Response:
     requested = set(t.strip() for t in types_param.split(","))
     limit_per = int(request.query.get("limit", "5"))
 
+    # Optional category filter for the knowledge bucket. Lets research-mode /
+    # code-aware queries scope to e.g. ?categories=code_catalog without losing
+    # gotchas/patterns when categories is omitted.
+    categories_param = request.query.get("categories", "")
+    category_filter = [c.strip() for c in categories_param.split(",") if c.strip()]
+
     result: dict = {}
 
     # 1. Tasks (semantic + keyword fallback)
@@ -16318,20 +16614,27 @@ async def unified_memory_search(request: web.Request) -> web.Response:
     if "knowledge" in requested:
         try:
             from embedder import search_similar
-            sem = await search_similar(query, "knowledge", ws_id, limit=limit_per, min_score=0.35)
+            # Pull a wider candidate set when filtering by category, since
+            # the embedding side doesn't know about category — we'll trim
+            # post-hoc.
+            sem_limit = limit_per * 4 if category_filter else limit_per
+            sem = await search_similar(query, "knowledge", ws_id, limit=sem_limit, min_score=0.35)
             if sem:
                 kids = [r["entity_id"] for r in sem]
                 scores = {r["entity_id"]: r["score"] for r in sem}
                 db = await get_db()
                 try:
                     ph = ",".join("?" for _ in kids)
-                    cur = await db.execute(
-                        f"SELECT * FROM workspace_knowledge WHERE id IN ({ph})", kids,
-                    )
+                    sql = f"SELECT * FROM workspace_knowledge WHERE id IN ({ph})"
+                    params: list = list(kids)
+                    if category_filter:
+                        sql += f" AND category IN ({','.join('?' * len(category_filter))})"
+                        params.extend(category_filter)
+                    cur = await db.execute(sql, params)
                     result["knowledge"] = sorted(
                         [{**dict(r), "score": scores.get(r["id"], 0)} for r in await cur.fetchall()],
                         key=lambda x: x["score"], reverse=True
-                    )
+                    )[:limit_per]
                 finally:
                     await db.close()
         except Exception:
@@ -16340,10 +16643,14 @@ async def unified_memory_search(request: web.Request) -> web.Response:
             db = await get_db()
             try:
                 like = f"%{query}%"
-                cur = await db.execute(
-                    "SELECT * FROM workspace_knowledge WHERE workspace_id = ? AND content LIKE ? ORDER BY confirmed_count DESC LIMIT ?",
-                    (ws_id, like, limit_per),
-                )
+                sql = "SELECT * FROM workspace_knowledge WHERE workspace_id = ? AND content LIKE ?"
+                params = [ws_id, like]
+                if category_filter:
+                    sql += f" AND category IN ({','.join('?' * len(category_filter))})"
+                    params.extend(category_filter)
+                sql += " ORDER BY confirmed_count DESC LIMIT ?"
+                params.append(limit_per)
+                cur = await db.execute(sql, params)
                 result["knowledge"] = [dict(r) for r in await cur.fetchall()]
             finally:
                 await db.close()
@@ -16962,6 +17269,26 @@ async def create_knowledge_entry(request: web.Request) -> web.Response:
         return web.json_response({"error": "content and category required"}, status=400)
 
     scope = body.get("scope", "") or ""
+
+    # Code catalog has its own dedup key (workspace + symbol_file + symbol_name)
+    # and replace-with-history semantics. Route to the dedicated upsert engine
+    # instead of the generic content-hash dedup path below.
+    if category == "code_catalog":
+        try:
+            from code_catalog import upsert_catalog_entry
+            row = await upsert_catalog_entry(
+                workspace_id=ws_id,
+                raw_line=content,
+                contributed_by=body.get("contributed_by") or None,
+                scope=scope,
+            )
+            change_kind = row.get("change_kind", "inserted")
+            status = 200 if change_kind in ("confirmed", "replaced") else 201
+            return web.json_response(row, status=status)
+        except Exception as exc:
+            logger.exception("code_catalog upsert failed: %s", exc)
+            return web.json_response({"error": "code_catalog upsert failed"}, status=500)
+
     db = await get_db()
     try:
         # Dedup-on-write via the myelin semantic index (CONFLICT >= 0.80
@@ -17127,6 +17454,119 @@ async def delete_knowledge_entry(request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
     finally:
         await db.close()
+
+
+# ─── Code catalog endpoints ──────────────────────────────────────────────
+
+
+async def list_code_catalog(request: web.Request) -> web.Response:
+    """List catalog entries for a workspace.
+
+    Query params:
+        file=<path>            — filter to a single file
+        files=a.py,b.py        — filter to multiple files
+        kind=function|method|… — filter by symbol kind
+        stale=true|false       — only stale rows / only fresh rows
+        view=summary           — return per-file aggregate instead of rows
+    """
+    ws_id = request.match_info["id"]
+    view = request.query.get("view", "")
+    if view == "summary":
+        from code_catalog import get_catalog_summary
+        return web.json_response(await get_catalog_summary(ws_id))
+
+    files_q = request.query.get("files", "")
+    file_q = request.query.get("file", "")
+    files = [f for f in (files_q.split(",") if files_q else [file_q] if file_q else []) if f]
+
+    kind = request.query.get("kind")
+    stale_q = request.query.get("stale")
+
+    if files:
+        from code_catalog import get_catalog_for_files
+        rows = await get_catalog_for_files(ws_id, files, include_stale=True)
+    else:
+        db = await get_db()
+        try:
+            cur = await db.execute(
+                """SELECT * FROM workspace_knowledge
+                    WHERE workspace_id = ? AND category = 'code_catalog'
+                    ORDER BY symbol_file, symbol_name""",
+                (ws_id,),
+            )
+            rows = [dict(r) for r in await cur.fetchall()]
+        finally:
+            await db.close()
+
+    if kind:
+        rows = [r for r in rows if (r.get("symbol_kind") or "") == kind]
+    if stale_q == "true":
+        rows = [r for r in rows if r.get("stale_since")]
+    elif stale_q == "false":
+        rows = [r for r in rows if not r.get("stale_since")]
+
+    return web.json_response(rows)
+
+
+async def get_code_catalog_history(request: web.Request) -> web.Response:
+    """Replace-history rows for an audit panel.
+
+    Optional query params:  knowledge_id=<id>   limit=<n>
+    """
+    ws_id = request.match_info["id"]
+    knowledge_id = request.query.get("knowledge_id")
+    limit = int(request.query.get("limit", "50"))
+    from code_catalog import get_catalog_history
+    rows = await get_catalog_history(ws_id, knowledge_id=knowledge_id, limit=limit)
+    return web.json_response(rows)
+
+
+async def bulk_upsert_code_catalog(request: web.Request) -> web.Response:
+    """Insert / confirm / replace many catalog lines in one shot.
+
+    Body:
+        {"entries": ["a.py::foo(): X", ...],
+         "contributed_by": "<session_id>"?,
+         "scope": "<optional>"?}
+
+    Used by the /code-catalog-init bootstrap skill (one big upsert per file
+    pass) and by the manual "Refresh entire catalog" admin action.
+    """
+    ws_id = request.match_info["id"]
+    body = await request.json()
+    raw = body.get("entries") or []
+    if not isinstance(raw, list):
+        return web.json_response({"error": "entries must be an array"}, status=400)
+
+    contributed_by = body.get("contributed_by") or None
+    scope = (body.get("scope") or "").strip()
+
+    from code_catalog import bulk_upsert_catalog_entries
+    result = await bulk_upsert_catalog_entries(
+        workspace_id=ws_id,
+        raw_lines=[r for r in raw if isinstance(r, str)],
+        contributed_by=contributed_by,
+        scope=scope,
+    )
+    return web.json_response(result)
+
+
+async def refresh_file_code_catalog(request: web.Request) -> web.Response:
+    """Mark every catalog row for a single file as stale.
+
+    The next worker that touches the file (or the next bootstrap pass) will
+    re-emit them, lifting the stale flag on confirm.
+
+    Body: {"file": "<workspace-relative path>"}
+    """
+    ws_id = request.match_info["id"]
+    body = await request.json()
+    file = (body.get("file") or "").strip()
+    if not file:
+        return web.json_response({"error": "file required"}, status=400)
+    from code_catalog import mark_file_stale
+    n = await mark_file_stale(ws_id, [file])
+    return web.json_response({"ok": True, "stale_marked": n})
 
 
 async def get_knowledge_prompt(request: web.Request) -> web.Response:
@@ -17862,6 +18302,12 @@ def create_app() -> web.Application:
     app.router.add_get("/api/workspaces/{id}/knowledge/prompt", get_knowledge_prompt)
     app.router.add_put("/api/knowledge/{id}", update_knowledge_entry)
     app.router.add_delete("/api/knowledge/{id}", delete_knowledge_entry)
+
+    # Code catalog
+    app.router.add_get("/api/workspaces/{id}/code_catalog", list_code_catalog)
+    app.router.add_get("/api/workspaces/{id}/code_catalog/history", get_code_catalog_history)
+    app.router.add_post("/api/workspaces/{id}/code_catalog/bulk_upsert", bulk_upsert_code_catalog)
+    app.router.add_post("/api/workspaces/{id}/code_catalog/refresh_file", refresh_file_code_catalog)
 
     # W2W: File activity
     app.router.add_get("/api/workspaces/{id}/file-activity", list_recent_file_activity)

@@ -183,6 +183,12 @@ def digest_dense_text(digest: dict) -> str:
 
 def knowledge_dense_text(entry: dict) -> str:
     """Build dense text for a knowledge entry."""
+    if entry.get("category") == "code_catalog":
+        from code_catalog_parser import parse_line, dense_text
+        parsed = parse_line(entry.get("content") or "")
+        catalog_text = dense_text(parsed)
+        if catalog_text:
+            return catalog_text
     parts = [entry.get("category", ""), entry.get("content", "")]
     if entry.get("scope"):
         parts.append(f"[{entry['scope']}]")

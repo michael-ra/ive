@@ -58,7 +58,9 @@ export default function KnowledgePanel({ onClose }) {
       } else {
         data = await api.getWorkspaceKnowledge(viewWsId)
       }
-      setEntries(Array.isArray(data) ? data : [])
+      const arr = Array.isArray(data) ? data : []
+      // code_catalog rows have their own dedicated panel — keep them out of the regular knowledge view
+      setEntries(arr.filter((e) => e.category !== 'code_catalog'))
     } catch {
       setEntries([])
     }
