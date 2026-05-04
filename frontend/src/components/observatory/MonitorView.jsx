@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   RefreshCw, Sparkles, Plus, Trash2,
-  Loader2, Check, Pencil, Timer,
+  Loader2, Check, Pencil, Timer, ExternalLink, ArrowUpRight, Info,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
@@ -86,7 +86,7 @@ const INPUT_BASE = 'bg-bg-deep border border-border-base focus:border-cyan-500/4
 // to render inside the ResearchHub "Monitor" tab. It owns its own sub-tabs
 // (Profile / Sources / Run / Schedules / Insights) and reads/writes the same
 // observatory_* tables the standalone panel did.
-export default function MonitorView() {
+export default function MonitorView({ onOpenFeed }) {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId)
 
   const [tab, setTab] = useState('profile')
@@ -654,10 +654,26 @@ export default function MonitorView() {
 
         {tab === 'insights' && (
           <div className="space-y-4">
-            <div className="text-[11px] text-text-faint leading-relaxed">
-              Insights are merged conclusions across findings: competitors you should watch, pain points users complain about,
-              feature gaps in adjacent tools, and integrations you've already shipped. Strength reflects evidence count.
+            <div className="rounded-md border border-border-base/60 bg-bg-deep/30 p-3 space-y-2 text-[11px] leading-relaxed">
+              <div className="flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 text-cyan-300 mt-0.5 shrink-0" />
+                <div className="text-text-faint">
+                  <span className="text-text-base">Insights ≠ Findings.</span>{' '}
+                  An <span className="text-text-base">insight</span> is a merged conclusion the analyzer drew across one or more <span className="text-text-base">findings</span> in the Feed.
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pl-5 text-text-faint">
+                <div>
+                  <div className="text-text-base text-[10px] uppercase tracking-[0.12em] mb-0.5">Strength score (here)</div>
+                  Confidence in the conclusion. Starts ~0.5; +0.1 for each new finding that reinforces it.
+                </div>
+                <div>
+                  <div className="text-text-base text-[10px] uppercase tracking-[0.12em] mb-0.5">Relevance score (in Feed)</div>
+                  How well one raw finding matches your profile. Set during triage.
+                </div>
+              </div>
             </div>
+
             <div className="flex items-center gap-2 text-xs">
               <span className="text-[10px] uppercase tracking-[0.12em] text-text-faint">Type</span>
               <select
@@ -678,11 +694,11 @@ export default function MonitorView() {
             ) : (
               <div className="space-y-2">
                 {insights.map((i) => {
-                  let evidenceCount = 0
-                  if (Array.isArray(i.evidence)) evidenceCount = i.evidence.length
-                  else if (typeof i.evidence === 'string') {
-                    try { const arr = JSON.parse(i.evidence); evidenceCount = Array.isArray(arr) ? arr.length : 0 } catch {}
-                  }
+                  // Backend now hydrates evidence_findings with id/title/source/source_url.
+                  // Fall back to the legacy id-only `evidence` list if the backend isn't
+                  // updated yet (so the panel still shows a count even pre-deploy).
+                  const ev = Array.isArray(i.evidence_findings) ? i.evidence_findings : []
+                  const legacyCount = !ev.length && Array.isArray(i.evidence) ? i.evidence.length : 0
                   return (
                     <div key={i.id} className="rounded-md border border-border-base/60 hover:border-border-base transition-colors p-3 text-xs group">
                       <div className="flex items-center gap-2 mb-1.5">
@@ -694,17 +710,56 @@ export default function MonitorView() {
                         <button
                           onClick={() => deleteInsight(i)}
                           className="ml-auto text-text-faint hover:text-red-400 p-1 -m-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Delete insight"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
                       </div>
                       <div className="whitespace-pre-wrap text-text-base leading-relaxed">{i.summary}</div>
-                      {evidenceCount > 0 && (
+
+                      {ev.length > 0 ? (
+                        <div className="mt-2.5 pt-2 border-t border-border-base/40">
+                          <div className="text-[10px] uppercase tracking-[0.12em] text-text-faint mb-1.5">
+                            Evidence · {ev.length} finding{ev.length === 1 ? '' : 's'}
+                          </div>
+                          <div className="space-y-1">
+                            {ev.map((f) => (
+                              <div key={f.id} className="flex items-center gap-2 text-[11px] hover:bg-bg-deep/30 rounded px-1.5 py-1 -mx-1.5 transition-colors">
+                                <span className="text-[9px] uppercase tracking-wider text-text-faint shrink-0 w-14">{f.source}</span>
+                                <span className="truncate text-text-base flex-1 min-w-0">{f.title}</span>
+                                {typeof f.relevance_score === 'number' && f.relevance_score > 0 && (
+                                  <span className="text-[10px] text-text-faint tabular-nums shrink-0">{Math.round(f.relevance_score * 100)}%</span>
+                                )}
+                                {onOpenFeed && (
+                                  <button
+                                    onClick={() => onOpenFeed(f)}
+                                    className="shrink-0 text-text-faint hover:text-cyan-300 p-0.5 rounded transition-colors"
+                                    title="Open in Feed"
+                                  >
+                                    <ArrowUpRight className="w-3 h-3" />
+                                  </button>
+                                )}
+                                {f.source_url && (
+                                  <a
+                                    href={f.source_url}
+                                    target="_blank"
+                                    rel="noopener"
+                                    className="shrink-0 text-text-faint hover:text-cyan-300 p-0.5 rounded transition-colors"
+                                    title="Open source"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : legacyCount > 0 ? (
                         <div className="text-[10px] text-text-faint mt-2 flex items-center gap-1">
                           <span className="w-1 h-1 rounded-full bg-text-faint/60" />
-                          {evidenceCount} evidence finding{evidenceCount === 1 ? '' : 's'}
+                          {legacyCount} evidence finding{legacyCount === 1 ? '' : 's'}
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   )
                 })}

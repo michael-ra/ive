@@ -763,15 +763,41 @@ async def list_insights(workspace_id: str, insight_type: str | None = None) -> l
                 (workspace_id,),
             )
         rows = await cur.fetchall()
+
+        # Collect every distinct finding id referenced by any insight, then
+        # hydrate them in a single round-trip. Avoids N+1 queries when the
+        # workspace has many insights.
+        all_ids: set[str] = set()
+        parsed: list[tuple[dict, list[str]]] = []
+        for r in rows:
+            d = dict(r)
+            try:
+                ev = json.loads(d.get("evidence") or "[]")
+                if not isinstance(ev, list):
+                    ev = []
+            except Exception:
+                ev = []
+            d["evidence"] = ev
+            parsed.append((d, ev))
+            all_ids.update(ev)
+
+        finding_map: dict[str, dict] = {}
+        if all_ids:
+            placeholders = ",".join("?" * len(all_ids))
+            cur = await db.execute(
+                f"SELECT id, title, source, source_url, status, relevance_score "
+                f"FROM observatory_findings WHERE id IN ({placeholders})",
+                tuple(all_ids),
+            )
+            for r in await cur.fetchall():
+                fr = dict(r)
+                finding_map[fr["id"]] = fr
     finally:
         await db.close()
+
     out: list[dict] = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["evidence"] = json.loads(d.get("evidence") or "[]")
-        except Exception:
-            d["evidence"] = []
+    for d, ev in parsed:
+        d["evidence_findings"] = [finding_map[fid] for fid in ev if fid in finding_map]
         out.append(d)
     return out
 

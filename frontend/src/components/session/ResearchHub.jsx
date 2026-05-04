@@ -819,7 +819,15 @@ export default function ResearchHub({ onClose, initialTab = 'library' }) {
         <div className="flex-1 min-h-0 overflow-hidden">
 
           {/* ── MONITOR ──────────────────────────────────── */}
-          {tab === 'monitor' && <MonitorView />}
+          {tab === 'monitor' && (
+            <MonitorView
+              onOpenFeed={(finding) => {
+                setTab('feed')
+                if (finding?.source) setSourceFilter(finding.source)
+                if (finding?.title) setFeedSearch(finding.title.slice(0, 40))
+              }}
+            />
+          )}
 
           {/* ── FEED ─────────────────────────────────────── */}
           {tab === 'feed' && (
