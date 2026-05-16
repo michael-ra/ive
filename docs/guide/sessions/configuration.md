@@ -38,6 +38,24 @@ Sessions are highly configurable. Most settings can be changed at creation time 
 
 Gemini CLI does **not** support: `effort`, `budget_usd`, `allowed_tools`, `disallowed_tools`, `mcp_config_path`, `agent`.
 
+## Codex CLI options
+
+**Models:**
+- `gpt-5.5` — maximum capability
+- `gpt-5.4` — balanced Codex work
+- `gpt-5.4-mini` — fast Codex work
+- `gpt-5.3-codex` — coding-optimized
+- `gpt-5.3-codex-spark` — ultra-fast coding
+
+| Option | Values | Notes |
+|--------|--------|-------|
+| `model` | see above | Passed with `--model` |
+| `permission_mode` | `default`, `auto`, `plan`, `bypassPermissions` | Mapped to Codex approval and sandbox flags |
+| `effort` | `low`, `medium`, `high`, `xhigh` | Passed as `model_reasoning_effort` config |
+| `add_dirs` | Paths | Passed with `--add-dir` |
+
+Codex uses `AGENTS.md` for project guidance, `.agents/skills/` for repository skills, `~/.codex/hooks.json` for hooks, and `codex mcp add` for MCP registration.
+
 ## Updating a running session
 
 Some settings can be updated while a session is active:

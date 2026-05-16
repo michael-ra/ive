@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { History, FolderOpen, Download, X, ChevronDown, ChevronRight } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
+import { getCliBadgeClass } from '../../lib/constants'
 
 export default function HistoryImport({ onClose }) {
   const [projects, setProjects] = useState([])
@@ -63,7 +64,7 @@ export default function HistoryImport({ onClose }) {
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border-primary">
           <History size={14} className="text-accent-primary" />
           <span className="text-xs text-text-primary font-medium">Import CLI Sessions</span>
-          <span className="text-[10px] text-text-faint font-mono">Claude + Gemini</span>
+          <span className="text-[10px] text-text-faint font-mono">Claude + Gemini + Codex</span>
           <div className="flex-1" />
           <button onClick={onClose} className="p-1 rounded-md hover:bg-bg-hover text-text-faint hover:text-text-secondary transition-colors">
             <X size={15} />
@@ -77,7 +78,7 @@ export default function HistoryImport({ onClose }) {
 
           {!loading && projects.length === 0 && (
             <div className="px-4 py-10 text-xs text-text-faint text-center">
-              No sessions found in ~/.claude/projects/ or ~/.gemini/tmp/
+              No sessions found in ~/.claude/projects/, ~/.gemini/tmp/, or ~/.codex/sessions/
             </div>
           )}
 
@@ -96,7 +97,7 @@ export default function HistoryImport({ onClose }) {
                   {project.project_path}
                 </span>
                 {project.cli_type && project.cli_type !== 'claude' && (
-                  <span className="text-[9px] font-medium bg-blue-500/12 text-blue-400 px-1 py-0.5 rounded border border-blue-500/15">
+                  <span className={`text-[9px] font-medium px-1 py-0.5 rounded border ${getCliBadgeClass(project.cli_type)}`}>
                     {project.cli_type}
                   </span>
                 )}

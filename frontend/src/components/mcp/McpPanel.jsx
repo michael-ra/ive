@@ -551,7 +551,7 @@ export default function McpPanel({ onClose }) {
                 <div className="px-4 py-10 text-xs text-text-faint text-center">
                   No MCP servers yet — click "+ new" to create one
                   <br />
-                  <span className="text-text-faint/60">MCP servers provide tools to Claude/Gemini CLI sessions</span>
+                  <span className="text-text-faint/60">MCP servers provide tools to Claude, Gemini, and Codex CLI sessions</span>
                 </div>
               )}
               {servers.length > 0 && filteredServers.length === 0 && search && (

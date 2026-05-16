@@ -14,13 +14,14 @@
   <img src="https://img.shields.io/badge/status-Alpha-orange.svg" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/Claude%20Code-supported-7C3AED.svg" alt="Claude Code">
   <img src="https://img.shields.io/badge/Gemini%20CLI-supported-1F6FEB.svg" alt="Gemini CLI">
+  <img src="https://img.shields.io/badge/Codex%20CLI-supported-10B981.svg" alt="Codex CLI">
 </p>
 
 ---
 
 <img src="docs/screenshots/landing/section-pitch.png" alt="Why IVE" width="100%">
 
-IVE is a local browser workspace for running many AI coding CLIs in parallel — Claude Code, Gemini CLI, and whichever ships next. Real persistent PTYs, auto-rotation across accounts when you hit a quota, shared memory between agents, auto-distilled learnings from every session, mobile PWA, 900+ skills and plugins to extend it, supply-chain attacks blocked on autopilot, and collaboration with friends without the git-merge hell. Want a custom code workflow? Meet pipelines — drag-and-drop autonomous agent graphs that just run. Never worry about managing workflows again.
+IVE is a local browser workspace for running many AI coding CLIs in parallel — Claude Code, Gemini CLI, Codex CLI, and whichever ships next. Real persistent PTYs, auto-rotation across accounts when you hit a quota, shared memory between agents, auto-distilled learnings from every session, mobile PWA, 900+ skills and plugins to extend it, supply-chain attacks blocked on autopilot, and collaboration with friends without the git-merge hell. Want a custom code workflow? Meet pipelines — drag-and-drop autonomous agent graphs that just run. Never worry about managing workflows again.
 
 If you've ever run more than one AI CLI at a time, you know the rest: lost context, four tabs open, "wait, which window had the auth fix?", and a quota you blew through twice over.
 
@@ -62,7 +63,7 @@ Open [http://localhost:5173](http://localhost:5173). That's it. IVE handles its 
 - **Talk to it like a designer.** Hold ⌘R over the Live Preview and narrate what you want changed. IVE records the screen, your voice, and a transcript, then drops the lot into the session. The agent gets the clip *and* what you said — no typing the feedback out.
 - **Step away. Come back to a paragraph.** When you've been gone a while, a banner shows up with a 2–5 sentence briefing of what your agents shipped, what your team committed, and what memory picked up. One hour, one week, one month — same flow.
 - **Loops that don't quit.** RALPH runs execute → verify → fix until the tester passes — up to 20 iterations. You start it once, you go to bed, you come back to a green build.
-- **One safety net under every install.** Anti-Vibe-Code-Pwner checks every `npm install` and `pip install` an agent tries — typo-squats, sketchy post-install scripts, brand-new uploader accounts — *before* the install runs. So you can leave agents unsupervised without leaving your machine unsupervised.
+- **One safety net under every IVE-managed install.** Anti-Vibe-Code-Pwner checks `npm install` and `pip install` inside IVE-managed sessions before they run. Global hooks for manually started Claude, Gemini, or Codex terminals are opt-in.
 - **Know what to build next.** The Observatory scans GitHub Trending, Hacker News, and Product Hunt on a schedule (with Reddit and other sources you can wire up in Smart mode) and tells you what tools are worth integrating.
 
 ---
@@ -71,7 +72,7 @@ Open [http://localhost:5173](http://localhost:5173). That's it. IVE handles its 
 
 <img src="docs/screenshots/landing/pillar-cli.png" alt="CLI-Agnostic — One IDE. Every CLI." width="100%">
 
-Use **Claude Code**, **Gemini CLI**, or whichever CLI ships next. Every session is a real terminal, so every native feature works exactly as the CLI intended — Shift+Tab, Plan Mode, slash commands, the lot. Swap models mid-session or switch CLIs in two keystrokes.
+Use **Claude Code**, **Gemini CLI**, **Codex CLI**, or whichever CLI ships next. Every session is a real terminal, so every native feature works exactly as the CLI intended — Shift+Tab, Plan Mode, slash commands, the lot. Swap models mid-session or switch CLIs in two keystrokes.
 
 <img src="docs/screenshots/landing/pillar-multiplayer.png" alt="Real-Time Multiplayer — Bring the team. Keep the keys." width="100%">
 
@@ -87,7 +88,7 @@ Drag-and-drop node editor for autonomous workflows. Trigger pipelines from Kanba
 
 <img src="docs/screenshots/landing/pillar-skills.png" alt="8,000+ Skills & MCP Integration — Your agents, supercharged." width="100%">
 
-A built-in marketplace with 8,000+ skills, browsable offline. Attach MCP servers — databases, web search, the bundled Deep Research engine, your internal tools — in one click. Plugins written for Claude work in Gemini and vice versa, without you writing the same thing twice.
+A built-in marketplace with 8,000+ skills, browsable offline. Attach MCP servers — databases, web search, the bundled Deep Research engine, your internal tools — in one click. Skills and plugins can be exported across Claude, Gemini, and Codex without you writing the same thing three times.
 
 ---
 
@@ -201,4 +202,3 @@ IVE is open source and early. Bug reports, new CLI profiles, docs improvements, 
   Built by the IVE community.<br>
   Made with ❤️ in Berlin.
 </p>
-

@@ -26,6 +26,10 @@ const MSG_MARKERS = {
 }
 
 function lineStartsMessage(text, markerSet) {
+  const trimmed = text.trimStart()
+  for (const marker of markerSet) {
+    if (marker.length > 1 && trimmed.startsWith(marker)) return true
+  }
   // Find first non-whitespace, non-box-drawing char.
   // Box-drawing chars (U+2500–U+257F) are used for the input frame and
   // shouldn't disqualify a line, but we also don't treat them as message

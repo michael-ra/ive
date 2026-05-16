@@ -6,6 +6,7 @@ import datetime
 import hmac
 import json
 import logging
+import os
 import uuid
 
 import aiohttp
@@ -20,7 +21,16 @@ from config import (HOST, PORT, VERSION, AVAILABLE_MODELS, PERMISSION_MODES, EFF
                      GEMINI_MODELS, GEMINI_APPROVAL_MODES, CLI_TYPES)
 from cli_session import UnifiedSession
 from cli_features import Feature
-from cli_profiles import get_profile
+from cli_profiles import PROFILES, get_profile
+from cli_registry import (build_cli_info_payload, cli_for_model,
+                          cli_install_error, validate_cli_type)
+from mcp_registration import build_mcp_add_command, build_mcp_remove_command
+from codex_sessions import (
+    codex_session_id_from_rollout as _codex_session_id_from_rollout,
+    codex_thread_name as _codex_thread_name,
+    set_native_resume_feature as _profile_native_resume,
+    snapshot_codex_sessions as _snapshot_codex_sessions,
+)
 from history_reader import (list_projects, read_session_messages,
                               export_session_as_markdown, normalize_jsonl_entry)
 from db import init_db, get_db
@@ -65,10 +75,11 @@ def _ws_subscriber_id(ws) -> str:
 from pathlib import Path as _Path
 
 
-def _get_project_dir(workspace_path: str) -> _Path:
+def _get_project_dir(workspace_path: str, home_dir: str | None = None) -> _Path:
     """Get the Claude Code project directory for a workspace path."""
     normalized = workspace_path.replace("/", "-")
-    return _Path.home() / ".claude" / "projects" / normalized
+    base_home = _Path(home_dir) if home_dir else _Path.home()
+    return base_home / ".claude" / "projects" / normalized
 
 
 async def _get_code_bash_allowlist() -> list[str]:
@@ -90,15 +101,15 @@ async def _get_code_bash_allowlist() -> list[str]:
     return [p.strip() for p in row["value"].split(",") if p.strip()]
 
 
-def _snapshot_jsonl_files(workspace_path: str) -> set[str]:
+def _snapshot_jsonl_files(workspace_path: str, home_dir: str | None = None) -> set[str]:
     """Get set of existing .jsonl filenames in the project directory."""
-    project_dir = _get_project_dir(workspace_path)
+    project_dir = _get_project_dir(workspace_path, home_dir)
     if not project_dir.exists():
         return set()
     return {f.name for f in project_dir.glob("*.jsonl")}
 
 
-def _get_gemini_chats_dir(workspace_path: str) -> _Path:
+def _get_gemini_chats_dir(workspace_path: str, home_dir: str | None = None) -> _Path:
     """Get the Gemini CLI chats directory for a workspace path.
 
     Gemini uses SHA256(absolute_path) as the project dir name under ~/.gemini/tmp/.
@@ -106,12 +117,13 @@ def _get_gemini_chats_dir(workspace_path: str) -> _Path:
     import hashlib
     abs_path = os.path.abspath(workspace_path)
     project_hash = hashlib.sha256(abs_path.encode()).hexdigest()
-    return _Path.home() / ".gemini" / "tmp" / project_hash / "chats"
+    base_home = _Path(home_dir) if home_dir else _Path.home()
+    return base_home / ".gemini" / "tmp" / project_hash / "chats"
 
 
-def _snapshot_gemini_sessions(workspace_path: str) -> set[str]:
+def _snapshot_gemini_sessions(workspace_path: str, home_dir: str | None = None) -> set[str]:
     """Get set of existing Gemini session .json filenames."""
-    chats_dir = _get_gemini_chats_dir(workspace_path)
+    chats_dir = _get_gemini_chats_dir(workspace_path, home_dir)
     if not chats_dir.exists():
         return set()
     return {f.name for f in chats_dir.glob("session-*.json")}
@@ -141,7 +153,8 @@ def _resolve_gemini_resume_index(workspace_path: str, stem: str) -> str | None:
 
 
 async def detect_gemini_session(session_id: str, workspace_path: str,
-                                 pre_existing_files: set[str] | None = None):
+                                 pre_existing_files: set[str] | None = None,
+                                 home_dir: str | None = None):
     """Detect which Gemini session file belongs to this PTY.
 
     Similar to detect_claude_session but for Gemini's .json format.
@@ -165,7 +178,7 @@ async def detect_gemini_session(session_id: str, workspace_path: str,
         finally:
             await db_check.close()
 
-        chats_dir = _get_gemini_chats_dir(workspace_path)
+        chats_dir = _get_gemini_chats_dir(workspace_path, home_dir)
         if not chats_dir.exists():
             continue
 
@@ -209,9 +222,105 @@ async def detect_gemini_session(session_id: str, workspace_path: str,
     logger.info(f"Detected Gemini session: {session_id[:8]} → {file_stem}")
 
 
+def _pick_codex_rollout(current: set[str],
+                        pre_existing: set[str] | None) -> "_Path | None":
+    """Choose this PTY's rollout file from a sessions-dir snapshot.
+
+    Returns None when there is nothing to pick yet (empty snapshot, or no
+    file new since `pre_existing`) so the caller keeps polling.
+    """
+    if not current:
+        return None
+    if pre_existing is not None:
+        new_files = current - pre_existing
+        if len(new_files) == 1:
+            return _Path(new_files.pop())
+        if len(new_files) > 1:
+            return max((_Path(f) for f in new_files),
+                       key=lambda f: f.stat().st_mtime)
+        return None
+    return max((_Path(f) for f in current), key=lambda f: f.stat().st_mtime)
+
+
+async def detect_codex_session(session_id: str, workspace_path: str,
+                               pre_existing_files: set[str] | None = None,
+                               codex_home: str | None = None):
+    """Detect which Codex rollout file belongs to this PTY.
+
+    Stores the Codex UUID in native_session_id so future PTY starts can use
+    `codex resume <uuid>`.
+    """
+    target_file: _Path | None = None
+
+    for attempt in range(10):
+        await _asyncio.sleep(2)
+
+        db_check = await get_db()
+        try:
+            cur = await db_check.execute(
+                "SELECT native_session_id FROM sessions WHERE id = ?", (session_id,))
+            row = await cur.fetchone()
+            if row and row["native_session_id"]:
+                logger.info(f"Codex session {session_id[:8]}: native ID already resolved")
+                return
+        finally:
+            await db_check.close()
+
+        current = _snapshot_codex_sessions(workspace_path, home=codex_home)
+        target_file = _pick_codex_rollout(current, pre_existing_files)
+        if target_file:
+            break
+
+    if not target_file:
+        logger.info(f"Codex session {session_id[:8]}: file detection failed after retries")
+        return
+
+    native_sid = _codex_session_id_from_rollout(target_file)
+    if not native_sid:
+        logger.info(f"Codex session {session_id[:8]}: could not parse rollout ID from {target_file.name}")
+        return
+
+    thread_name = _codex_thread_name(native_sid, home=codex_home)
+    db = await get_db()
+    try:
+        if thread_name:
+            cur = await db.execute("SELECT name FROM sessions WHERE id = ?", (session_id,))
+            row = await cur.fetchone()
+            current_name = row["name"] if row else None
+            if not current_name or current_name.startswith("Session "):
+                await db.execute(
+                    "UPDATE sessions SET native_session_id = ?, name = ? WHERE id = ?",
+                    (native_sid, thread_name, session_id),
+                )
+                await db.commit()
+                await broadcast({
+                    "type": "session_renamed",
+                    "session_id": session_id,
+                    "name": thread_name,
+                    "native_session_id": native_sid,
+                })
+            else:
+                await db.execute(
+                    "UPDATE sessions SET native_session_id = ? WHERE id = ?",
+                    (native_sid, session_id),
+                )
+                await db.commit()
+        else:
+            await db.execute(
+                "UPDATE sessions SET native_session_id = ? WHERE id = ?",
+                (native_sid, session_id),
+            )
+            await db.commit()
+    finally:
+        await db.close()
+
+    logger.info(f"Detected Codex session: {session_id[:8]} → {native_sid}")
+
+
 async def detect_claude_session(session_id: str, workspace_path: str,
                                  force_rename: bool = False,
-                                 pre_existing_files: set[str] | None = None):
+                                 pre_existing_files: set[str] | None = None,
+                                 home_dir: str | None = None):
     """Detect which Claude Code conversation file belongs to this session.
 
     If pre_existing_files is provided, we diff against it to find the NEW file
@@ -231,7 +340,7 @@ async def detect_claude_session(session_id: str, workspace_path: str,
     for attempt in range(10):
         await _asyncio.sleep(2)
 
-        project_dir = _get_project_dir(workspace_path)
+        project_dir = _get_project_dir(workspace_path, home_dir)
         if not project_dir.exists():
             continue
 
@@ -332,24 +441,94 @@ async def detect_claude_session(session_id: str, workspace_path: str,
     logger.info(f"Detected Claude session: {session_id} → {native_sid} ({slug})")
 
 
-def _snapshot_files_for_detection(cli_type: str, workspace_path: str) -> set[str] | None:
+def _snapshot_files_for_detection(cli_type: str, workspace_path: str,
+                                  extra_env: dict[str, str] | None = None) -> set[str] | None:
     """Snapshot session files before PTY start (for new-file detection)."""
+    extra_env = extra_env or {}
+    home_dir = extra_env.get("HOME")
     if cli_type == "claude":
-        return _snapshot_jsonl_files(workspace_path)
+        return _snapshot_jsonl_files(workspace_path, home_dir)
     elif cli_type == "gemini":
-        return _snapshot_gemini_sessions(workspace_path)
+        return _snapshot_gemini_sessions(workspace_path, home_dir)
+    elif cli_type == "codex":
+        return _snapshot_codex_sessions(workspace_path, home=extra_env.get("CODEX_HOME"))
     return None
 
 
+def _set_native_resume_feature(session_obj: UnifiedSession, workspace_path: str,
+                               native_sid: str) -> bool:
+    """Set the profile-native resume argument for a stored native session ID."""
+    return _profile_native_resume(
+        session_obj, workspace_path, native_sid, _resolve_gemini_resume_index
+    )
+
+
 def _schedule_session_detection(cli_type: str, session_id: str, workspace_path: str,
-                                pre_files: set[str] | None):
+                                pre_files: set[str] | None,
+                                extra_env: dict[str, str] | None = None):
     """Schedule async session detection after PTY starts."""
+    extra_env = extra_env or {}
+    home_dir = extra_env.get("HOME")
     if cli_type == "claude":
         _asyncio.ensure_future(detect_claude_session(
-            session_id, workspace_path, pre_existing_files=pre_files))
+            session_id, workspace_path, pre_existing_files=pre_files,
+            home_dir=home_dir))
     elif cli_type == "gemini":
         _asyncio.ensure_future(detect_gemini_session(
-            session_id, workspace_path, pre_existing_files=pre_files))
+            session_id, workspace_path, pre_existing_files=pre_files,
+            home_dir=home_dir))
+    elif cli_type == "codex":
+        _asyncio.ensure_future(detect_codex_session(
+            session_id, workspace_path, pre_existing_files=pre_files,
+            codex_home=extra_env.get("CODEX_HOME")))
+
+
+async def _inject_deferred_initial_prompt(session_id: str, prompt_text: str,
+                                          cli_type: str):
+    """Inject an initial prompt as the first PTY turn for CLIs without a safe flag."""
+    try:
+        if cli_type == "gemini":
+            # Wait for Gemini TUI to be ready (detected in handle_pty_output)
+            for _ in range(60):
+                await _asyncio.sleep(1)
+                if not pty_mgr.is_alive(session_id):
+                    return
+                if session_id in _gemini_ready:
+                    break
+        else:
+            await _asyncio.sleep(3)
+        await _asyncio.sleep(3)
+        if not pty_mgr.is_alive(session_id):
+            return
+        chunk_size = 2048
+        if _pty_input_mode(cli_type) == "readline":
+            # Codex: its paste-burst composer echoes \x1b[200~/201~ markers
+            # literally and treats \n as submit. Send clean single-line text
+            # then a separate \r — mirrors the readline strategy used by the
+            # interactive input paths so the (only) Codex system prompt path
+            # stays consistent.
+            clean = prompt_text.replace("\n", " ").replace("\r", " ")
+            msg = clean.encode("utf-8")
+            for i in range(0, len(msg), chunk_size):
+                pty_mgr.write(session_id, msg[i:i+chunk_size])
+                await _asyncio.sleep(0.05)
+            await _asyncio.sleep(0.3)
+            pty_mgr.write(session_id, b"\r")
+        else:
+            msg = prompt_text.encode("utf-8")
+            pty_mgr.write(session_id, b"\x1b[200~")
+            for i in range(0, len(msg), chunk_size):
+                pty_mgr.write(session_id, msg[i:i+chunk_size])
+                await _asyncio.sleep(0.05)
+            pty_mgr.write(session_id, b"\x1b[201~")
+            await _asyncio.sleep(0.3)
+            pty_mgr.write(session_id, b"\r")
+        logger.info(
+            "%s deferred prompt injected for session %s (%d chars)",
+            cli_type, session_id[:8], len(prompt_text),
+        )
+    except Exception as e:
+        logger.warning("%s deferred prompt failed: %s", cli_type, e)
 
 
 async def get_session_config(session_id: str) -> dict | None:
@@ -366,6 +545,87 @@ async def get_session_config(session_id: str) -> dict | None:
         return dict(row) if row else None
     finally:
         await db.close()
+
+
+async def _get_app_setting_value(key: str, default: str | None = None) -> str | None:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        row = await cur.fetchone()
+        return row["value"] if row and row["value"] is not None else default
+    finally:
+        await db.close()
+
+
+async def _get_cli_hook_install_mode() -> str:
+    value = await _get_app_setting_value("cli_hook_install_mode", "session_scoped")
+    return value if value in ("session_scoped", "global", "disabled") else "session_scoped"
+
+
+async def _install_global_cli_hooks_for_enabled_settings() -> None:
+    """Install global hook entries, including optional enabled hook features."""
+    from hook_installer import install_global_hooks
+    install_global_hooks(
+        include_avcp=(await _get_app_setting_value("experimental_avcp_protection")) == "on",
+        include_safety_gate=(await _get_app_setting_value("experimental_safety_gate")) == "on",
+        include_myelin=(await _get_app_setting_value("experimental_myelin_coordination")) == "on",
+    )
+
+
+def _env_for_cli_home(cli_type: str, home: str) -> dict[str, str]:
+    profile = get_profile(cli_type)
+    cli_home = str(_Path(home) / profile.auth_dir_name)
+    env = {"HOME": home}
+    if profile.home_env_var:
+        env[profile.home_env_var] = cli_home
+    return env
+
+
+async def _build_cli_process_env(config: dict, session_id: str, cli_type: str) -> dict[str, str]:
+    """Build per-session CLI environment without mutating global CLI config."""
+    extra_env: dict[str, str] = {}
+    source_home: str | None = None
+
+    if config.get("account_id"):
+        db_acc = await get_db()
+        try:
+            cur_acc = await db_acc.execute(
+                "SELECT * FROM accounts WHERE id = ?",
+                (config["account_id"],),
+            )
+            acc_row = await cur_acc.fetchone()
+            if acc_row:
+                acc = dict(acc_row)
+                if acc.get("api_key"):
+                    from account_sandbox import api_key_env_for_cli
+                    extra_env.update(api_key_env_for_cli(cli_type, acc["api_key"]))
+                elif acc.get("type") == "oauth":
+                    from account_sandbox import get_sandbox_home
+                    source_home = get_sandbox_home(acc["id"], cli_type)
+        finally:
+            await db_acc.close()
+
+    from config import HOOKS_ENABLED
+    hook_mode = await _get_cli_hook_install_mode()
+    if HOOKS_ENABLED and hook_mode == "session_scoped":
+        from hook_installer import prepare_session_hook_home
+        safety_gate_on = (await _get_app_setting_value("experimental_safety_gate")) == "on"
+        extra_env.update(prepare_session_hook_home(
+            get_profile(cli_type),
+            session_id,
+            source_home=source_home,
+            include_avcp=(await _get_app_setting_value("experimental_avcp_protection")) == "on",
+            include_safety_gate=safety_gate_on or config.get("session_type") == "commander",
+            include_myelin=(await _get_app_setting_value("experimental_myelin_coordination")) == "on",
+        ))
+    elif source_home:
+        extra_env.update(_env_for_cli_home(cli_type, source_home))
+
+    extra_env["COMMANDER_SESSION_ID"] = session_id
+    extra_env["COMMANDER_API_URL"] = f"http://{HOST}:{PORT}"
+    extra_env["COMMANDER_WORKSPACE_ID"] = config.get("workspace_id", "")
+    extra_env["COMMANDER_CLI_TYPE"] = cli_type
+    return extra_env
 
 
 async def broadcast(event: dict):
@@ -1803,7 +2063,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     #   2. Legacy guidelines (session_guidelines)
                     #   3. Plugin guideline components (session_plugin_components
                     #      where type='guideline') — from the plugin marketplace,
-                    #      CLI-agnostic (works for both Claude and Gemini).
+                    #      CLI-agnostic (works for registered providers).
                     system_prompt_parts = []
                     if config.get("system_prompt"):
                         system_prompt_parts.append(config["system_prompt"])
@@ -2509,13 +2769,15 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     # bytes, Ctrl-U, bracketed paste, and plain text. The -i flag puts Gemini
                     # in a state where the next input triggers a clean exit, regardless of
                     # what bytes are sent. Instead, queue for injection as first user turn.
-                    _gemini_deferred_prompt = None
+                    _deferred_initial_prompt = None
                     if system_prompt_parts:
                         combined_prompt = "\n\n".join(system_prompt_parts)
-                        if cli_type == "gemini":
-                            _gemini_deferred_prompt = combined_prompt
+                        if cli_type == "gemini" or not session_obj.supports(Feature.APPEND_SYSTEM_PROMPT):
+                            _deferred_initial_prompt = combined_prompt
                         else:
                             session_obj.append_system_prompt(combined_prompt)
+
+                    extra_env = await _build_cli_process_env(config, session_id, cli_type)
 
                     # ── MCP servers: strategy-driven dispatch ──
                     if mcp_servers_for_session:
@@ -2626,27 +2888,22 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                                 ws_path = config.get("workspace_path", "")
                                 if ws_path:
                                     try:
+                                        remove_cmd = build_mcp_remove_command(session_obj.profile, srv)
                                         await _asyncio.create_subprocess_exec(
-                                            session_obj.profile.binary, "mcp", "remove", srv["server_name"],
-                                            "--scope", "project", cwd=ws_path,
+                                            *remove_cmd, cwd=ws_path,
+                                            env={**os.environ, **extra_env},
                                             stdout=_asyncio.subprocess.DEVNULL,
                                             stderr=_asyncio.subprocess.DEVNULL,
                                         )
                                     except Exception:
                                         pass
-                                    add_cmd = [
-                                        session_obj.profile.binary, "mcp", "add", srv["server_name"],
-                                        srv["command"], *srv["args"],
-                                        "--scope", "project",
-                                        "--transport", srv.get("server_type", "stdio"),
-                                    ]
-                                    if effective_approve:
-                                        add_cmd.append("--trust")
-                                    for ek, ev in resolved_env.items():
-                                        add_cmd.extend(["-e", f"{ek}={ev}"])
+                                    add_cmd = build_mcp_add_command(
+                                        session_obj.profile, srv, resolved_env, effective_approve
+                                    )
                                     try:
                                         proc = await _asyncio.create_subprocess_exec(
                                             *add_cmd, cwd=ws_path,
+                                            env={**os.environ, **extra_env},
                                             stdout=_asyncio.subprocess.PIPE,
                                             stderr=_asyncio.subprocess.PIPE,
                                         )
@@ -2703,15 +2960,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     # ── Resume: resolve native session ID ──
                     native_sid = config.get("native_session_id")
                     if native_sid:
-                        if session_obj.profile.mcp_strategy == "mcp_add":
-                            # Gemini: resolve filename stem to session index
-                            resume_arg = _resolve_gemini_resume_index(config["workspace_path"], native_sid)
-                            if resume_arg:
-                                session_obj.set(Feature.RESUME_ID, resume_arg)
-                            else:
-                                logger.info(f"Session {session_id[:8]}: resume target not found, starting fresh")
-                        else:
-                            session_obj.set(Feature.RESUME_ID, native_sid)
+                        if not _set_native_resume_feature(session_obj, config["workspace_path"], native_sid):
+                            logger.info(f"Session {session_id[:8]}: resume target not found, starting fresh")
 
                     # Mode policy: clamp Code mode + reject Brief PTY starts
                     # before build_command() reads the (now-mutated) config.
@@ -2751,45 +3001,6 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     cmd_binary = cmd[0]
                     cmd_args = cmd[1:]
 
-                    # Inject account auth — API key or OAuth HOME sandbox
-                    extra_env = {}
-                    if config.get("account_id"):
-                        from account_sandbox import get_sandbox_home
-                        db_acc = await get_db()
-                        try:
-                            cur_acc = await db_acc.execute(
-                                "SELECT * FROM accounts WHERE id = ?",
-                                (config["account_id"],),
-                            )
-                            acc_row = await cur_acc.fetchone()
-                            if acc_row:
-                                acc = dict(acc_row)
-                                if acc.get("api_key"):
-                                    # API key mode
-                                    extra_env["ANTHROPIC_API_KEY"] = acc["api_key"]
-                                elif acc.get("type") == "oauth":
-                                    # OAuth sandbox mode — override HOME and (for
-                                    # claude) CLAUDE_CONFIG_DIR so each account
-                                    # reads its own .credentials.json instead of
-                                    # the shared macOS keychain entry.
-                                    sandbox_home = get_sandbox_home(acc["id"])
-                                    if sandbox_home:
-                                        extra_env["HOME"] = sandbox_home
-                                        cli_type_for_acc = (config.get("cli_type") or "claude").lower()
-                                        if cli_type_for_acc == "claude":
-                                            from account_sandbox import claude_config_dir
-                                            extra_env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir(acc["id"]))
-                                        logger.info(f"Session {session_id} using sandboxed HOME: {sandbox_home}")
-                        finally:
-                            await db_acc.close()
-
-                    # Inject hook relay env vars so the CLI hook script
-                    # can POST lifecycle events back to Commander.
-                    extra_env["COMMANDER_SESSION_ID"] = session_id
-                    extra_env["COMMANDER_API_URL"] = f"http://{HOST}:{PORT}"
-                    extra_env["COMMANDER_WORKSPACE_ID"] = config.get("workspace_id", "")
-                    extra_env["COMMANDER_CLI_TYPE"] = cli_type
-
                     # Myelin coordination: when the experimental flag is on,
                     # inject agent identity + DB path so the coordination
                     # hooks can track this session in the shared workspace.
@@ -2826,43 +3037,19 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         # Snapshot existing session files BEFORE starting PTY (for resume detection)
                         pre_files = None
                         if not config.get("native_session_id"):
-                            pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"])
+                            pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"], extra_env)
                         mark_pty_started(session_id)
                         await pty_mgr.start_session(
                             session_id, config["workspace_path"], cols, rows, cmd_args, extra_env, cmd_binary
                         )
                         await broadcast({"session_id": session_id, "type": "status", "status": "running"})
 
-                        # Gemini deferred system prompt: inject as first user turn after ready.
-                        # See comment above — -i flag causes exit on any subsequent PTY write.
-                        if _gemini_deferred_prompt:
-                            async def _inject_gemini_prompt(sid, prompt_text):
-                                try:
-                                    # Wait for Gemini TUI to be ready (detected in handle_pty_output)
-                                    for _ in range(60):
-                                        await _asyncio.sleep(1)
-                                        if not pty_mgr.is_alive(sid):
-                                            return
-                                        if sid in _gemini_ready:
-                                            break
-                                    await _asyncio.sleep(3)
-                                    if not pty_mgr.is_alive(sid):
-                                        return
-                                    # Write in chunks to avoid PTY buffer overflow (EAGAIN).
-                                    # macOS PTY buffer is ~4096 bytes; our prompt can be 3000+.
-                                    msg = prompt_text.encode("utf-8")
-                                    pty_mgr.write(sid, b"\x1b[200~")  # bracketed paste start
-                                    chunk_size = 2048
-                                    for i in range(0, len(msg), chunk_size):
-                                        pty_mgr.write(sid, msg[i:i+chunk_size])
-                                        await _asyncio.sleep(0.05)
-                                    pty_mgr.write(sid, b"\x1b[201~")  # bracketed paste end
-                                    await _asyncio.sleep(0.3)
-                                    pty_mgr.write(sid, b"\r")
-                                    logger.info("Gemini deferred prompt injected for session %s (%d chars)", sid[:8], len(prompt_text))
-                                except Exception as e:
-                                    logger.warning("Gemini deferred prompt failed: %s", e)
-                            _asyncio.ensure_future(_inject_gemini_prompt(session_id, _gemini_deferred_prompt))
+                        # Deferred system prompt: inject as first user turn after ready
+                        # for CLIs where a native system-prompt flag is unsafe or absent.
+                        if _deferred_initial_prompt:
+                            _asyncio.ensure_future(_inject_deferred_initial_prompt(
+                                session_id, _deferred_initial_prompt, cli_type
+                            ))
 
                         # Session Advisor: track workspace mapping + seed intent with purpose
                         if config.get("workspace_id"):
@@ -2880,7 +3067,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                             pass
                         # Detect this session's specific conversation file for resume
                         if not config.get("native_session_id"):
-                            _schedule_session_detection(cli_type, session_id, config["workspace_path"], pre_files)
+                            _schedule_session_detection(cli_type, session_id, config["workspace_path"], pre_files, extra_env)
                     except Exception as e:
                         logger.exception(f"Failed to start PTY for {session_id}")
                         await ws.send_json({
@@ -3512,7 +3699,13 @@ async def create_session(request: web.Request) -> web.Response:
         await _check_db.close()
 
     session_id = str(uuid.uuid4())
-    cli_type = body.get("cli_type", "claude")
+    try:
+        cli_type = validate_cli_type(body.get("cli_type", "claude"))
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    _install_err = cli_install_error(cli_type)
+    if _install_err:
+        return web.json_response({"error": _install_err}, status=400)
     name = body.get("name", "").strip() or f"Session {session_id[:8]}"
     model = body.get("model", get_profile(cli_type).default_model)
     permission_mode = body.get("permission_mode", "auto")
@@ -3672,8 +3865,14 @@ async def _autostart_session_pty(session_id: str):
         "permission_mode": permission_mode,
         "effort": effort,
     })
+    deferred_initial_prompt = None
     if system_prompt:
-        auto_sess.append_system_prompt(system_prompt)
+        if auto_sess.supports(Feature.APPEND_SYSTEM_PROMPT):
+            auto_sess.append_system_prompt(system_prompt)
+        else:
+            deferred_initial_prompt = system_prompt
+
+    extra_env = await _build_cli_process_env(config, session_id, cli_type)
 
     if auto_sess.profile.mcp_strategy == "config_file":
         db_mcp = await get_db()
@@ -3781,49 +3980,106 @@ async def _autostart_session_pty(session_id: str):
                     auto_sess.set(Feature.ALLOWED_TOOLS, existing_tools)
         finally:
             await db_mcp.close()
+    elif auto_sess.profile.mcp_strategy == "mcp_add":
+        db_mcp = await get_db()
+        try:
+            cur_mcp = await db_mcp.execute(
+                """SELECT ms.*, sms.auto_approve_override
+                   FROM mcp_servers ms
+                   JOIN session_mcp_servers sms ON ms.id = sms.mcp_server_id
+                   WHERE sms.session_id = ?""",
+                (session_id,),
+            )
+            mcp_rows = await cur_mcp.fetchall()
+            auto_approved_names = []
+            _a_w2w_comms = "0"
+            _a_w2w_context = "0"
+            _a_w2w_coord = "0"
+            try:
+                _a_w2w_cur = await db_mcp.execute(
+                    "SELECT comms_enabled, context_sharing_enabled, "
+                    "coordination_enabled FROM workspaces WHERE id = ?",
+                    (config.get("workspace_id", ""),),
+                )
+                _a_w2w_row = await _a_w2w_cur.fetchone()
+                if _a_w2w_row:
+                    _a_w2w_comms = "1" if _a_w2w_row["comms_enabled"] else "0"
+                    _a_w2w_context = "1" if _a_w2w_row["context_sharing_enabled"] else "0"
+                    _a_w2w_coord = "1" if _a_w2w_row["coordination_enabled"] else "0"
+            except Exception as _a_w2w_exc:
+                logger.debug("W2W env-flag fetch (autostart mcp_add) skipped: %s", _a_w2w_exc)
+
+            for row_mcp in mcp_rows:
+                srv = dict(row_mcp)
+                srv["args"] = json.loads(srv["args"] or "[]")
+                srv_env = json.loads(srv["env"] or "{}")
+                resolved_env = {}
+                for ek, ev in srv_env.items():
+                    resolved_env[ek] = (
+                        str(ev)
+                        .replace("{host}", HOST)
+                        .replace("{port}", str(PORT))
+                        .replace("{workspace_id}", config.get("workspace_id", ""))
+                        .replace("{workspace_path}", config.get("workspace_path", ""))
+                        .replace("{session_id}", session_id)
+                        .replace("{session_type}", config.get("session_type") or "worker")
+                        .replace("{w2w_comms}", _a_w2w_comms)
+                        .replace("{w2w_context}", _a_w2w_context)
+                        .replace("{w2w_coordination}", _a_w2w_coord)
+                    )
+                effective_approve = (
+                    srv["auto_approve_override"]
+                    if srv["auto_approve_override"] is not None
+                    else srv["auto_approve"]
+                )
+                ws_path = config.get("workspace_path", "")
+                if ws_path:
+                    try:
+                        remove_cmd = build_mcp_remove_command(auto_sess.profile, srv)
+                        await _asyncio.create_subprocess_exec(
+                            *remove_cmd, cwd=ws_path,
+                            env={**os.environ, **extra_env},
+                            stdout=_asyncio.subprocess.DEVNULL,
+                            stderr=_asyncio.subprocess.DEVNULL,
+                        )
+                    except Exception:
+                        pass
+                    add_cmd = build_mcp_add_command(
+                        auto_sess.profile, srv, resolved_env, effective_approve
+                    )
+                    try:
+                        proc = await _asyncio.create_subprocess_exec(
+                            *add_cmd, cwd=ws_path,
+                            env={**os.environ, **extra_env},
+                            stdout=_asyncio.subprocess.PIPE,
+                            stderr=_asyncio.subprocess.PIPE,
+                        )
+                        await proc.communicate()
+                    except Exception as e:
+                        logger.warning(f"Failed to register MCP {srv['server_name']} (auto-start): {e}")
+                if effective_approve:
+                    auto_approved_names.append(srv["server_name"])
+            if auto_approved_names:
+                auto_sess.set(Feature.ALLOWED_MCP_SERVERS, auto_approved_names)
+        finally:
+            await db_mcp.close()
+
+    native_sid = config.get("native_session_id")
+    if native_sid and not _set_native_resume_feature(auto_sess, config["workspace_path"], native_sid):
+        logger.info(f"Session {session_id[:8]}: resume target not found, starting fresh")
 
     cmd = auto_sess.build_command()
 
-    # Mirror the manual-start path's extra_env construction so auto-started
-    # PTYs also get account auth + hook relay env vars. Without these, hooks
-    # can't POST lifecycle events back, breaking session_state, plan
-    # detection, oversight, etc.
-    extra_env: dict[str, str] = {}
-    if config.get("account_id"):
-        from account_sandbox import get_sandbox_home
-        db_acc = await get_db()
-        try:
-            cur_acc = await db_acc.execute(
-                "SELECT * FROM accounts WHERE id = ?",
-                (config["account_id"],),
-            )
-            acc_row = await cur_acc.fetchone()
-            if acc_row:
-                acc = dict(acc_row)
-                if acc.get("api_key"):
-                    extra_env["ANTHROPIC_API_KEY"] = acc["api_key"]
-                elif acc.get("type") == "oauth":
-                    sandbox_home = get_sandbox_home(acc["id"])
-                    if sandbox_home:
-                        extra_env["HOME"] = sandbox_home
-                        cli_type_for_acc = (config.get("cli_type") or "claude").lower()
-                        if cli_type_for_acc == "claude":
-                            from account_sandbox import claude_config_dir
-                            extra_env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir(acc["id"]))
-        finally:
-            await db_acc.close()
-
-    extra_env["COMMANDER_SESSION_ID"] = session_id
-    extra_env["COMMANDER_API_URL"] = f"http://{HOST}:{PORT}"
-    extra_env["COMMANDER_WORKSPACE_ID"] = config.get("workspace_id", "")
-    extra_env["COMMANDER_CLI_TYPE"] = cli_type
-
     try:
-        pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"])
+        pre_files = _snapshot_files_for_detection(cli_type, config["workspace_path"], extra_env)
         mark_pty_started(session_id)
         await pty_mgr.start_session(session_id, config["workspace_path"], 120, 40, cmd[1:], extra_env, cmd[0])
         await broadcast({"session_id": session_id, "type": "status", "status": "running"})
-        _schedule_session_detection(cli_type, session_id, config["workspace_path"], pre_files)
+        if deferred_initial_prompt:
+            _asyncio.ensure_future(_inject_deferred_initial_prompt(
+                session_id, deferred_initial_prompt, cli_type
+            ))
+        _schedule_session_detection(cli_type, session_id, config["workspace_path"], pre_files, extra_env)
     except Exception as e:
         logger.warning(f"Auto-start PTY failed for {session_id}: {e}")
 
@@ -6647,7 +6903,7 @@ async def get_session_output(request: web.Request) -> web.Response:
 
 
 async def switch_session_cli(request: web.Request) -> web.Response:
-    """Switch a session between Claude and Gemini CLI.
+    """Switch a session between registered CLI providers.
 
     Flow:
     1. Read last N lines of session output → build context summary
@@ -6659,9 +6915,13 @@ async def switch_session_cli(request: web.Request) -> web.Response:
     """
     session_id = request.match_info["id"]
     body = await request.json()
-    new_cli_type = body.get("cli_type")
-    if new_cli_type not in ("claude", "gemini"):
-        return web.json_response({"error": "cli_type must be 'claude' or 'gemini'"}, status=400)
+    try:
+        new_cli_type = validate_cli_type(body.get("cli_type"))
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    _install_err = cli_install_error(new_cli_type)
+    if _install_err:
+        return web.json_response({"error": _install_err}, status=400)
 
     db = await get_db()
     try:
@@ -6751,8 +7011,7 @@ async def switch_model(request: web.Request) -> web.Response:
     """Switch a session's active model by injecting /model X into the PTY.
 
     Unlike switch_session_cli (which kills and restarts the PTY), this is a
-    lightweight in-session model change. Both Claude Code and Gemini CLI
-    support /model as a slash command.
+    lightweight in-session model change for CLIs that support /model.
     """
     session_id = request.match_info["id"]
     # MCP-S5: only commander or the session itself can flip its model. The
@@ -6797,6 +7056,25 @@ async def switch_model(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "session_id": session_id, "model": model_name})
 
 
+def _pty_input_mode(cli_type: str) -> str:
+    """PTY text-injection strategy for a CLI: 'gemini' | 'readline' | 'ink'.
+
+    Profile-driven so all input paths agree. Codex resolves to 'readline'
+    (its paste-burst composer mishandles Ink Escape / bracketed-paste
+    sequences); Gemini keeps its own quirk-specific path; everything else
+    uses the Claude-style Ink path.
+    """
+    if cli_type == "gemini":
+        return "gemini"
+    try:
+        from cli_profiles import get_profile
+        if get_profile(cli_type).ui_capabilities.get("terminal_input") == "readline":
+            return "readline"
+    except Exception:
+        pass
+    return "ink"
+
+
 async def send_session_input(request: web.Request) -> web.Response:
     """Type text into a running session's PTY. Used by MCP server's send_message tool."""
     session_id = request.match_info["id"]
@@ -6808,8 +7086,8 @@ async def send_session_input(request: web.Request) -> web.Response:
     if not pty_mgr.is_alive(session_id):
         return web.json_response({"error": "session not running"}, status=400)
 
-    # Look up CLI type — Gemini's TUI handles escape sequences differently
-    # than Claude Code's Ink-based TUI, so we use CLI-specific input strategies.
+    # Look up CLI type — readline-style CLIs handle escape sequences differently
+    # than Ink-style TUIs, so we use CLI-specific input strategies.
     cli_type = "claude"
     try:
         config = await get_session_config(session_id)
@@ -6820,7 +7098,9 @@ async def send_session_input(request: web.Request) -> web.Response:
 
     msg_bytes = message.encode("utf-8")
 
-    if cli_type == "gemini":
+    input_mode = _pty_input_mode(cli_type)
+
+    if input_mode == "gemini":
         # Gemini CLI: Write text directly, same as WebSocket passthrough.
         #
         # Gemini's Ink TUI does NOT handle Ctrl-U, Escape, or bracketed paste
@@ -6833,13 +7113,22 @@ async def send_session_input(request: web.Request) -> web.Response:
         # the intent from a single-line version.
         clean = message.replace("\n", " ").replace("\r", " ")
         pty_mgr.write(session_id, clean.encode("utf-8") + b"\r")
+    elif input_mode == "readline":
+        # Codex: rich paste-burst composer. Ctrl-U clears the input, Enter
+        # submits (so newlines are collapsed), and Ink Escape / bracketed-paste
+        # wrappers would be echoed literally. Mirrors sendForceMessage's
+        # readline path so every input route stays consistent.
+        clean = message.replace("\n", " ").replace("\r", " ")
+        pty_mgr.write(session_id, b"\x15")  # Ctrl-U: clear composer
+        await _asyncio.sleep(0.15)
+        pty_mgr.write(session_id, clean.encode("utf-8") + b"\r")
     elif len(message) < 100 and "\n" not in message:
-        # Claude short messages / control keys: send directly (no Escape
+        # Claude/Codex short messages / control keys: send directly (no Escape
         # prefix which would cancel active selection prompts like "trust
         # this folder")
         pty_mgr.write(session_id, msg_bytes + b"\r")
     else:
-        # Claude long/multiline: Escape to clear Ink input, text, delay, Enter
+        # Claude/Codex long/multiline: Escape to clear input, text, delay, Enter
         pty_mgr.write(session_id, b"\x1b" + b"\x7f" * 20)  # Escape + backspaces
         await _asyncio.sleep(0.15)
         pty_mgr.write(session_id, msg_bytes)
@@ -7940,8 +8229,8 @@ async def autofill_vision(request: web.Request) -> web.Response:
 
     Used by WorkspaceVisionOnboarding when the user dictates a product
     description: the browser does speech-to-text via Web Speech API,
-    posts the transcript here, and we ask Claude/Gemini (whichever CLI
-    is installed) to extract the four structured fields.
+    posts the transcript here, and we ask the configured CLI router
+    to extract the four structured fields.
 
     No API key needed — uses whatever auth the local CLI has.
     """
@@ -8214,19 +8503,14 @@ async def create_commander(request: web.Request) -> web.Response:
         pass
     cli_type = body.get("cli_type", "claude")
 
-    # Auto-install safety_gate hook so the Commander delegation deny in
-    # /api/safety/evaluate actually fires. Required for Gemini Commanders —
-    # Gemini doesn't support --disallowedTools, so the runtime hook is the
-    # only enforcement. Idempotent: skips if already installed.
+    # Commander guardrails are injected into IVE-managed session homes by
+    # _build_cli_process_env. Only mutate native CLI hook files when the user
+    # has explicitly opted into global hook installation for external CLIs.
     try:
-        from hook_installer import (
-            install_safety_gate_hooks,
-            check_safety_gate_installation,
-        )
-        gate_state = check_safety_gate_installation()
-        if not (gate_state.get("claude") and gate_state.get("script_exists")):
+        if await _get_cli_hook_install_mode() == "global":
+            from hook_installer import install_safety_gate_hooks
             install_safety_gate_hooks()
-            logger.info("Safety gate hooks auto-installed for Commander deny enforcement")
+            logger.info("Safety gate hooks globally installed for Commander deny enforcement")
     except Exception as gate_err:
         logger.warning("Safety gate auto-install skipped: %s", gate_err)
     default_model = get_profile(cli_type).default_commander_model
@@ -9981,12 +10265,14 @@ async def detect_browsers(request: web.Request) -> web.Response:
 
     has_claude_auth = os.path.exists(os.path.expanduser("~/.claude"))
     has_gemini_auth = os.path.exists(os.path.expanduser("~/.gemini"))
+    has_codex_auth = os.path.exists(os.path.expanduser("~/.codex"))
 
     return web.json_response({
         "browsers": browsers,
         "profiles": profiles,
         "has_claude_auth": has_claude_auth,
         "has_gemini_auth": has_gemini_auth,
+        "has_codex_auth": has_codex_auth,
     })
 
 
@@ -10184,9 +10470,11 @@ async def open_next_account(request: web.Request) -> web.Response:
 # ─── REST: Account OAuth Sandbox ──────────────────────────────────────────
 
 async def snapshot_account(request: web.Request) -> web.Response:
-    """Snapshot current ~/.claude/ auth state for an OAuth account."""
+    """Snapshot current CLI auth state for an OAuth account."""
     from account_sandbox import snapshot_current_auth
     acc_id = request.match_info["id"]
+    body = await request.json() if request.content_length else {}
+    cli_type = (body.get("cli_type") or "claude").lower()
     # Validate the account row exists FIRST. Previously any UUID would copy
     # ~2 GB to ~/.ive/account_homes/<random>/ — disk-fill DoS once tunnel-
     # exposed (BUG C1).
@@ -10198,7 +10486,7 @@ async def snapshot_account(request: web.Request) -> web.Response:
         await db.close()
     if not row:
         return web.json_response({"error": "account not found"}, status=404)
-    result = snapshot_current_auth(acc_id)
+    result = snapshot_current_auth(acc_id, cli_type)
     if result.get("error"):
         return web.json_response(result, status=400)
 
@@ -10345,6 +10633,7 @@ async def pop_out_session(request: web.Request) -> web.Response:
     # Build CLI command via UnifiedSession (same logic as start_pty)
     cli_type = config.get("cli_type", "claude")
     session_obj = UnifiedSession(cli_type, config)
+    workspace_path = config.get("workspace_path", os.path.expanduser("~"))
 
     # Minimal system prompt for pop-out (guidelines omitted — user manages their own)
     if config.get("system_prompt"):
@@ -10353,17 +10642,16 @@ async def pop_out_session(request: web.Request) -> web.Response:
     # Resume if native_session_id exists
     native_sid = config.get("native_session_id")
     if native_sid:
-        session_obj.set(Feature.RESUME_ID, native_sid)
+        if not _set_native_resume_feature(session_obj, workspace_path, native_sid):
+            logger.info(f"Native terminal {session_id[:8]}: resume target not found, starting fresh")
 
     cmd = session_obj.build_command()
-    workspace_path = config.get("workspace_path", os.path.expanduser("~"))
 
-    # Env vars for hook relay (critical — this is what keeps Commander connected)
-    env_exports = (
-        f'export COMMANDER_SESSION_ID="{session_id}"; '
-        f'export COMMANDER_API_URL="http://{HOST}:{PORT}"; '
-        f'export COMMANDER_WORKSPACE_ID="{workspace_id}"; '
-        f'export COMMANDER_CLI_TYPE="{cli_type}"; '
+    # Env vars for hook relay and session-scoped CLI home.
+    extra_env = await _build_cli_process_env(config, session_id, cli_type)
+    env_exports = "".join(
+        f"export {shlex.quote(k)}={shlex.quote(str(v))}; "
+        for k, v in extra_env.items()
     )
     cli_cmd = " ".join(shlex.quote(c) for c in cmd)
     full_cmd = f'{env_exports}cd {shlex.quote(workspace_path)} && {cli_cmd}'
@@ -10601,20 +10889,7 @@ _discovered_models: dict = {}  # Populated at startup
 
 
 async def get_cli_info(request: web.Request) -> web.Response:
-    import shutil
-    return web.json_response({
-        "version": VERSION,
-        "models": _discovered_models.get("claude") or AVAILABLE_MODELS,
-        "permission_modes": PERMISSION_MODES,
-        "effort_levels": EFFORT_LEVELS,
-        "gemini_models": _discovered_models.get("gemini") or GEMINI_MODELS,
-        "gemini_approval_modes": GEMINI_APPROVAL_MODES,
-        "cli_types": CLI_TYPES,
-        "available_clis": {
-            "claude": shutil.which("claude") is not None,
-            "gemini": shutil.which("gemini") is not None,
-        },
-    })
+    return web.json_response(build_cli_info_payload(_discovered_models))
 
 
 async def get_cli_feature_matrix(request: web.Request) -> web.Response:
@@ -10705,6 +10980,12 @@ async def put_app_setting(request: web.Request) -> web.Response:
             status=400,
         )
 
+    if key == "cli_hook_install_mode" and value not in (None, "session_scoped", "global", "disabled"):
+        return web.json_response(
+            {"error": "cli_hook_install_mode must be session_scoped, global, or disabled"},
+            status=400,
+        )
+
     db = await get_db()
     try:
         if value is None:
@@ -10726,12 +11007,34 @@ async def put_app_setting(request: web.Request) -> web.Response:
     if key == "experimental_avcp_protection":
         from hook_installer import install_avcp_hooks, uninstall_avcp_hooks
         try:
-            if value == "on":
+            if value == "on" and await _get_cli_hook_install_mode() == "global":
                 install_avcp_hooks()
-            else:
+            elif value != "on":
                 uninstall_avcp_hooks()
         except Exception as e:
             logger.warning(f"AVCP hook toggle failed: {e}")
+            return web.json_response({
+                "ok": True, "key": key, "value": value,
+                "warning": f"Setting saved but hook installation failed: {e}",
+            })
+
+    if key == "cli_hook_install_mode":
+        from hook_installer import (
+            uninstall_all,
+            uninstall_avcp_hooks,
+            uninstall_safety_gate_hooks,
+            uninstall_myelin_hooks,
+        )
+        try:
+            if value == "global":
+                await _install_global_cli_hooks_for_enabled_settings()
+            else:
+                uninstall_all()
+                uninstall_avcp_hooks()
+                uninstall_safety_gate_hooks()
+                uninstall_myelin_hooks()
+        except Exception as e:
+            logger.warning(f"CLI hook install mode update failed: {e}")
             return web.json_response({
                 "ok": True, "key": key, "value": value,
                 "warning": f"Setting saved but hook installation failed: {e}",
@@ -10741,7 +11044,8 @@ async def put_app_setting(request: web.Request) -> web.Response:
         from hook_installer import install_safety_gate_hooks, uninstall_safety_gate_hooks
         try:
             if value == "on":
-                install_safety_gate_hooks()
+                if await _get_cli_hook_install_mode() == "global":
+                    install_safety_gate_hooks()
                 db2 = await get_db()
                 try:
                     from safety_engine import seed_builtin_rules
@@ -10769,9 +11073,9 @@ async def put_app_setting(request: web.Request) -> web.Response:
     if key == "experimental_myelin_coordination":
         from hook_installer import install_myelin_hooks, uninstall_myelin_hooks
         try:
-            if value == "on":
+            if value == "on" and await _get_cli_hook_install_mode() == "global":
                 install_myelin_hooks()
-            else:
+            elif value != "on":
                 uninstall_myelin_hooks()
         except Exception as e:
             logger.warning(f"Myelin hook toggle failed: {e}")
@@ -12801,11 +13105,11 @@ async def _run_research_via_cli(job_id: str, query: str, workspace_id: str | Non
             "type": "research_progress", "job_id": job_id,
             "line": "Creating research session...", "entry_id": entry_id,
         })
-        # Derive CLI type from model id (gemini-* → gemini, else claude),
+        # Derive CLI type from model id (profile-driven — covers Codex too),
         # mirroring the convention used by /api/catchup and the LLM model bus.
         job_model = (job.get("model") or "").strip()
-        sess_cli = "gemini" if job_model.startswith("gemini-") else "claude"
-        sess_model = job_model or ("gemini-2.5-pro" if sess_cli == "gemini" else "sonnet")
+        sess_cli = cli_for_model(job_model)
+        sess_model = job_model or get_profile(sess_cli).default_model
         sess = await _rest("POST", "/api/sessions", {
             "name": f"Deep Research — {query[:50]}",
             "workspace_id": workspace_id,
@@ -14988,9 +15292,7 @@ async def catchup_handler(request: web.Request) -> web.Response:
     llm_model = request.query.get("model", "haiku")
     # Infer cli from the model id when the caller didn't pin one.
     # Keeps the frontend single-string (one model setting drives both).
-    llm_cli = request.query.get("cli") or (
-        "gemini" if str(llm_model).lower().startswith("gemini") else "claude"
-    )
+    llm_cli = request.query.get("cli") or cli_for_model(str(llm_model))
     digest = await catchup.build_digest(
         since_iso=since,
         until_iso=until,
@@ -15480,12 +15782,16 @@ async def on_startup(app: web.Application):
     from config import HOOKS_ENABLED
     if HOOKS_ENABLED:
         from hooks import set_broadcast_fn, set_capture_proc, set_pty_manager as hooks_set_pty
-        from hook_installer import install_all
+        from hook_installer import prepare_runtime_hooks
         set_broadcast_fn(broadcast)
         set_capture_proc(capture_proc)
         hooks_set_pty(pty_mgr)
-        install_all()
-        logger.info("CLI hooks installed and receiver ready")
+        prepare_runtime_hooks()
+        if await _get_cli_hook_install_mode() == "global":
+            await _install_global_cli_hooks_for_enabled_settings()
+            logger.info("CLI hooks globally installed and receiver ready")
+        else:
+            logger.info("CLI hook receiver ready (session-scoped mode)")
 
     # ── Server-side cascade runner ──────────────────────────────────
     import cascade_runner
@@ -15715,7 +16021,7 @@ async def get_agent_skill(request: web.Request) -> web.Response:
 
 async def install_agent_skill(request: web.Request) -> web.Response:
     """Install a skill to disk for native CLI discovery."""
-    from skill_installer import install_skill
+    from skill_installer import install_skill, default_cli_types
     body = await request.json()
     name = body.get("name", "").strip()
     content = body.get("content", "").strip()
@@ -15737,7 +16043,7 @@ async def install_agent_skill(request: web.Request) -> web.Response:
             finally:
                 await db.close()
 
-    cli_types = body.get("cli_types", ["claude", "gemini"])
+    cli_types = body.get("cli_types", default_cli_types())
     scope = body.get("scope", "project")
 
     results = await install_skill(
@@ -15755,7 +16061,7 @@ async def install_agent_skill(request: web.Request) -> web.Response:
 
 async def uninstall_agent_skill(request: web.Request) -> web.Response:
     """Remove a skill from disk."""
-    from skill_installer import uninstall_skill
+    from skill_installer import uninstall_skill, default_cli_types
     body = await request.json()
     name = body.get("name", "").strip()
     if not name:
@@ -15774,7 +16080,7 @@ async def uninstall_agent_skill(request: web.Request) -> web.Response:
             finally:
                 await db.close()
 
-    cli_types = body.get("cli_types", ["claude", "gemini"])
+    cli_types = body.get("cli_types", default_cli_types())
     scope = body.get("scope", "project")
 
     results = await uninstall_skill(

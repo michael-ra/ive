@@ -1,5 +1,5 @@
 """
-Hook event receiver for Claude Code and Gemini CLI lifecycle hooks.
+Hook event receiver for registered CLI lifecycle hooks.
 
 Replaces the ANSI-based session state detection (idle timers, silence-based
 prompt detection, numbered-option regex, cursor character matching) with
@@ -1189,13 +1189,26 @@ def _extract_conversation_context(native_session_id: str, workspace_path: str,
     return "\n".join(lines)
 
 
+def _title_model(cli_type: str) -> str:
+    """Cheapest valid auto-title model for `cli_type`.
+
+    Claude keeps its dedicated cheap `haiku`; every other CLI uses its own
+    profile's tester model so Codex gets `gpt-5.4-mini` instead of an invalid
+    `codex exec --model gemini-2.5-flash`.
+    """
+    if cli_type == "claude":
+        return "haiku"
+    from cli_profiles import get_profile
+    return get_profile(cli_type).default_tester_model
+
+
 async def _generate_title(session_id: str, cli_type: str, context: str):
     """Background task: call cheap LLM to generate a session title."""
     try:
         from llm_router import llm_call
 
-        # Use cheapest model per CLI
-        model = "haiku" if cli_type == "claude" else "gemini-2.5-flash"
+        # Cheapest valid model per CLI (profile-driven; never cross-CLI).
+        model = _title_model(cli_type)
 
         # Truncate context to save tokens
         if len(context) > 2000:
@@ -2367,7 +2380,7 @@ async def _handle_worktree_remove(session_id: str, payload: dict):
 # ─── Event routing ───────────────────────────────────────────────────
 
 # Build _EVENT_HANDLERS dynamically from profiles instead of hardcoding
-# both Claude and Gemini native names.  Each canonical HookEvent is mapped
+# individual native event names.  Each canonical HookEvent is mapped
 # to a handler, and we expand all native names from all registered profiles.
 
 from cli_features import HookEvent

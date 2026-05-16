@@ -30,7 +30,7 @@ class Feature(str, Enum):
     # ── Session configuration ─────────────────────────────────────────────
     MODEL                 = "model"
     PERMISSION_MODE       = "permission_mode"        # default|auto|plan|acceptEdits|dontAsk|bypassPermissions|yolo
-    EFFORT                = "effort"                 # low|medium|high|max (Claude-only today)
+    EFFORT                = "effort"                 # low|medium|high|max/xhigh where supported
     BUDGET_USD            = "budget_usd"
     WORKTREE              = "worktree"               # bool — run in an isolated git worktree
     ADD_DIRS              = "add_dirs"               # list[str] — extra directories to expose
@@ -51,7 +51,7 @@ class Feature(str, Enum):
 
     # ── Skills / extensions ───────────────────────────────────────────────
     SKILLS_DIR            = "skills_dir"
-    SKILLS_FORMAT         = "skills_format"          # "skill_md" for Claude and Gemini
+    SKILLS_FORMAT         = "skills_format"          # "skill_md" for supported CLIs
 
     # ── Plan mode ─────────────────────────────────────────────────────────
     PLAN_MODE             = "plan_mode"              # supports structured planning
@@ -160,7 +160,7 @@ HOOK_EVENT_LABELS: dict[HookEvent, str] = {
     # Session lifecycle
     HookEvent.SESSION_START:         "Session start",
     HookEvent.SESSION_STOP:          "Session end",
-    HookEvent.INSTRUCTIONS_LOADED:   "Instructions loaded (CLAUDE.md/GEMINI.md)",
+    HookEvent.INSTRUCTIONS_LOADED:   "Instructions loaded (CLAUDE.md/GEMINI.md/AGENTS.md)",
     # Turn lifecycle
     HookEvent.PROMPT_SUBMIT:         "User prompt submitted",
     HookEvent.TURN_COMPLETE:         "Turn complete",

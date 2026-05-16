@@ -1,7 +1,7 @@
 """Disk-based skill installation.
 
 Skills are written to the CLI's native skill directories so they're
-auto-discovered by Claude Code and Gemini CLI without any system prompt
+auto-discovered by registered CLIs without any system prompt
 injection.
 
 Paths:
@@ -9,6 +9,8 @@ Paths:
   Claude user:     ~/.claude/skills/<name>/SKILL.md
   Gemini project:  <workspace>/.gemini/skills/<name>/SKILL.md
   Gemini user:     ~/.gemini/skills/<name>/SKILL.md
+  Codex project:   <workspace>/.agents/skills/<name>/SKILL.md
+  Codex user:      ~/.agents/skills/<name>/SKILL.md
 """
 
 import logging
@@ -16,8 +18,6 @@ import os
 import re
 import shutil
 from pathlib import Path
-
-import aiohttp
 
 from cli_features import Feature
 from cli_profiles import PROFILES, get_profile
@@ -31,6 +31,11 @@ GITHUB_API = "https://api.github.com"
 SKILL_DIRS = {p.id: p.binding(Feature.SKILLS_DIR).file_path
               for p in PROFILES.values()
               if p.binding(Feature.SKILLS_DIR)}
+
+
+def default_cli_types() -> list[str]:
+    """Return all registered CLI ids in profile order."""
+    return list(PROFILES)
 
 
 def _skill_base(cli_type: str, workspace_path: str | None, scope: str) -> Path:
@@ -79,7 +84,7 @@ async def install_skill(
         dict with install status per CLI
     """
     if cli_types is None:
-        cli_types = ["claude", "gemini"]
+        cli_types = default_cli_types()
 
     slug = _slugify(name)
     results = {}
@@ -114,7 +119,7 @@ async def uninstall_skill(
 ) -> dict:
     """Remove a skill from disk for the specified CLI(s)."""
     if cli_types is None:
-        cli_types = ["claude", "gemini"]
+        cli_types = default_cli_types()
 
     slug = _slugify(name)
     results = {}
@@ -142,8 +147,9 @@ def list_installed_skills(
 ) -> list[dict]:
     """Scan disk for installed skills across all CLIs.
 
-    scope=="all" scans both user (~/.claude/skills, ~/.gemini/extensions/skills)
-    and project (<workspace>/.claude/skills, ...) directories. The previous
+    scope=="all" scans both user (~/.claude/skills, ~/.gemini/skills,
+    ~/.agents/skills) and project (<workspace>/.claude/skills, ...)
+    directories. The previous
     default of "project" silently returned [] whenever the caller did not
     supply a workspace_path because _skill_base raised ValueError that the
     outer except swallowed (BUG H7).
@@ -251,6 +257,8 @@ def _parse_frontmatter_meta(text: str) -> dict:
 
 async def _download_skill_extras(repo: str, skill_path: str, dest_dir: Path):
     """Download scripts/, references/, assets/ from GitHub if they exist."""
+    import aiohttp
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{GITHUB_API}/repos/{repo}/git/trees/main?recursive=1"

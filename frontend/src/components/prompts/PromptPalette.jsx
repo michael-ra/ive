@@ -393,7 +393,7 @@ export default function PromptPalette({ onClose, startInCreate = false, startTab
                 </div>
                 {cascadeBypass && (
                   <div className="ml-10 text-[10px] text-red-400/60 leading-relaxed">
-                    Maps to Claude <code className="bg-red-500/10 px-1 rounded">bypassPermissions</code> / Gemini <code className="bg-red-500/10 px-1 rounded">yolo</code>.
+                    Maps to each CLI's most permissive approval mode.
                     The agent will not ask for approval on any action.
                   </div>
                 )}

@@ -4,7 +4,7 @@ title: Creating Sessions
 
 # Creating Sessions
 
-A session is a real PTY (pseudo-terminal) running `claude` or `gemini` interactively.
+A session is a real PTY (pseudo-terminal) running `claude`, `gemini`, or `codex` interactively.
 
 ## New session form
 
@@ -12,7 +12,7 @@ Press **⌘N** or click **New Session** in the sidebar to open the session creat
 
 ### CLI selection
 
-Choose between **Claude Code** and **Gemini CLI**. The available options change based on which CLI you select.
+Choose between **Claude Code**, **Gemini CLI**, and **Codex CLI**. The available options change based on which CLI you select.
 
 ### Claude Code options
 
@@ -36,6 +36,14 @@ Choose between **Claude Code** and **Gemini CLI**. The available options change 
 - `gemini-2.5-pro` — stable Pro
 - `gemini-2.5-flash` — stable Flash
 - `gemini-2.0-flash` — previous gen
+
+### Codex CLI options
+
+| Option | Values | Description |
+|--------|--------|-------------|
+| **Model** | GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.3 Codex | Codex model to use |
+| **Approval mode** | Default, Auto, Plan, Bypass All | How Codex handles approvals and sandboxing |
+| **Effort** | low, medium, high, xhigh | Reasoning effort level |
 
 ### Advanced options
 

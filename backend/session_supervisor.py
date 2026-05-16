@@ -334,11 +334,23 @@ async def _spawn_pty_from_row(row: dict) -> None:
     cmd_binary = cmd[0]
     cmd_args = cmd[1:]
 
-    extra_env = {
+    extra_env = {}
+    try:
+        from config import HOOKS_ENABLED
+        if HOOKS_ENABLED and await _read_setting("cli_hook_install_mode", "session_scoped") == "session_scoped":
+            from cli_profiles import get_profile
+            from hook_installer import prepare_session_hook_home
+            extra_env.update(prepare_session_hook_home(get_profile(cli_type), row["id"]))
+    except Exception as e:
+        logger.debug("supervisor: session-scoped hook home skipped for %s: %s", row["id"], e)
+
+    from config import HOST, PORT
+    extra_env.update({
         "COMMANDER_SESSION_ID": row["id"],
+        "COMMANDER_API_URL": f"http://{HOST}:{PORT}",
         "COMMANDER_WORKSPACE_ID": row.get("workspace_id") or "",
         "COMMANDER_CLI_TYPE": cli_type,
-    }
+    })
 
     await _pty_manager.start_session(
         row["id"],

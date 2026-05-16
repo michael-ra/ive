@@ -74,6 +74,37 @@ hash_stdin() {
 PYTHON_BIN="python3"
 PIP_BIN="pip3"
 
+python_is_311_plus() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+resolve_python_bin() {
+  local candidate uv_python
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_is_311_plus "$candidate"; then
+      PYTHON_BIN=$(command -v "$candidate" 2>/dev/null || echo "$candidate")
+      return 0
+    fi
+  done
+
+  if command -v uv >/dev/null 2>&1; then
+    uv_python=$(uv python find 3.11 2>/dev/null || true)
+    if [ -n "$uv_python" ] && [ -x "$uv_python" ]; then
+      PYTHON_BIN="$uv_python"
+      return 0
+    fi
+    if uv python install 3.11 >/dev/null 2>&1; then
+      uv_python=$(uv python find 3.11 2>/dev/null || true)
+      if [ -n "$uv_python" ] && [ -x "$uv_python" ]; then
+        PYTHON_BIN="$uv_python"
+        return 0
+      fi
+    fi
+  fi
+
+  return 1
+}
+
 deps_cache_hash() {
   {
     [ -f "$DIR/backend/requirements.txt" ] && cat "$DIR/backend/requirements.txt"
@@ -109,29 +140,19 @@ check_deps() {
     exit 1
   fi
 
-  # ── python3 (required, 3.11+) ───────────────────────────────
-  if ! command -v python3 >/dev/null 2>&1; then
-    err "python3 — required."
+  # ── python (required, 3.11+) ────────────────────────────────
+  if ! resolve_python_bin; then
+    err "python 3.11+ — required."
     case "$(uname -s)" in
-      Darwin) echo "      Install: brew install python@3.12" ;;
-      Linux)  echo "      Install: sudo apt-get install python3.12 python3.12-venv  (Debian/Ubuntu)" ;;
+      Darwin) echo "      Upgrade: brew install python@3.12" ;;
+      Linux)  echo "      Upgrade: sudo apt-get install python3.12 python3.12-venv" ;;
       *)      echo "      See: https://www.python.org/downloads/" ;;
     esac
     exit 1
   fi
-  local py_ver py_major py_minor
-  py_ver=$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo "unknown")
-  py_major=$(python3 -c 'import sys; print(sys.version_info[0])' 2>/dev/null || echo 0)
-  py_minor=$(python3 -c 'import sys; print(sys.version_info[1])' 2>/dev/null || echo 0)
-  if [ "$py_major" -lt 3 ] || { [ "$py_major" -eq 3 ] && [ "$py_minor" -lt 11 ]; }; then
-    err "python3 ($py_ver) — need 3.11 or newer."
-    case "$(uname -s)" in
-      Darwin) echo "      Upgrade: brew install python@3.12" ;;
-      Linux)  echo "      Upgrade: sudo apt-get install python3.12 python3.12-venv" ;;
-    esac
-    exit 1
-  fi
-  ok "python3 ($py_ver)"
+  local py_ver
+  py_ver=$("$PYTHON_BIN" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo "unknown")
+  ok "python ($py_ver)"
 
   # ── node + npm (required) ───────────────────────────────────
   if ! command -v node >/dev/null 2>&1; then
@@ -152,13 +173,13 @@ check_deps() {
   # private venv at ~/.ive/venv.
   local need_venv=false
   local probe_out
-  if ! python3 -m pip --version >/dev/null 2>&1; then
+  if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
     # No pip module at all — try ensurepip, else fall back to venv (which
     # ships its own pip).
-    if python3 -m ensurepip --version >/dev/null 2>&1; then
-      python3 -m ensurepip --upgrade >/dev/null 2>&1 || true
+    if "$PYTHON_BIN" -m ensurepip --version >/dev/null 2>&1; then
+      "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
     fi
-    if ! python3 -m pip --version >/dev/null 2>&1; then
+    if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
       need_venv=true
     fi
   fi
@@ -167,17 +188,21 @@ check_deps() {
     # in pip 23, which is also when PEP 668 enforcement landed — so if
     # --dry-run is unsupported we're on an old enough pip that PEP 668
     # isn't an issue. We only inspect stderr; we never actually install.
-    probe_out=$(python3 -m pip install --dry-run --quiet --disable-pip-version-check pip 2>&1 || true)
+    probe_out=$("$PYTHON_BIN" -m pip install --dry-run --quiet --disable-pip-version-check pip 2>&1 || true)
     case "$probe_out" in
       *externally-managed-environment*|*"externally managed"*)
         need_venv=true ;;
     esac
   fi
+  case "$PYTHON_BIN" in
+    */.local/share/uv/python/*|*/Library/Application\ Support/uv/python/*)
+      need_venv=true ;;
+  esac
 
   if [ "$need_venv" = true ] || [ -d "$VENV_DIR" ]; then
     if [ ! -x "$VENV_DIR/bin/python3" ]; then
       echo "  Creating Python venv at $VENV_DIR (system pip is externally-managed)..."
-      if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
+      if ! "$PYTHON_BIN" -m venv "$VENV_DIR" 2>/dev/null; then
         err "python3 -m venv failed."
         case "$(uname -s)" in
           Linux) echo "      Try: sudo apt-get install python3-venv" ;;
@@ -189,12 +214,7 @@ check_deps() {
     PIP_BIN="$VENV_DIR/bin/pip3"
     ok "venv ($VENV_DIR)"
   else
-    PYTHON_BIN="python3"
-    if command -v pip3 >/dev/null 2>&1; then
-      PIP_BIN="pip3"
-    else
-      PIP_BIN="python3 -m pip"
-    fi
+    PIP_BIN="$PYTHON_BIN -m pip"
     ok "pip ($($PYTHON_BIN -m pip --version 2>/dev/null | awk '{print $2}'))"
   fi
 
@@ -212,7 +232,7 @@ check_deps() {
     warn "ffmpeg — optional, GIF recording disabled. Install: brew install ffmpeg (macOS) / sudo apt-get install ffmpeg (Linux)"
   fi
 
-  # ── claude / gemini CLIs (warn-only) ───────────────────────
+  # ── AI coding CLIs (warn-only) ─────────────────────────────
   local has_cli=false
   if command -v claude >/dev/null 2>&1; then
     ok "claude CLI"
@@ -222,10 +242,15 @@ check_deps() {
     ok "gemini CLI"
     has_cli=true
   fi
+  if command -v codex >/dev/null 2>&1; then
+    ok "codex CLI"
+    has_cli=true
+  fi
   if [ "$has_cli" = false ]; then
     warn "no CLI detected. Install at least one to actually run sessions:"
     echo "      Claude Code: https://docs.anthropic.com/claude-code"
     echo "      Gemini CLI:  https://github.com/google-gemini/gemini-cli"
+    echo "      Codex CLI:   npm install -g @openai/codex"
   fi
 
   # Persist the resolved interpreter selection.
@@ -369,6 +394,12 @@ auto_update_cli() {
           echo "  Updating Gemini CLI (npm)..."
           npm update -g @google/gemini-cli 2>&1 | sed 's/^/    /' || echo "    (update skipped)"
         fi
+      fi
+
+      # Update Codex CLI
+      if command -v codex &>/dev/null; then
+        echo "  Updating Codex CLI..."
+        codex update 2>&1 | sed 's/^/    /' || echo "    (update skipped)"
       fi
 
       echo ""

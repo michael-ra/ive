@@ -2,7 +2,7 @@
   "name": "ive",
   "version": "1.0.0",
   "private": true,
-  "description": "Integrated Vibecoding Environment — control multiple Claude Code & Gemini CLI sessions from one browser UI",
+  "description": "Integrated Vibecoding Environment — control Claude Code, Gemini CLI, and Codex CLI sessions from one browser UI",
   "homepage": "https://github.com/michael-ra/ive#readme",
   "bugs": {
     "url": "https://github.com/michael-ra/ive/issues"
@@ -17,6 +17,7 @@
   "keywords": [
     "claude-code",
     "gemini-cli",
+    "codex-cli",
     "agent",
     "terminal",
     "developer-tools",

@@ -18,7 +18,7 @@
 
 **[axios was compromised last week.](https://www.microsoft.com/en-us/security/blog/2026/04/01/mitigating-the-axios-npm-supply-chain-compromise/)** 70M weekly downloads. State-level attackers pushed two poisoned versions with a hidden `postinstall` RAT dropper. Before that: [`@solana/web3.js`](https://github.com/solana-labs/solana-web3.js/security/advisories/GHSA-jcxm-7wvp-g6p5) ($184K stolen), `ua-parser-js` (cryptominer, 7M downloads), `event-stream`, `colors`, `xz-utils`. The [Trivy attack on Cisco](https://thehackernews.com/2026/03/axios-supply-chain-attack-pushes-cross.html) came through a poisoned GitHub Action. The [Shai-Hulud worm](https://socket.dev/) installs rogue MCP servers that steal your AI tool credentials.
 
-Now add vibe coding — Claude Code, Cursor, Copilot, Gemini CLI running `npm install` autonomously. One compromised dependency and your keys are gone.
+Now add vibe coding — Claude Code, Codex CLI, Cursor, Copilot, Gemini CLI running `npm install` autonomously. One compromised dependency and your keys are gone.
 
 **AVCP catches this.** All of it.
 
@@ -61,7 +61,7 @@ Every check runs on **direct packages, transitive dependencies, GitHub Actions, 
 
 ```bash
 git clone https://github.com/michael-ra/anti-vibe-code-pwner ~/avcp
-cd ~/avcp && ./avcp setup all    # hooks into Claude Code + Gemini CLI + shell
+cd ~/avcp && ./avcp setup all    # hooks into Claude Code + Gemini CLI + Codex CLI + shell
 ```
 
 That's it. Requires `bash`, `python3`, `curl`. Zero pip/npm dependencies.
@@ -182,7 +182,7 @@ What it checks:
 
 Most npm attacks use `postinstall` hooks. AVCP checks every package for install scripts and **blocks by default**:
 
-- **Claude Code / Gemini CLI**: shows scripts, asks you to approve
+- **Claude Code / Gemini CLI / Codex CLI**: shows scripts, asks you to approve
 - **Shell**: prompts `[y/N]`, defaults to No
 - **Suggests**: `npm install --ignore-scripts <pkg>`
 
@@ -243,6 +243,7 @@ lib/scanner.py       # multi-ecosystem scanner (python3 stdlib only)
 hooks/
   claude-code.sh     # Claude Code PreToolUse hook
   gemini-cli.sh      # Gemini CLI BeforeTool hook
+  codex-cli.sh       # Codex CLI PreToolUse hook
   shell-wrapper.sh   # wraps 12 package managers in your shell
 ```
 

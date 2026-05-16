@@ -22,6 +22,7 @@ import time
 import uuid
 from typing import Optional
 
+from cli_registry import cli_install_error
 from commander_events import CommanderEvent
 from db import get_db
 from event_bus import bus
@@ -1113,6 +1114,25 @@ async def _resolve_session(
         await db.close()
 
 
+def _coerce_stage_model(resolved_cli: str, model: str | None) -> str | None:
+    """Keep a pipeline stage's model valid for its CLI.
+
+    If `model` clearly belongs to another registered CLI's profile (e.g. a
+    Codex stage inheriting the `sonnet` SESSION_TYPE_DEFAULT), swap it for the
+    resolved CLI's profile default. Unknown or empty models are returned as-is
+    so the caller's own empty-model fallback still applies.
+    """
+    if not model:
+        return model
+    from cli_profiles import PROFILES, get_profile
+    for cid, prof in PROFILES.items():
+        if any(m["id"] == model for m in prof.available_models):
+            if cid != resolved_cli:
+                return get_profile(resolved_cli).default_model
+            return model
+    return model
+
+
 async def _auto_create_session(
     db, workspace_id: str, session_type: str, cli_type: str = None,
     agent_config: dict = None,
@@ -1122,6 +1142,18 @@ async def _auto_create_session(
     Uses agent_config (from stage) with SESSION_TYPE_DEFAULTS fallback.
     """
     resolved_cli = cli_type or "claude"
+
+    # Pipeline stages INSERT sessions directly (not via POST /api/sessions),
+    # so the install guard must be applied here too — otherwise an uninstalled
+    # CLI surfaces as a raw PTY exec failure instead of a clean skip.
+    _install_err = cli_install_error(resolved_cli)
+    if _install_err:
+        logger.warning(
+            "Pipeline: skipping %s %s session — %s",
+            resolved_cli, session_type, _install_err,
+        )
+        return None
+
     session_id = str(uuid.uuid4())
     cfg = agent_config or {}
 
@@ -1132,11 +1164,8 @@ async def _auto_create_session(
     permission_mode = cfg.get("permission_mode") or defaults.get("permission_mode", "auto")
     effort = cfg.get("effort") or defaults.get("effort", "high")
 
-    # Validate model against CLI type
-    if resolved_cli == "gemini" and model in ("sonnet", "opus", "haiku"):
-        model = "gemini-2.5-pro"
-    elif resolved_cli == "claude" and model and model.startswith("gemini"):
-        model = defaults.get("model", "sonnet")
+    # Validate model against CLI type (profile-driven — covers Codex too).
+    model = _coerce_stage_model(resolved_cli, model)
 
     # Fall back to profile default if model still empty
     if not model:

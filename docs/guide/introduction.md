@@ -4,7 +4,7 @@ title: Introduction
 
 # IVE
 
-IVE is a local web app for controlling multiple Claude Code and Gemini CLI terminals from a single browser UI.
+IVE is a local web app for controlling multiple Claude Code, Gemini CLI, and Codex CLI terminals from a single browser UI.
 
 ![IVE main interface](../screenshots/main-layout.png)
 
@@ -12,7 +12,7 @@ IVE is a local web app for controlling multiple Claude Code and Gemini CLI termi
 
 Instead of juggling multiple terminal windows, IVE gives you:
 
-- **Multi-session management** — run many Claude Code or Gemini CLI agents simultaneously in browser tabs
+- **Multi-session management** — run many Claude Code, Gemini CLI, or Codex CLI agents simultaneously in browser tabs
 - **Full terminal emulation** — real PTY sessions with xterm.js (Shift+Tab, plan mode, slash commands all work)
 - **Kanban task board** — built-in project management tied to your agent sessions
 - **Research engine** — self-hosted deep research with web search and source citation
@@ -39,17 +39,18 @@ Backend (localhost:5111)
 
 Everything runs locally — no external services, no cloud.
 
-## Two supported CLIs
+## Supported CLIs
 
 | CLI | Models | Notes |
 |-----|--------|-------|
 | **Claude Code** | Haiku, Sonnet, Opus | Full feature support |
 | **Gemini CLI** | Gemini 2.5 Pro, 2.5 Flash, 2.0 Flash, 3-flash-preview, 3.1-pro-preview | Subset of features |
+| **Codex CLI** | GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.3 Codex | First-class profile with Codex-native MCP, hooks, skills, and resume |
 
 ## Key concepts
 
 - **Workspace** — a folder on disk. Each workspace has its own color, sessions, and settings.
-- **Session** — a real terminal running `claude` or `gemini` interactively.
+- **Session** — a real terminal running `claude`, `gemini`, or `codex` interactively.
 - **Guidelines** — reusable system-prompt fragments attached per-session.
 - **Cascade** — a sequential chain of prompts executed automatically.
 - **RALPH mode** — an autonomous execute → verify → fix loop (up to 20 iterations).

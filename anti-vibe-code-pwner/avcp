@@ -65,7 +65,7 @@ usage() {
   echo "  scan-mcp          Scan for rogue MCP servers + prompt injection"
   echo "  deep-scan <pkg>   Deep diff analysis between flagged and safe versions"
   echo "  intercept <cmd>   Check a single shell command (used by hooks)"
-  echo "  setup <target>    Install hooks for Claude Code, Gemini CLI, or shell"
+  echo "  setup <target>    Install hooks for Claude Code, Gemini CLI, Codex CLI, or shell"
   echo "  ai <pkg>          Alias for deep-scan"
   echo "  version           Show version"
   echo ""
@@ -81,6 +81,8 @@ usage() {
   echo "Setup targets:"
   echo "  claude-code     Install PreToolUse hook in Claude Code"
   echo "  gemini-cli      Install BeforeTool hook in Gemini CLI"
+  echo "  codex-cli       Install PreToolUse hook in Codex CLI"
+  echo "  codex-cli       Install PreToolUse hook in Codex CLI"
   echo "  shell           Add wrappers to your .bashrc/.zshrc"
   echo "  all             Install all of the above"
   echo ""
@@ -2653,20 +2655,23 @@ else:
 
 cmd_setup() {
   local target="${1:-}"
-  [[ -z "$target" ]] && { echo "Usage: avcp setup <claude-code|gemini-cli|shell|all>"; exit 1; }
+  [[ -z "$target" ]] && { echo "Usage: avcp setup <claude-code|gemini-cli|codex-cli|shell|all>"; exit 1; }
 
   case "$target" in
     claude-code) setup_claude_code ;;
     gemini-cli|gemini) setup_gemini_cli ;;
+    codex-cli|codex) setup_codex_cli ;;
     shell) setup_shell ;;
     all)
       setup_claude_code
       echo ""
       setup_gemini_cli
       echo ""
+      setup_codex_cli
+      echo ""
       setup_shell
       ;;
-    *) echo "Unknown target: $target (use: claude-code, gemini-cli, shell, all)"; exit 1 ;;
+    *) echo "Unknown target: $target (use: claude-code, gemini-cli, codex-cli, shell, all)"; exit 1 ;;
   esac
 }
 
@@ -2812,6 +2817,74 @@ print('ok')
   echo -e "  Hook script: ${DIM}${hook_script}${NC}"
   echo ""
   echo -e "  Gemini CLI will now check packages before every install command."
+}
+
+setup_codex_cli() {
+  echo -e "${BOLD}Setting up Codex CLI hook...${NC}"
+
+  local hook_script="$AVCP_DIR/hooks/codex-cli.sh"
+  chmod +x "$hook_script"
+
+  local settings_dir=""
+  local settings_file=""
+  local scope=""
+
+  if [[ -d ".codex" ]]; then
+    settings_dir=".codex"
+    settings_file=".codex/hooks.json"
+    scope="project"
+  else
+    settings_dir="$HOME/.codex"
+    settings_file="$HOME/.codex/hooks.json"
+    scope="global"
+    mkdir -p "$settings_dir"
+  fi
+
+  local existing="{}"
+  if [[ -f "$settings_file" ]]; then
+    existing=$(cat "$settings_file")
+  fi
+
+  python3 -c "
+import json
+
+settings = json.loads('''${existing}''')
+
+hook_entry = {
+    'matcher': 'Bash|shell|shell_command',
+    'hooks': [
+        {
+            'type': 'command',
+            'command': '${hook_script}',
+            'timeout': 30
+        }
+    ]
+}
+
+hooks = settings.setdefault('hooks', {})
+pre_tool = hooks.setdefault('PreToolUse', [])
+
+avcp_exists = False
+for entry in pre_tool:
+    for h in entry.get('hooks', []):
+        if 'avcp' in h.get('command', '').lower() or 'anti-vibe' in h.get('command', '').lower():
+            h['command'] = '${hook_script}'
+            avcp_exists = True
+
+if not avcp_exists:
+    pre_tool.append(hook_entry)
+
+with open('${settings_file}', 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+
+print('ok')
+" 2>/dev/null
+
+  echo -e "  ${GREEN}Done${NC} — hook installed in ${CYAN}${settings_file}${NC} (${scope})"
+  echo -e "  Hook script: ${DIM}${hook_script}${NC}"
+  echo ""
+  echo -e "  Codex CLI will now check packages before every install command."
 }
 
 setup_shell() {

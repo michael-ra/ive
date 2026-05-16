@@ -4,11 +4,12 @@ Exports a Commander plugin (DB-backed) to native disk format so the CLI
 discovers it natively:
   - Claude Code: ~/.claude/plugins/cache/{id}/ with .claude-plugin/plugin.json
   - Gemini CLI:  ~/.gemini/extensions/{name}/ with gemini-extension.json
+  - Codex CLI:   ~/.codex/plugins/{name}/ with .codex-plugin/plugin.json
 
 The exporter handles:
   1. Manifest translation (deterministic field mapping)
   2. Hook event name translation (via cli_profiles.py maps)
-  3. Hook compatibility classification (both / claude-only / gemini-only)
+  3. Hook compatibility classification across registered CLI profiles
   4. MCP variable translation (${CLAUDE_PLUGIN_ROOT} ↔ ${extensionPath})
   5. Skills — copied as-is (100% portable via Agent Skills spec)
   6. Script commands — translated where possible, left as-is for cross-CLI
@@ -22,7 +23,7 @@ import shutil
 from pathlib import Path
 
 from cli_features import HookEvent
-from cli_profiles import CLAUDE_PROFILE, GEMINI_PROFILE
+from cli_profiles import PROFILES, get_profile
 
 log = logging.getLogger(__name__)
 
@@ -36,18 +37,24 @@ _VAR_MAPS = {
     ("gemini", "claude"): [
         ("${extensionPath}", "${CLAUDE_PLUGIN_ROOT}"),
     ],
+    ("claude", "codex"): [
+        ("${CLAUDE_PLUGIN_ROOT}", "${CODEX_PLUGIN_ROOT}"),
+        ("${CLAUDE_PLUGIN_DATA}", "${CODEX_PLUGIN_ROOT}/data"),
+        (".claude/skills/", ".agents/skills/"),
+    ],
+    ("codex", "claude"): [
+        ("${CODEX_PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}"),
+        (".agents/skills/", ".claude/skills/"),
+    ],
+    ("gemini", "codex"): [
+        ("${extensionPath}", "${CODEX_PLUGIN_ROOT}"),
+        (".gemini/skills/", ".agents/skills/"),
+    ],
+    ("codex", "gemini"): [
+        ("${CODEX_PLUGIN_ROOT}", "${extensionPath}"),
+        (".agents/skills/", ".gemini/skills/"),
+    ],
 }
-
-# ─── Profile lookup ──────────────────────────────────────────────────────
-
-_PROFILES = {
-    "claude": CLAUDE_PROFILE,
-    "gemini": GEMINI_PROFILE,
-}
-
-
-def _get_profile(cli: str):
-    return _PROFILES.get(cli, CLAUDE_PROFILE)
 
 
 # ─── Hook compatibility classification ──────────────────────────────────
@@ -62,10 +69,11 @@ def classify_hook(trigger: str) -> dict:
         {
             "claude": bool,
             "gemini": bool,
-            "both": bool,
+            "both": bool,  # backward-compatible Claude+Gemini support flag
             "canonical": str or None,
             "claude_name": str or None,
             "gemini_name": str or None,
+            "codex_name": str or None,
         }
     """
     canonical = None
@@ -75,29 +83,29 @@ def classify_hook(trigger: str) -> dict:
         canonical = HookEvent(trigger)
     except ValueError:
         # Try as native name in either profile
-        for profile in (CLAUDE_PROFILE, GEMINI_PROFILE):
+        for profile in PROFILES.values():
             c = profile.canonical_hook(trigger)
             if c:
                 canonical = c
                 break
 
     if not canonical:
-        return {
-            "claude": False, "gemini": False, "both": False,
-            "canonical": None, "claude_name": None, "gemini_name": None,
-        }
+        result = {cli: False for cli in PROFILES}
+        result.update({
+            "both": False,
+            "canonical": None,
+            **{f"{cli}_name": None for cli in PROFILES},
+        })
+        return result
 
-    claude_name = CLAUDE_PROFILE.native_hook(canonical)
-    gemini_name = GEMINI_PROFILE.native_hook(canonical)
-
-    return {
-        "claude": claude_name is not None,
-        "gemini": gemini_name is not None,
-        "both": claude_name is not None and gemini_name is not None,
+    native_names = {cli: profile.native_hook(canonical) for cli, profile in PROFILES.items()}
+    result = {cli: native_names[cli] is not None for cli in PROFILES}
+    result.update({
+        "both": bool(result.get("claude") and result.get("gemini")),
         "canonical": canonical.value,
-        "claude_name": claude_name,
-        "gemini_name": gemini_name,
-    }
+        **{f"{cli}_name": name for cli, name in native_names.items()},
+    })
+    return result
 
 
 def classify_plugin_hooks(components: list[dict]) -> dict:
@@ -108,17 +116,25 @@ def classify_plugin_hooks(components: list[dict]) -> dict:
             "both": [comp, ...],        # works in both CLIs
             "claude_only": [comp, ...],  # only fires in Claude
             "gemini_only": [comp, ...],  # only fires in Gemini
+            "codex_only": [comp, ...],   # only fires in Codex
             "unknown": [comp, ...],      # unrecognized trigger
             "summary": {
                 "total": int,
                 "both": int,
                 "claude_only": int,
                 "gemini_only": int,
+                "codex_only": int,
                 "unknown": int,
             }
         }
     """
-    result = {"both": [], "claude_only": [], "gemini_only": [], "unknown": []}
+    result = {
+        "both": [],
+        "claude_only": [],
+        "gemini_only": [],
+        "codex_only": [],
+        "unknown": [],
+    }
 
     scripts = [c for c in components if c.get("type") == "script"]
     for comp in scripts:
@@ -128,18 +144,21 @@ def classify_plugin_hooks(components: list[dict]) -> dict:
         compat = classify_hook(trigger)
         if compat["both"]:
             result["both"].append(comp)
-        elif compat["claude"] and not compat["gemini"]:
-            result["claude_only"].append(comp)
-        elif compat["gemini"] and not compat["claude"]:
-            result["gemini_only"].append(comp)
         else:
-            result["unknown"].append(comp)
+            supported = [cli for cli in PROFILES if compat.get(cli)]
+            if len(supported) == 1 and f"{supported[0]}_only" in result:
+                result[f"{supported[0]}_only"].append(comp)
+            elif supported:
+                result["both"].append(comp)
+            else:
+                result["unknown"].append(comp)
 
     result["summary"] = {
         "total": sum(len(v) for v in result.values() if isinstance(v, list)),
         "both": len(result["both"]),
         "claude_only": len(result["claude_only"]),
         "gemini_only": len(result["gemini_only"]),
+        "codex_only": len(result["codex_only"]),
         "unknown": len(result["unknown"]),
     }
     return result
@@ -181,6 +200,27 @@ def _build_gemini_manifest(plugin: dict) -> dict:
     return manifest
 
 
+def _build_codex_manifest(plugin: dict, has_skills: bool = False,
+                          has_hooks: bool = False) -> dict:
+    """Commander plugin → Codex .codex-plugin/plugin.json."""
+    manifest = {"name": _slugify(plugin.get("name", "unnamed"))}
+    if plugin.get("version"):
+        manifest["version"] = plugin["version"]
+    if plugin.get("description"):
+        manifest["description"] = plugin["description"]
+    if plugin.get("author"):
+        manifest["publisher"] = plugin["author"]
+    if plugin.get("source_url"):
+        manifest["repository"] = plugin["source_url"]
+    if plugin.get("license"):
+        manifest["license"] = plugin["license"]
+    if has_skills:
+        manifest["skills"] = "./skills/"
+    if has_hooks:
+        manifest["hooks"] = "./hooks/hooks.json"
+    return manifest
+
+
 # ─── Hook translation ────────────────────────────────────────────────────
 
 def translate_hooks(hooks_data: dict, source_cli: str, target_cli: str) -> tuple[dict, list[str]]:
@@ -189,8 +229,8 @@ def translate_hooks(hooks_data: dict, source_cli: str, target_cli: str) -> tuple
     Returns:
         (translated_hooks, warnings)
     """
-    source_profile = _get_profile(source_cli)
-    target_profile = _get_profile(target_cli)
+    source_profile = get_profile(source_cli)
+    target_profile = get_profile(target_cli)
     warnings = []
     translated = {}
 
@@ -254,6 +294,8 @@ class PluginExporter:
             return await self._export_claude(plugin, components, dest)
         elif target_cli == "gemini":
             return await self._export_gemini(plugin, components, dest)
+        elif target_cli == "codex":
+            return await self._export_codex(plugin, components, dest)
         else:
             return {"ok": False, "error": f"Unknown target CLI: {target_cli}"}
 
@@ -379,6 +421,57 @@ class PluginExporter:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    async def _export_codex(self, plugin: dict, components: list[dict], dest: Path) -> dict:
+        """Write as a Codex CLI plugin."""
+        warnings = []
+        hooks_summary = {"installed": 0, "skipped": 0, "skipped_events": []}
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+
+            skills = [c for c in components if c.get("type") == "guideline" and c.get("activation") == "on_demand"]
+            scripts = [c for c in components if c.get("type") == "script"]
+
+            hooks_json = {"hooks": {}}
+            if scripts:
+                hooks_json, hw, hs = self._components_to_hooks_json(scripts, "codex")
+                warnings.extend(hw)
+                hooks_summary = hs
+
+            manifest_dir = dest / ".codex-plugin"
+            manifest_dir.mkdir(exist_ok=True)
+            manifest = _build_codex_manifest(
+                plugin,
+                has_skills=bool(skills),
+                has_hooks=bool(hooks_json.get("hooks")),
+            )
+            (manifest_dir / "plugin.json").write_text(
+                json.dumps(manifest, indent=2), encoding="utf-8"
+            )
+
+            if skills:
+                skills_dir = dest / "skills"
+                skills_dir.mkdir(exist_ok=True)
+                for skill in skills:
+                    name = _slugify(skill.get("name", "unnamed"))
+                    skill_dir = skills_dir / name
+                    skill_dir.mkdir(exist_ok=True)
+                    (skill_dir / "SKILL.md").write_text(
+                        skill.get("content", ""), encoding="utf-8"
+                    )
+
+            if hooks_json.get("hooks"):
+                hooks_dir = dest / "hooks"
+                hooks_dir.mkdir(exist_ok=True)
+                (hooks_dir / "hooks.json").write_text(
+                    json.dumps(hooks_json, indent=2), encoding="utf-8"
+                )
+
+            log.info("Exported plugin '%s' to Codex at %s", plugin.get("name"), dest)
+            return {"ok": True, "path": str(dest), "warnings": warnings, "hooks_summary": hooks_summary}
+
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def _components_to_hooks_json(
         self, script_components: list[dict], target_cli: str
     ) -> tuple[dict, list[str], dict]:
@@ -392,7 +485,7 @@ class PluginExporter:
         Returns:
             (hooks_json, warnings, hooks_summary)
         """
-        target_profile = _get_profile(target_cli)
+        target_profile = get_profile(target_cli)
         hooks = {}
         warnings = []
         installed = 0
@@ -425,9 +518,9 @@ class PluginExporter:
                 hooks[native_name] = []
 
             # Translate variables in command content, but leave CLI commands as-is
-            # (cross-CLI fallback — both CLIs are installed on the system)
+            # (cross-CLI fallback — multiple CLIs may be installed on the system)
             command = comp.get("content", "")
-            for source_cli in ("claude", "gemini"):
+            for source_cli in PROFILES:
                 if source_cli != target_cli:
                     command = translate_mcp_vars(command, source_cli, target_cli)
 

@@ -396,7 +396,7 @@ async def install_plugin(plugin_id: str, *, skip_scripts: bool = False) -> dict[
         on_demand = [c for c in components if c.get("activation") == "on_demand"
                      and c.get("type") == "guideline" and c.get("content")]
         if on_demand:
-            from skill_installer import install_skill
+            from skill_installer import install_skill, default_cli_types
             for comp in on_demand:
                 name = comp.get("name", "unnamed")
                 content = comp["content"]
@@ -406,7 +406,7 @@ async def install_plugin(plugin_id: str, *, skip_scripts: bool = False) -> dict[
                 try:
                     await install_skill(
                         name=name, content=skill_md,
-                        cli_types=["claude", "gemini"], scope="user",
+                        cli_types=default_cli_types(), scope="user",
                     )
                 except Exception as e:
                     log.warning("Failed to write on_demand skill %s to disk: %s", name, e)
@@ -465,10 +465,10 @@ async def uninstall_plugin(plugin_id: str) -> bool:
         )
         on_demand_names = [r["name"] for r in await cur_od.fetchall()]
         if on_demand_names:
-            from skill_installer import uninstall_skill
+            from skill_installer import uninstall_skill, default_cli_types
             for name in on_demand_names:
                 try:
-                    await uninstall_skill(name=name, cli_types=["claude", "gemini"], scope="user")
+                    await uninstall_skill(name=name, cli_types=default_cli_types(), scope="user")
                 except Exception as e:
                     log.warning("Failed to remove on_demand skill %s from disk: %s", name, e)
 

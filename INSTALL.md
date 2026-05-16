@@ -27,6 +27,7 @@ feature. IVE will run without them — `start.sh` warns but does not exit.
 |------|---------|
 | **claude** CLI ([install](https://docs.anthropic.com/claude-code)) | Claude Code sessions |
 | **gemini** CLI ([install](https://github.com/google-gemini/gemini-cli)) | Gemini CLI sessions |
+| **codex** CLI ([install](https://developers.openai.com/codex/cli)) | Codex CLI sessions |
 | **cloudflared** | `--tunnel` mode (auto-installed via brew/apt when needed) |
 | **ffmpeg** | Documentor's GIF recording (`brew install ffmpeg` / `apt install ffmpeg`) |
 | **sqlite3** CLI | Auto-update-CLI setting (gracefully skipped if missing) |
@@ -84,11 +85,11 @@ cd ive
 `start.sh` will, in order:
 
 1. Run a one-time dependency check (Python, Node, pip, sqlite3, ffmpeg,
-   git, Claude/Gemini CLIs). Required tools fail fast with an install
+   git, Claude/Gemini/Codex CLIs). Required tools fail fast with an install
    hint; optional tools warn and continue. The result is cached.
 2. Bootstrap a venv at `~/.ive/venv` if the system Python refuses pip
    installs (PEP 668), otherwise use system pip.
-3. Auto-update the `claude` / `gemini` CLIs if you have them and the
+3. Auto-update the `claude` / `gemini` / `codex` CLIs if you have them and the
    `auto_update_cli` setting is on.
 4. Install `backend/requirements.txt` into the chosen interpreter
    (skipped if up to date).

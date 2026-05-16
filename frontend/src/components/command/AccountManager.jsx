@@ -42,7 +42,7 @@ export default function AccountManager({ onClose }) {
   const [tick, setTick] = useState(0) // drives countdown re-renders
   const [pwBusy, setPwBusy] = useState(null) // account id with in-flight Playwright op
   const [authStatuses, setAuthStatuses] = useState({}) // id → { has_browser_context, has_auth_snapshot }
-  const [detected, setDetected] = useState({ browsers: [], profiles: [], has_claude_auth: false, has_gemini_auth: false })
+  const [detected, setDetected] = useState({ browsers: [], profiles: [], has_claude_auth: false, has_gemini_auth: false, has_codex_auth: false })
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [creatingPhase, setCreatingPhase] = useState(null) // null | 'creating' | 'snapshotting'
   const listRef = useRef(null)
@@ -538,6 +538,14 @@ export default function AccountManager({ onClose }) {
                             <Theater size={10} />
                             {pwBusy === selected.id ? '…' : 'or for Gemini'}
                           </button>
+                          <button
+                            onClick={() => handleSetupBrowser(selected, 'codex')}
+                            disabled={pwBusy === selected.id}
+                            className="flex items-center gap-1 px-1.5 py-1 text-[11px] bg-violet-600/30 hover:bg-violet-600/50 text-violet-200 rounded disabled:opacity-50"
+                          >
+                            <Theater size={10} />
+                            {pwBusy === selected.id ? '…' : 'or for Codex'}
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -689,8 +697,17 @@ export default function AccountManager({ onClose }) {
                           {pwBusy === selected.id ? 'opening...' : 'setup gemini'}
                         </button>
                         <button
+                          onClick={() => handleSetupBrowser(selected, 'codex')}
+                          disabled={pwBusy === selected.id}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded transition-colors disabled:opacity-50"
+                          title="Run `codex login` inside a visible Playwright window — saves OpenAI cookies and Codex auth"
+                        >
+                          <Theater size={10} />
+                          {pwBusy === selected.id ? 'opening...' : 'setup codex'}
+                        </button>
+                        <button
                           onClick={async () => {
-                            const result = await api.snapshotAccount(selected.id)
+                            const result = await api.snapshotAccount(selected.id, 'claude')
                             if (result.ok) {
                               alert(`Auth snapshotted: ${result.files} files captured. This account can now run in its own sandbox.`)
                               const updated = await api.getAccounts()
@@ -705,6 +722,24 @@ export default function AccountManager({ onClose }) {
                         >
                           <RefreshCw size={10} />
                           snapshot ~/.claude/
+                        </button>
+                        <button
+                          onClick={async () => {
+                            const result = await api.snapshotAccount(selected.id, 'codex')
+                            if (result.ok) {
+                              alert(`Codex auth snapshotted: ${result.files} files captured.`)
+                              const updated = await api.getAccounts()
+                              setAccounts(updated)
+                              setSelected(updated.find((a) => a.id === selected.id))
+                            } else {
+                              alert(result.error || 'Snapshot failed')
+                            }
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 rounded transition-colors"
+                          title="Copy ~/.codex/ into this account's sandbox dir (use after `codex login` outside IVE)"
+                        >
+                          <RefreshCw size={10} />
+                          snapshot ~/.codex/
                         </button>
                       </div>
                     </div>
@@ -733,7 +768,16 @@ export default function AccountManager({ onClose }) {
                             title="Re-authenticate Gemini CLI using saved Playwright cookies (headless)"
                           >
                             <KeyRound size={10} />
-                            {pwBusy === selected.id ? 'authing...' : 'auth gemini'}
+                          {pwBusy === selected.id ? 'authing...' : 'auth gemini'}
+                        </button>
+                          <button
+                            onClick={() => handlePlaywrightAuth(selected, 'codex')}
+                            disabled={pwBusy === selected.id}
+                            className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 rounded transition-colors disabled:opacity-50"
+                            title="Re-authenticate Codex CLI using saved Playwright cookies (headless)"
+                          >
+                            <KeyRound size={10} />
+                            {pwBusy === selected.id ? 'authing...' : 'auth codex'}
                           </button>
                         </div>
                       </div>
@@ -775,6 +819,21 @@ export default function AccountManager({ onClose }) {
                         >
                           <Globe size={10} />
                           open gemini
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const result = await api.openAccountBrowser(selected.id, { cli_type: 'codex' })
+                              if (!result.ok) alert(result.error || 'Failed to open browser')
+                            } catch (e) {
+                              alert('Failed: ' + e.message)
+                            }
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-1.5 text-[11px] bg-zinc-700/40 hover:bg-zinc-700/60 text-zinc-300 rounded transition-colors"
+                          title="Open ChatGPT Codex in this account's browser/profile"
+                        >
+                          <Globe size={10} />
+                          open codex
                         </button>
                         {selected.api_key && (
                           <button

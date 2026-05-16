@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { FolderOpen, X, Save, ChevronDown, ChevronRight, Check, GitBranch, MessageSquare, Shield, Brain, ExternalLink, Monitor, Play, Users, RotateCcw, Layers, Plus, Trash2, Link, BookOpen } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
-import { MODELS, GEMINI_MODELS, getWorkspaceColor, WORKSPACE_PALETTE } from '../../lib/constants'
+import { MODELS, GEMINI_MODELS, CODEX_MODELS, getWorkspaceColor, WORKSPACE_PALETTE } from '../../lib/constants'
 import { COLUMNS as BOARD_COLUMNS } from '../../lib/boardColumns'
 
 const OVERSIGHT_OPTIONS = [
@@ -19,6 +19,7 @@ const TESTER_MODE_OPTIONS = [
 const RESEARCH_MODELS = [
   { group: 'Claude', items: MODELS },
   { group: 'Gemini', items: GEMINI_MODELS },
+  { group: 'Codex', items: CODEX_MODELS },
 ]
 
 const BOARD_DOC_MODE_OPTIONS = [
@@ -35,6 +36,7 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
   const [savingId, setSavingId] = useState(null)
   const [savedId, setSavedId] = useState(null)
   const [coordEnabled, setCoordEnabled] = useState(false)
+  const [hookInstallMode, setHookInstallMode] = useState('session_scoped')
   const scrollRef = useRef(null)
   const itemRefs = useRef({})
 
@@ -42,6 +44,9 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
   useEffect(() => {
     api.getAppSetting('experimental_myelin_coordination')
       .then((r) => setCoordEnabled(r?.value === 'on'))
+      .catch(() => {})
+    api.getAppSetting('cli_hook_install_mode')
+      .then((r) => setHookInstallMode(r?.value || 'session_scoped'))
       .catch(() => {})
   }, [])
 
@@ -90,6 +95,15 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
 
   const updateField = (wsId, key, value) => {
     setForms((f) => ({ ...f, [wsId]: { ...f[wsId], [key]: value } }))
+  }
+
+  const updateHookInstallMode = async (mode) => {
+    setHookInstallMode(mode)
+    try {
+      await api.setAppSetting('cli_hook_install_mode', mode)
+    } catch (e) {
+      console.warn('Failed to update hook install mode', e)
+    }
   }
 
   const saveWorkspace = async (wsId) => {
@@ -332,6 +346,36 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
                       {/* Native Terminals */}
                       <div className="text-[10px] text-text-muted font-semibold uppercase tracking-wider mt-2 mb-1">Native Terminals</div>
 
+                      <Field label="Hook Scope" hint="Where Claude/Gemini/Codex hook config is written">
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {[
+                            ['session_scoped', 'Session', 'IVE homes only'],
+                            ['global', 'Global', 'External CLIs'],
+                            ['disabled', 'Off', 'PTY only'],
+                          ].map(([mode, label, desc]) => (
+                            <button
+                              key={mode}
+                              onClick={() => updateHookInstallMode(mode)}
+                              className={`flex flex-col items-start gap-0.5 px-2.5 py-2 rounded text-left border transition-colors ${
+                                hookInstallMode === mode
+                                  ? 'border-accent-primary bg-accent-primary/15 text-accent-primary'
+                                  : 'border-border-secondary text-text-faint hover:border-border-primary hover:text-text-secondary'
+                              }`}
+                            >
+                              <span className="flex items-center gap-1.5 text-[11px] font-mono">
+                                <Shield size={11} /> {label}
+                              </span>
+                              <span className="text-[9px] opacity-70">{desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <p className="mt-1.5 text-[10px] text-text-faint leading-relaxed">
+                          Session mode is the default: IVE-managed sessions get isolated hook config.
+                          Global mode writes native CLI hook settings and is only needed for manually
+                          started terminals to auto-register.
+                        </p>
+                      </Field>
+
                       <Field label="Pop-Out Terminals" hint="Run sessions in native OS terminal windows">
                         <button
                           onClick={() => updateField(ws.id, 'native_terminals_enabled', form.native_terminals_enabled ? 0 : 1)}
@@ -375,15 +419,15 @@ export default function WorkspaceSettingsPanel({ onClose, initialWorkspaceId }) 
                               <span className="flex-1" />
                               <span className="text-[10px] opacity-60">
                                 {form.auto_register_terminals
-                                  ? 'External CLIs in this workspace auto-join Commander'
-                                  : 'Only popped-out sessions are tracked'}
+                                  ? 'External terminal hook integration is enabled'
+                                  : 'IVE-managed sessions only'}
                               </span>
                             </button>
                             {form.auto_register_terminals ? (
                               <p className="text-[10px] text-text-faint ml-1">
-                                Any Claude/Gemini CLI started in this workspace directory will
-                                automatically appear in Commander with full hook tracking.
-                                Reinstall hooks after enabling (start.sh does this automatically).
+                                Opt-in mode for manually started Claude/Gemini/Codex CLIs in this workspace.
+                                IVE-managed sessions use session-scoped hook config and do not require global CLI hook settings.
+                                {hookInstallMode !== 'global' ? ' Select Global hook scope above for external auto-register.' : ''}
                               </p>
                             ) : null}
                           </div>

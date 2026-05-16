@@ -2,7 +2,7 @@
 Hook installer for IVE.
 
 Generates the relay script (~/.ive/hooks/hook.sh) and installs
-hook entries into Claude Code and Gemini CLI settings files. Hooks are
+hook entries into registered CLI settings files. Hooks are
 identified by the hook.sh path so they can be cleanly uninstalled.
 
 The relay script is env-var-gated: it only POSTs to IVE when
@@ -12,15 +12,17 @@ COMMANDER_SESSION_ID is set. Non-IVE CLI sessions exit immediately.
 import json
 import logging
 import os
+import shutil
 import stat
 from pathlib import Path
 
-from config import HOOKS_DIR
+from config import DATA_DIR, HOOKS_DIR
 
 logger = logging.getLogger(__name__)
 
 HOOK_SCRIPT_NAME = "hook.sh"
 HOOK_SCRIPT_PATH = HOOKS_DIR / HOOK_SCRIPT_NAME
+SESSION_HOMES_DIR = DATA_DIR / "session_homes"
 
 # Marker used to identify Commander-installed hooks during uninstall
 _HOOK_MARKER = str(HOOK_SCRIPT_PATH)
@@ -48,7 +50,9 @@ if [ -z "$COMMANDER_SESSION_ID" ]; then
   else
     # Detect CLI type from the parent process
     CLI_TYPE="claude"
-    if ps -p $PPID -o comm= 2>/dev/null | grep -qi gemini; then
+    if ps -p $PPID -o comm= 2>/dev/null | grep -qi codex; then
+      CLI_TYPE="codex"
+    elif ps -p $PPID -o comm= 2>/dev/null | grep -qi gemini; then
       CLI_TYPE="gemini"
     fi
 
@@ -111,6 +115,107 @@ def generate_hook_script():
     # Make executable
     HOOK_SCRIPT_PATH.chmod(HOOK_SCRIPT_PATH.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     logger.info(f"Hook script written to {HOOK_SCRIPT_PATH}")
+
+
+def prepare_runtime_hooks():
+    """Prepare hook relay scripts without mutating any native CLI settings."""
+    generate_hook_script()
+
+
+_SESSION_HOME_SYMLINKS = [
+    ".zshrc", ".bashrc", ".bash_profile", ".profile",
+    ".gitconfig", ".ssh", ".npm", ".node", ".nvm",
+    ".cargo", ".rustup", ".go", ".config",
+]
+
+
+def _settings_path_for_home(profile, home_dir: Path) -> Path:
+    settings_file = str(profile.settings_file)
+    if settings_file.startswith("~/"):
+        return home_dir / settings_file[2:]
+    if settings_file.startswith("~"):
+        return home_dir / settings_file[1:].lstrip("/")
+    return home_dir / settings_file
+
+
+def _profile_home_in(home_dir: Path, profile) -> Path:
+    return home_dir / profile.auth_dir_name
+
+
+def _copy_profile_home_once(profile, source_home: Path, target_home: Path) -> None:
+    source_cli_home = source_home / profile.auth_dir_name
+    target_cli_home = _profile_home_in(target_home, profile)
+    if target_cli_home.exists():
+        return
+    target_cli_home.parent.mkdir(parents=True, exist_ok=True)
+    if source_cli_home.exists():
+        shutil.copytree(
+            source_cli_home,
+            target_cli_home,
+            symlinks=True,
+            ignore=shutil.ignore_patterns("*.log", "logs"),
+        )
+    else:
+        target_cli_home.mkdir(parents=True, exist_ok=True)
+
+
+def _symlink_common_home_entries(source_home: Path, target_home: Path, profile) -> None:
+    target_home.mkdir(parents=True, exist_ok=True)
+    for name in _SESSION_HOME_SYMLINKS:
+        if name == profile.auth_dir_name:
+            continue
+        src = source_home / name
+        dst = target_home / name
+        if not src.exists() or dst.exists():
+            continue
+        try:
+            dst.symlink_to(src)
+        except OSError as e:
+            logger.debug("Session-home symlink skipped %s -> %s: %s", dst, src, e)
+
+
+def _session_env_for_profile(profile, home_dir: Path) -> dict[str, str]:
+    env = {"HOME": str(home_dir)}
+    cli_home = _profile_home_in(home_dir, profile)
+    if profile.home_env_var:
+        env[profile.home_env_var] = str(cli_home)
+    return env
+
+
+def prepare_session_hook_home(
+    profile,
+    session_id: str,
+    *,
+    source_home: str | Path | None = None,
+    include_avcp: bool = False,
+    include_safety_gate: bool = False,
+    include_myelin: bool = False,
+) -> dict[str, str]:
+    """Create an IVE-owned HOME for one managed session and install hooks there.
+
+    The source CLI home is copied once so existing auth, MCP, skills, and user
+    settings are visible to the managed CLI, but hook changes land only in the
+    session home under ~/.ive/session_homes/<session_id>/.
+    """
+    prepare_runtime_hooks()
+    src_home = Path(source_home).expanduser() if source_home else Path.home()
+    session_home = SESSION_HOMES_DIR / session_id
+    _copy_profile_home_once(profile, src_home, session_home)
+    _symlink_common_home_entries(src_home, session_home, profile)
+
+    settings_path = _settings_path_for_home(profile, session_home)
+    settings = _read_settings(settings_path)
+    settings = _merge_hooks(settings, profile.default_hook_events)
+    settings = _merge_session_optional_hooks(
+        settings,
+        profile,
+        include_avcp=include_avcp,
+        include_safety_gate=include_safety_gate,
+        include_myelin=include_myelin,
+    )
+    _write_settings(settings_path, settings)
+
+    return _session_env_for_profile(profile, session_home)
 
 
 # ─── Settings merge helpers ──────────────────────────────────────────
@@ -194,6 +299,7 @@ def _remove_hooks(settings: dict) -> dict:
 # CLIProfile.  Adding a third CLI only requires a new profile — nothing
 # in this file needs to change.
 
+from cli_features import HookEvent
 from cli_profiles import CLIProfile, PROFILES, get_profile
 
 # Backward-compat aliases — existing code may reference these directly.
@@ -219,9 +325,15 @@ def install_hooks_for_profile(profile: CLIProfile):
 def uninstall_hooks_for_profile(profile: CLIProfile):
     """Remove Commander hooks from a CLI's settings file."""
     path = _settings_path_for(profile)
+    if not path.exists():
+        logger.info("Hook settings absent, nothing to remove: %s (%s)", path, profile.id)
+        return
     settings = _read_settings(path)
     settings = _remove_hooks(settings)
-    _write_settings(path, settings)
+    if settings:
+        _write_settings(path, settings)
+    else:
+        path.unlink(missing_ok=True)
     logger.info("Hooks removed from %s (%s)", path, profile.id)
 
 
@@ -248,8 +360,10 @@ def uninstall_gemini_hooks():
 
 from resource_path import project_root
 AVCP_DIR = project_root() / "anti-vibe-code-pwner"
-AVCP_CLAUDE_HOOK = AVCP_DIR / "hooks" / "claude-code.sh"
-AVCP_GEMINI_HOOK = AVCP_DIR / "hooks" / "gemini-cli.sh"
+AVCP_HOOKS_DIR = AVCP_DIR / "hooks"
+AVCP_CLAUDE_HOOK = AVCP_HOOKS_DIR / "claude-code.sh"
+AVCP_GEMINI_HOOK = AVCP_HOOKS_DIR / "gemini-cli.sh"
+AVCP_CODEX_HOOK = AVCP_HOOKS_DIR / "codex-cli.sh"
 
 # Marker: any hook whose command path contains "avcp" or "anti-vibe"
 _AVCP_MARKER_STRINGS = ("avcp", "anti-vibe")
@@ -260,26 +374,38 @@ def _is_avcp_hook(hook: dict) -> bool:
     return any(m in cmd for m in _AVCP_MARKER_STRINGS)
 
 
-def _avcp_claude_entry() -> dict:
+def _avcp_entry(profile) -> dict:
+    """AVCP hook entry for any CLI, driven entirely by profile fields."""
     return {
-        "matcher": "Bash",
+        "matcher": profile.avcp_matcher,
         "hooks": [{
             "type": "command",
-            "command": str(AVCP_CLAUDE_HOOK),
-            "timeout": 30,
+            "command": str(AVCP_HOOKS_DIR / profile.avcp_hook_script),
+            "timeout": profile.avcp_timeout,
         }],
     }
+
+
+def _avcp_scripts() -> list[Path]:
+    """All AVCP relay script paths across registered profiles."""
+    seen, out = set(), []
+    for p in PROFILES.values():
+        if p.avcp_hook_script and p.avcp_hook_script not in seen:
+            seen.add(p.avcp_hook_script)
+            out.append(AVCP_HOOKS_DIR / p.avcp_hook_script)
+    return out
+
+
+def _avcp_claude_entry() -> dict:
+    return _avcp_entry(get_profile("claude"))
 
 
 def _avcp_gemini_entry() -> dict:
-    return {
-        "matcher": "shell_execute|run_shell_command|Bash",
-        "hooks": [{
-            "type": "command",
-            "command": str(AVCP_GEMINI_HOOK),
-            "timeout": 30000,
-        }],
-    }
+    return _avcp_entry(get_profile("gemini"))
+
+
+def _avcp_codex_entry() -> dict:
+    return _avcp_entry(get_profile("codex"))
 
 
 def _remove_avcp_from_settings(settings: dict) -> dict:
@@ -303,60 +429,58 @@ def _remove_avcp_from_settings(settings: dict) -> dict:
 
 
 def install_avcp_hooks():
-    """Install AVCP hooks into Claude Code and (if present) Gemini CLI."""
+    """Install AVCP hooks into registered CLI settings."""
     if not AVCP_CLAUDE_HOOK.exists():
         logger.warning(f"AVCP hook not found at {AVCP_CLAUDE_HOOK}")
         return
 
     # Make hook scripts executable
-    for hook_path in (AVCP_CLAUDE_HOOK, AVCP_GEMINI_HOOK):
+    for hook_path in _avcp_scripts():
         if hook_path.exists():
             hook_path.chmod(
                 hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
             )
 
-    # Claude Code → PreToolUse
-    settings = _read_settings(CLAUDE_SETTINGS)
-    hooks = settings.setdefault("hooks", {})
-    pre_tool = hooks.setdefault("PreToolUse", [])
-    already = any(
-        _is_avcp_hook(h)
-        for group in pre_tool
-        for h in group.get("hooks", [])
-    )
-    if not already:
-        pre_tool.append(_avcp_claude_entry())
-    _write_settings(CLAUDE_SETTINGS, settings)
-    logger.info(f"AVCP hook installed in {CLAUDE_SETTINGS} (PreToolUse)")
-
-    # Gemini CLI → BeforeTool (only if ~/.gemini exists)
-    if GEMINI_SETTINGS.parent.exists() and AVCP_GEMINI_HOOK.exists():
-        settings = _read_settings(GEMINI_SETTINGS)
+    # Profile-driven install: Claude always; other CLIs only if their config
+    # dir already exists. Native event comes from each profile's hook map
+    # (Claude/Codex → PreToolUse, Gemini → BeforeTool).
+    for cli_id, profile in PROFILES.items():
+        if not profile.avcp_hook_script:
+            continue
+        script = AVCP_HOOKS_DIR / profile.avcp_hook_script
+        if not script.exists():
+            continue
+        settings_path = _settings_path_for(profile)
+        if cli_id != "claude" and not settings_path.parent.exists():
+            continue
+        settings = _read_settings(settings_path)
         hooks = settings.setdefault("hooks", {})
-        before_tool = hooks.setdefault("BeforeTool", [])
+        event = profile.native_hook(HookEvent.PRE_TOOL)
+        bucket = hooks.setdefault(event, [])
         already = any(
             _is_avcp_hook(h)
-            for group in before_tool
+            for group in bucket
             for h in group.get("hooks", [])
         )
         if not already:
-            before_tool.append(_avcp_gemini_entry())
-        _write_settings(GEMINI_SETTINGS, settings)
-        logger.info(f"AVCP hook installed in {GEMINI_SETTINGS} (BeforeTool)")
+            bucket.append(_avcp_entry(profile))
+        _write_settings(settings_path, settings)
+        logger.info(f"AVCP hook installed in {settings_path} ({event})")
 
 
 def uninstall_avcp_hooks():
     """Remove AVCP hooks from all CLI settings files."""
-    settings = _read_settings(CLAUDE_SETTINGS)
-    settings = _remove_avcp_from_settings(settings)
-    _write_settings(CLAUDE_SETTINGS, settings)
-    logger.info(f"AVCP hooks removed from {CLAUDE_SETTINGS}")
-
-    if GEMINI_SETTINGS.exists():
-        settings = _read_settings(GEMINI_SETTINGS)
+    for profile in PROFILES.values():
+        settings_path = _settings_path_for(profile)
+        if not settings_path.exists():
+            continue
+        settings = _read_settings(settings_path)
         settings = _remove_avcp_from_settings(settings)
-        _write_settings(GEMINI_SETTINGS, settings)
-        logger.info(f"AVCP hooks removed from {GEMINI_SETTINGS}")
+        if settings:
+            _write_settings(settings_path, settings)
+        else:
+            settings_path.unlink(missing_ok=True)
+        logger.info(f"AVCP hooks removed from {settings_path}")
 
 
 def check_avcp_installation() -> dict:
@@ -370,12 +494,13 @@ def check_avcp_installation() -> dict:
                         return True
         return False
 
-    return {
-        "claude": _has_avcp(CLAUDE_SETTINGS),
-        "gemini": _has_avcp(GEMINI_SETTINGS) if GEMINI_SETTINGS.exists() else False,
-        "avcp_exists": AVCP_DIR.exists(),
-        "hook_script": str(AVCP_CLAUDE_HOOK),
+    status = {
+        profile.id: _has_avcp(_settings_path_for(profile))
+        for profile in PROFILES.values()
     }
+    status["avcp_exists"] = AVCP_DIR.exists()
+    status["hook_script"] = str(AVCP_CLAUDE_HOOK)
+    return status
 
 
 # ─── Myelin coordination hooks ──────────────────────────────────────────
@@ -453,45 +578,50 @@ def _remove_myelin_from_settings(settings: dict) -> dict:
     return settings
 
 
+def _myelin_events_for_profile(profile: CLIProfile) -> list[tuple[str, callable]]:
+    prompt_event = profile.native_hook(HookEvent.PROMPT_SUBMIT)
+    tool_event = profile.native_hook(HookEvent.PRE_TOOL)
+    events = []
+    if prompt_event:
+        events.append((prompt_event, _myelin_prompt_entry))
+    if tool_event:
+        matcher = profile.tool_event_matcher
+        events.append((tool_event, lambda matcher=matcher: _myelin_tool_entry(matcher)))
+    return events
+
+
 def install_myelin_hooks():
-    """Install coordination hooks into Claude Code and Gemini CLI settings."""
-    # Claude Code: UserPromptSubmit + PreToolUse
-    settings = _read_settings(CLAUDE_SETTINGS)
-    hooks = settings.setdefault("hooks", {})
-
-    for event, entry_fn in [("UserPromptSubmit", _myelin_prompt_entry),
-                             ("PreToolUse", _myelin_tool_entry)]:
-        groups = hooks.setdefault(event, [])
-        already = any(_is_myelin_hook(h) for g in groups for h in g.get("hooks", []))
-        if not already:
-            groups.append(entry_fn())
-
-    _write_settings(CLAUDE_SETTINGS, settings)
-    logger.info(f"Myelin coordination hooks installed in {CLAUDE_SETTINGS}")
-
-    # Gemini CLI: BeforeAgent + BeforeTool
-    if GEMINI_SETTINGS.parent.exists() or _gemini_available():
-        settings = _read_settings(GEMINI_SETTINGS)
+    """Install coordination hooks into registered CLI settings."""
+    for profile in PROFILES.values():
+        settings_path = _settings_path_for(profile)
+        if profile.id != "claude" and not settings_path.parent.exists() and not _cli_available(profile.binary):
+            continue
+        events = _myelin_events_for_profile(profile)
+        if not events:
+            continue
+        settings = _read_settings(settings_path)
         hooks = settings.setdefault("hooks", {})
 
-        for event, entry_fn in [("BeforeAgent", _myelin_prompt_entry),
-                                 ("BeforeTool", lambda: _myelin_tool_entry("edit_file|write_file|create_file"))]:
+        for event, entry_fn in events:
             groups = hooks.setdefault(event, [])
             already = any(_is_myelin_hook(h) for g in groups for h in g.get("hooks", []))
             if not already:
                 groups.append(entry_fn())
 
-        _write_settings(GEMINI_SETTINGS, settings)
-        logger.info(f"Myelin coordination hooks installed in {GEMINI_SETTINGS}")
+        _write_settings(settings_path, settings)
+        logger.info("Myelin coordination hooks installed in %s", settings_path)
 
 
 def uninstall_myelin_hooks():
     """Remove myelin coordination hooks from all CLI settings."""
-    for path in (CLAUDE_SETTINGS, GEMINI_SETTINGS):
+    for path in (_settings_path_for(profile) for profile in PROFILES.values()):
         if path.exists():
             settings = _read_settings(path)
             settings = _remove_myelin_from_settings(settings)
-            _write_settings(path, settings)
+            if settings:
+                _write_settings(path, settings)
+            else:
+                path.unlink(missing_ok=True)
             logger.info(f"Myelin coordination hooks removed from {path}")
 
 
@@ -506,11 +636,12 @@ def check_myelin_installation() -> dict:
                         return True
         return False
 
-    return {
-        "claude": _has(CLAUDE_SETTINGS),
-        "gemini": _has(GEMINI_SETTINGS) if GEMINI_SETTINGS.exists() else False,
-        "myelin_module_exists": MYELIN_DIR.exists(),
+    status = {
+        profile.id: _has(_settings_path_for(profile))
+        for profile in PROFILES.values()
     }
+    status["myelin_module_exists"] = MYELIN_DIR.exists()
+    return status
 
 
 # ─── Safety Gate hooks ──────────────────────────────────────────────────
@@ -551,7 +682,9 @@ if [ -z "$CLI_TYPE" ]; then
   CLI_TYPE="claude"
   # Use `command=` (full argv) not `comm=` — Gemini CLI is a Node script, so
   # `comm=` returns "node" while `command=` is "node /opt/homebrew/bin/gemini …".
-  if ps -p $PPID -o command= 2>/dev/null | grep -qi '\\bgemini\\b'; then
+  if ps -p $PPID -o command= 2>/dev/null | grep -qi '\\bcodex\\b'; then
+    CLI_TYPE="codex"
+  elif ps -p $PPID -o command= 2>/dev/null | grep -qi '\\bgemini\\b'; then
     CLI_TYPE="gemini"
   fi
 fi
@@ -790,53 +923,44 @@ def _remove_safety_gate_from_settings(settings: dict) -> dict:
 
 
 def install_safety_gate_hooks():
-    """Install Safety Gate hooks into Claude Code and Gemini CLI."""
+    """Install Safety Gate hooks into registered CLI settings."""
     generate_safety_gate_script()
 
-    # Claude Code → PreToolUse + PostToolUse (matcher: "" = all tools)
-    settings = _read_settings(CLAUDE_SETTINGS)
-    hooks = settings.setdefault("hooks", {})
-
-    pre_tool = hooks.setdefault("PreToolUse", [])
-    if not any(_is_safety_gate_hook(h) for g in pre_tool for h in g.get("hooks", [])):
-        pre_tool.append(_safety_gate_entry())
-
-    post_tool = hooks.setdefault("PostToolUse", [])
-    if not any(_is_safety_gate_hook(h) for g in post_tool for h in g.get("hooks", [])):
-        post_tool.append(_safety_gate_post_entry())
-
-    _write_settings(CLAUDE_SETTINGS, settings)
-    logger.info("Safety Gate hooks installed in %s (PreToolUse + PostToolUse)", CLAUDE_SETTINGS)
-
-    # Gemini CLI → BeforeTool + AfterTool (only if ~/.gemini exists)
-    if GEMINI_SETTINGS.parent.exists():
-        settings = _read_settings(GEMINI_SETTINGS)
+    for profile in PROFILES.values():
+        settings_path = _settings_path_for(profile)
+        if profile.id != "claude" and not settings_path.parent.exists():
+            continue
+        settings = _read_settings(settings_path)
         hooks = settings.setdefault("hooks", {})
 
-        before_tool = hooks.setdefault("BeforeTool", [])
-        if not any(_is_safety_gate_hook(h) for g in before_tool for h in g.get("hooks", [])):
-            before_tool.append(_safety_gate_entry())
+        pre_event = profile.native_hook(HookEvent.PRE_TOOL)
+        post_event = profile.native_hook(HookEvent.POST_TOOL)
 
-        after_tool = hooks.setdefault("AfterTool", [])
-        if not any(_is_safety_gate_hook(h) for g in after_tool for h in g.get("hooks", [])):
-            after_tool.append(_safety_gate_post_entry())
+        pre_tool = hooks.setdefault(pre_event, [])
+        if not any(_is_safety_gate_hook(h) for g in pre_tool for h in g.get("hooks", [])):
+            pre_tool.append(_safety_gate_entry())
 
-        _write_settings(GEMINI_SETTINGS, settings)
-        logger.info("Safety Gate hooks installed in %s (BeforeTool + AfterTool)", GEMINI_SETTINGS)
+        post_tool = hooks.setdefault(post_event, [])
+        if not any(_is_safety_gate_hook(h) for g in post_tool for h in g.get("hooks", [])):
+            post_tool.append(_safety_gate_post_entry())
+
+        _write_settings(settings_path, settings)
+        logger.info("Safety Gate hooks installed in %s (%s + %s)", settings_path, pre_event, post_event)
 
 
 def uninstall_safety_gate_hooks():
     """Remove Safety Gate hooks from all CLI settings files."""
-    settings = _read_settings(CLAUDE_SETTINGS)
-    settings = _remove_safety_gate_from_settings(settings)
-    _write_settings(CLAUDE_SETTINGS, settings)
-    logger.info("Safety Gate hooks removed from %s", CLAUDE_SETTINGS)
-
-    if GEMINI_SETTINGS.exists():
-        settings = _read_settings(GEMINI_SETTINGS)
+    for profile in PROFILES.values():
+        settings_path = _settings_path_for(profile)
+        if not settings_path.exists():
+            continue
+        settings = _read_settings(settings_path)
         settings = _remove_safety_gate_from_settings(settings)
-        _write_settings(GEMINI_SETTINGS, settings)
-        logger.info("Safety Gate hooks removed from %s", GEMINI_SETTINGS)
+        if settings:
+            _write_settings(settings_path, settings)
+        else:
+            settings_path.unlink(missing_ok=True)
+        logger.info("Safety Gate hooks removed from %s", settings_path)
 
 
 def check_safety_gate_installation() -> dict:
@@ -850,11 +974,56 @@ def check_safety_gate_installation() -> dict:
                         return True
         return False
 
-    return {
-        "claude": _has(CLAUDE_SETTINGS),
-        "gemini": _has(GEMINI_SETTINGS) if GEMINI_SETTINGS.exists() else False,
-        "script_exists": SAFETY_GATE_SCRIPT_PATH.exists(),
+    status = {
+        profile.id: _has(_settings_path_for(profile))
+        for profile in PROFILES.values()
     }
+    status["script_exists"] = SAFETY_GATE_SCRIPT_PATH.exists()
+    return status
+
+
+def _append_entry_once(settings: dict, event: str, entry: dict, marker_fn) -> dict:
+    hooks = settings.setdefault("hooks", {})
+    groups = hooks.setdefault(event, [])
+    if not any(marker_fn(h) for group in groups for h in group.get("hooks", [])):
+        groups.append(entry)
+    return settings
+
+
+def _merge_session_optional_hooks(
+    settings: dict,
+    profile: CLIProfile,
+    *,
+    include_avcp: bool = False,
+    include_safety_gate: bool = False,
+    include_myelin: bool = False,
+) -> dict:
+    """Merge optional protection/coordination hooks into session-local settings."""
+    if include_avcp:
+        for hook_path in _avcp_scripts():
+            if hook_path.exists():
+                hook_path.chmod(
+                    hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
+                )
+        _avcp_script = AVCP_HOOKS_DIR / profile.avcp_hook_script
+        if profile.avcp_hook_script and _avcp_script.exists():
+            settings = _append_entry_once(
+                settings, profile.native_hook(HookEvent.PRE_TOOL),
+                _avcp_entry(profile), _is_avcp_hook,
+            )
+
+    if include_myelin:
+        for event, entry_fn in _myelin_events_for_profile(profile):
+            settings = _append_entry_once(settings, event, entry_fn(), _is_myelin_hook)
+
+    if include_safety_gate:
+        generate_safety_gate_script()
+        pre_event = profile.native_hook(HookEvent.PRE_TOOL)
+        post_event = profile.native_hook(HookEvent.POST_TOOL)
+        settings = _append_entry_once(settings, pre_event, _safety_gate_entry(), _is_safety_gate_hook)
+        settings = _append_entry_once(settings, post_event, _safety_gate_post_entry(), _is_safety_gate_hook)
+
+    return settings
 
 
 # ─── Unified install/uninstall ────────────────────────────────────────
@@ -866,6 +1035,22 @@ def install_all():
         path = _settings_path_for(profile)
         if path.parent.exists() or _cli_available(profile.binary):
             install_hooks_for_profile(profile)
+
+
+def install_global_hooks(
+    *,
+    include_avcp: bool = False,
+    include_safety_gate: bool = False,
+    include_myelin: bool = False,
+) -> None:
+    """Install global relay hooks plus any enabled optional hook features."""
+    install_all()
+    if include_avcp:
+        install_avcp_hooks()
+    if include_safety_gate:
+        install_safety_gate_hooks()
+    if include_myelin:
+        install_myelin_hooks()
 
 
 def uninstall_all():
@@ -885,11 +1070,12 @@ def check_installation() -> dict:
                         return True
         return False
 
-    return {
-        "claude": _has_hooks(CLAUDE_SETTINGS),
-        "gemini": _has_hooks(GEMINI_SETTINGS),
-        "script_exists": HOOK_SCRIPT_PATH.exists(),
+    status = {
+        profile.id: _has_hooks(_settings_path_for(profile))
+        for profile in PROFILES.values()
     }
+    status["script_exists"] = HOOK_SCRIPT_PATH.exists()
+    return status
 
 
 def _cli_available(binary: str) -> bool:
@@ -900,4 +1086,4 @@ def _cli_available(binary: str) -> bool:
 
 def _gemini_available() -> bool:
     """Check if gemini CLI is installed (backward compat wrapper)."""
-    return _cli_available("gemini")
+    return _cli_available(get_profile("gemini").binary)

@@ -88,6 +88,8 @@ POST /api/sessions/:id/switch-cli
 
 **Body:** `{ "cli_type": "gemini" }`
 
+Supported `cli_type` values are `claude`, `gemini`, and `codex`.
+
 ### Switch model
 
 ```

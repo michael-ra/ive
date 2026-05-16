@@ -268,6 +268,7 @@ def tool_escalate_worker(args: dict) -> str:
     _MODEL_LADDERS = {
         "claude": ["haiku", "sonnet", "opus"],
         "gemini": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
+        "codex": ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5"],
     }
     ladder = _MODEL_LADDERS.get(cli_type, _MODEL_LADDERS["claude"])
     current_model = session.get("model", ladder[1] if len(ladder) > 1 else ladder[0])
@@ -589,7 +590,8 @@ _SWITCH_MODEL_TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Model name to switch to. Claude: 'opus', 'sonnet', 'haiku'. "
-                    "Gemini: 'gemini-2.5-pro', 'gemini-2.5-flash'."
+                    "Gemini: 'gemini-2.5-pro', 'gemini-2.5-flash'. "
+                    "Codex: 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'."
                 ),
             },
         },
@@ -1040,12 +1042,12 @@ TOOLS = {
     },
     "escalate_worker": {
         "handler": tool_escalate_worker,
-        "description": "Escalate a failing worker by stopping it and restarting with a more capable model. Claude: haiku→sonnet→opus. Gemini: gemini-2.0-flash→gemini-2.5-flash→gemini-2.5-pro. Auto-detects CLI type. Preserves task assignment and system prompt. Use when a worker fails after receiving guidance. Returns 'already_at_max_model' if already at the top — mark task as blocked and ask the user.",
+        "description": "Escalate a failing worker by stopping it and restarting with a more capable model. Claude: haiku→sonnet→opus. Gemini: gemini-2.0-flash→gemini-2.5-flash→gemini-2.5-pro. Codex: gpt-5.4-mini→gpt-5.4→gpt-5.5. Auto-detects CLI type. Preserves task assignment and system prompt. Use when a worker fails after receiving guidance. Returns 'already_at_max_model' if already at the top — mark task as blocked and ask the user.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "session_id": {"type": "string", "description": "The failing worker's session ID"},
-                "model": {"type": "string", "description": "Explicit target model. If omitted, auto-escalates to the next tier up. Claude: haiku/sonnet/opus. Gemini: gemini-2.0-flash/gemini-2.5-flash/gemini-2.5-pro."},
+                "model": {"type": "string", "description": "Explicit target model. If omitted, auto-escalates to the next tier up. Claude: haiku/sonnet/opus. Gemini: gemini-2.0-flash/gemini-2.5-flash/gemini-2.5-pro. Codex: gpt-5.4-mini/gpt-5.4/gpt-5.5."},
                 "reason": {"type": "string", "description": "Why the worker is being escalated (for audit trail)."},
             },
             "required": ["session_id"],

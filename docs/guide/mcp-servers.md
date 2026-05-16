@@ -10,7 +10,7 @@ MCP Servers (⌘⇧S) lets you register, configure, and attach Model Context Pro
 
 ## What MCP servers do
 
-MCP servers extend Claude Code or Gemini CLI with custom tools. When an MCP server is attached to a session, its tools are available to the CLI agent.
+MCP servers extend Claude Code, Gemini CLI, or Codex CLI with custom tools. When an MCP server is attached to a session, its tools are available to the CLI agent.
 
 ## Registering an MCP server
 
@@ -43,12 +43,13 @@ You can also attach servers at session creation time via the New Session form.
 
 Enable **Auto-approve** per server to let the session use that server's tools without confirmation prompts.
 
-## Claude vs Gemini MCP strategy
+## CLI MCP strategies
 
 | CLI | Strategy |
 |-----|---------|
 | Claude Code | `--mcp-config` flag pointing to a dynamically-built JSON config file |
-| Gemini CLI | `--mcp-add` flags added per server |
+| Gemini CLI | Native `gemini mcp add` registration per server |
+| Codex CLI | Native `codex mcp add <name> --env KEY=VALUE -- <command>` registration per server |
 
 ## Related
 

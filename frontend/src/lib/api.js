@@ -467,7 +467,9 @@ export const api = {
   updateAccount: (id, data) => request(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteAccount: (id) => request(`/accounts/${id}`, { method: 'DELETE' }),
   testAccount: (id) => request(`/accounts/${id}/test`, { method: 'POST' }),
-  snapshotAccount: (id) => request(`/accounts/${id}/snapshot`, { method: 'POST' }),
+  snapshotAccount: (id, cliType) => request(`/accounts/${id}/snapshot`, {
+    method: 'POST', body: JSON.stringify({ cli_type: cliType || undefined }),
+  }),
   openAccountBrowser: (id, opts = {}) => {
     // Back-compat: callers used to pass a bare URL string.
     const body = typeof opts === 'string' ? { url: opts } : (opts || {})

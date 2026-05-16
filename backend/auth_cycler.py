@@ -61,6 +61,14 @@ _CLI_AUTH = {
         "auth_cmd": ["gemini", "auth", "login"],
         "provider": "Google",
     },
+    "codex": {
+        "login_url": "https://chatgpt.com/codex",
+        "post_login_re": re.compile(
+            r"(chatgpt\.com/(codex|c/|g/)|auth\.openai\.com|platform\.openai\.com)"
+        ),
+        "auth_cmd": ["codex", "login"],
+        "provider": "OpenAI",
+    },
 }
 
 # LLM steering config
@@ -720,7 +728,7 @@ class AuthCycler:
         cli_type: str | None = None,
         headless: bool = True,
     ) -> dict:
-        """Automate ``claude/gemini auth login`` using Playwright + LLM.
+        """Automate supported CLI auth login flows using Playwright + LLM.
 
         Flow:
         1. URL-catcher script intercepts the OAuth URL from the CLI.

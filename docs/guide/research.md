@@ -26,7 +26,7 @@ The research runs as a background subprocess. A progress log shows what's happen
 | Mode | Description |
 |------|-------------|
 | **Autonomous** | Local LLM handles everything (no API quota used) |
-| **Hybrid** | Claude/Gemini as the brain, local tools for search/extract |
+| **Hybrid** | Claude/Gemini/Codex as the brain, local tools for search/extract |
 
 ## Search backends
 
@@ -58,7 +58,7 @@ Filter research by:
 
 ## Deep Research plugin
 
-For richer research within a session, install the **Deep Research plugin** — it gives Claude Code or Gemini CLI a set of MCP tools (`multi_search`, `extract_pages`, `gather`, `save_research`) for iterative research.
+For richer research within a session, install the **Deep Research plugin** — it gives Claude Code, Gemini CLI, or Codex CLI a set of MCP tools (`multi_search`, `extract_pages`, `gather`, `save_research`) for iterative research.
 
 See [Deep Research Plugin](./plugins/deep-research) for setup instructions.
 

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Settings, X, RefreshCw, Loader2, Columns, Rows, Grid2x2, Maximize, Type, Sparkles } from 'lucide-react'
 import { api } from '../../lib/api'
 import useStore from '../../state/store'
-import { MODELS, GEMINI_MODELS } from '../../lib/constants'
+import { MODELS, GEMINI_MODELS, CODEX_MODELS } from '../../lib/constants'
 
 function Toggle({ value, onChange }) {
   return (
@@ -265,7 +265,7 @@ export default function GeneralSettingsPanel({ onClose }) {
                     {saving && <Loader2 size={10} className="animate-spin text-text-faint" />}
                   </div>
                   <div className="text-[10px] text-text-faint mt-0.5 ml-[19px]">
-                    Update Claude Code and Gemini CLI when running <code className="px-1 py-0.5 bg-bg-hover rounded text-[10px]">start.sh</code>
+                    Update Claude Code, Gemini CLI, and Codex CLI when running <code className="px-1 py-0.5 bg-bg-hover rounded text-[10px]">start.sh</code>
                   </div>
                 </div>
                 <Toggle value={autoUpdateCli} onChange={handleToggle} />
@@ -346,6 +346,11 @@ export default function GeneralSettingsPanel({ onClose }) {
                       {GEMINI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                     </optgroup>
                   )}
+                  {cliAvail.codex && (
+                    <optgroup label="Codex">
+                      {CODEX_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                    </optgroup>
+                  )}
                 </select>
               </div>
             </div>
@@ -354,7 +359,7 @@ export default function GeneralSettingsPanel({ onClose }) {
           <div className="border-t border-border-secondary" />
 
           <div className="text-[10px] text-text-faint leading-relaxed">
-            When enabled, the start script runs <code className="px-1 py-0.5 bg-bg-hover rounded">claude update</code> and <code className="px-1 py-0.5 bg-bg-hover rounded">brew upgrade gemini-cli</code> before launching. Failed updates are skipped silently.
+            When enabled, the start script updates available CLIs before launching. Failed updates are skipped silently.
           </div>
         </div>
       </div>

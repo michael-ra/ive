@@ -5,7 +5,20 @@ import ModeBadge from '../auth/ModeBadge'
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
 import { sendTerminalCommand } from '../../lib/terminal'
-import { MODELS, GEMINI_MODELS, CLI_TYPES, getWorkspaceColor, WORKSPACE_PALETTE, getModelsForCli, getPermissionModesForCli, getEffortLevelsForCli, getDefaultModel, getDefaultPermissionMode } from '../../lib/constants'
+import {
+  MODELS,
+  GEMINI_MODELS,
+  CODEX_MODELS,
+  CLI_TYPES,
+  getWorkspaceColor,
+  WORKSPACE_PALETTE,
+  getModelsForCli,
+  getPermissionModesForCli,
+  getEffortLevelsForCli,
+  getDefaultModel,
+  getDefaultPermissionMode,
+  getCliSelectedClass,
+} from '../../lib/constants'
 import MailboxPill from './MailboxPill'
 
 function SessionContextMenu({ x, y, session, onClose }) {
@@ -186,13 +199,17 @@ function ResearchModelPicker({ ws }) {
 
   const hasClaude = cliAvail.claude !== false // default true if unknown
   const hasGemini = !!cliAvail.gemini
+  const hasCodex = !!cliAvail.codex
 
   const savedOllama = JSON.parse(localStorage.getItem('cc-ollama-models') || '[]')
   const [showCustom, setShowCustom] = useState(false)
   const [customModel, setCustomModel] = useState('')
 
   const currentVal = ws.research_model || ''
-  const isOllamaCustom = currentVal && !MODELS.some((m) => m.id === currentVal) && !GEMINI_MODELS.some((m) => m.id === currentVal)
+  const isOllamaCustom = currentVal
+    && !MODELS.some((m) => m.id === currentVal)
+    && !GEMINI_MODELS.some((m) => m.id === currentVal)
+    && !CODEX_MODELS.some((m) => m.id === currentVal)
 
   const saveModel = async (v) => {
     await api.updateWorkspace(ws.id, { research_model: v || null })
@@ -245,6 +262,11 @@ function ResearchModelPicker({ ws }) {
           {hasGemini && (
             <optgroup label="Gemini">
               {GEMINI_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </optgroup>
+          )}
+          {hasCodex && (
+            <optgroup label="Codex">
+              {CODEX_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </optgroup>
           )}
           {savedOllama.length > 0 && (
@@ -501,7 +523,7 @@ function NewSessionForm({ workspaceId, onClose }) {
                 turns,
               }))
             }
-          }, 2000) // Give PTY time to start + Claude Code to initialize
+          }, 2000) // Give the PTY time to start and the CLI TUI to initialize
         }
       }
 
@@ -566,7 +588,7 @@ function NewSessionForm({ workspaceId, onClose }) {
             }}
             className={`flex-1 px-2 py-1.5 text-xs font-medium rounded-md transition-all ${
               cliType === ct.id
-                ? ct.id === 'gemini' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/25' : 'bg-accent-subtle text-indigo-400 border border-indigo-500/25'
+                ? getCliSelectedClass(ct.id)
                 : 'text-text-faint hover:text-text-secondary border border-border-secondary hover:border-border-primary'
             }`}
           >
@@ -1545,6 +1567,8 @@ export default function Sidebar({ onWorkspaceCreated } = {}) {
                 { cli: 'claude', model: 'sonnet', label: 'Claude Sonnet', style: 'text-indigo-400 border-indigo-500/25 hover:bg-accent-subtle' },
                 { cli: 'gemini', model: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', style: 'text-blue-400 border-blue-500/25 hover:bg-blue-500/10' },
                 { cli: 'gemini', model: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', style: 'text-blue-400 border-blue-500/25 hover:bg-blue-500/10' },
+                { cli: 'codex', model: 'gpt-5.5', label: 'Codex GPT-5.5', style: 'text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/10' },
+                { cli: 'codex', model: 'gpt-5.4', label: 'Codex GPT-5.4', style: 'text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/10' },
               ].map((opt) => (
                 <button
                   key={`${opt.cli}-${opt.model}`}
@@ -1595,6 +1619,8 @@ export default function Sidebar({ onWorkspaceCreated } = {}) {
                 { cli: 'claude', model: 'sonnet', label: 'Claude Sonnet', style: 'text-indigo-400 border-indigo-500/25 hover:bg-accent-subtle' },
                 { cli: 'claude', model: 'opus', label: 'Claude Opus', style: 'text-indigo-400 border-indigo-500/25 hover:bg-accent-subtle' },
                 { cli: 'gemini', model: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', style: 'text-blue-400 border-blue-500/25 hover:bg-blue-500/10' },
+                { cli: 'codex', model: 'gpt-5.4-mini', label: 'Codex GPT-5.4 Mini', style: 'text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/10' },
+                { cli: 'codex', model: 'gpt-5.4', label: 'Codex GPT-5.4', style: 'text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/10' },
               ].map((opt) => (
                 <button
                   key={`tester-${opt.cli}-${opt.model}`}
@@ -1645,6 +1671,7 @@ export default function Sidebar({ onWorkspaceCreated } = {}) {
                 { cli: 'claude', model: 'sonnet', label: 'Claude Sonnet', style: 'text-indigo-400 border-indigo-500/25 hover:bg-accent-subtle' },
                 { cli: 'claude', model: 'opus', label: 'Claude Opus', style: 'text-indigo-400 border-indigo-500/25 hover:bg-accent-subtle' },
                 { cli: 'gemini', model: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', style: 'text-blue-400 border-blue-500/25 hover:bg-blue-500/10' },
+                { cli: 'codex', model: 'gpt-5.4', label: 'Codex GPT-5.4', style: 'text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/10' },
               ].map((opt) => (
                 <button
                   key={`doc-${opt.cli}-${opt.model}`}

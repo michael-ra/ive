@@ -1,0 +1,229 @@
+{
+  "getModelsForCli:claude": [
+    {
+      "id": "haiku",
+      "label": "Haiku",
+      "description": "Fast & cheap"
+    },
+    {
+      "id": "sonnet",
+      "label": "Sonnet",
+      "description": "Balanced"
+    },
+    {
+      "id": "opus",
+      "label": "Opus",
+      "description": "Maximum capability"
+    }
+  ],
+  "getModelsForCli:gemini": [
+    {
+      "id": "gemini-2.5-pro",
+      "label": "Gemini 2.5 Pro",
+      "description": "Gemini Pro"
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "label": "Gemini 2.5 Flash",
+      "description": "Fast Gemini"
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "label": "Gemini 2.0 Flash",
+      "description": "Previous gen flash"
+    }
+  ],
+  "getModelsForCli:codex": [
+    {
+      "id": "gpt-5.5",
+      "label": "GPT-5.5",
+      "description": "Maximum capability"
+    },
+    {
+      "id": "gpt-5.4",
+      "label": "GPT-5.4",
+      "description": "Balanced Codex work"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "label": "GPT-5.4 Mini",
+      "description": "Fast Codex work"
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "label": "GPT-5.3 Codex",
+      "description": "Coding-optimized"
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "label": "GPT-5.3 Codex Spark",
+      "description": "Ultra-fast coding"
+    }
+  ],
+  "getModelsForCli:unknown": [
+    {
+      "id": "haiku",
+      "label": "Haiku",
+      "description": "Fast & cheap"
+    },
+    {
+      "id": "sonnet",
+      "label": "Sonnet",
+      "description": "Balanced"
+    },
+    {
+      "id": "opus",
+      "label": "Opus",
+      "description": "Maximum capability"
+    }
+  ],
+  "getPermissionModesForCli:claude": [
+    {
+      "id": "default",
+      "label": "Default"
+    },
+    {
+      "id": "auto",
+      "label": "Auto"
+    },
+    {
+      "id": "plan",
+      "label": "Plan"
+    },
+    {
+      "id": "acceptEdits",
+      "label": "Accept Edits"
+    },
+    {
+      "id": "dontAsk",
+      "label": "Don't Ask"
+    },
+    {
+      "id": "bypassPermissions",
+      "label": "Bypass All"
+    }
+  ],
+  "getPermissionModesForCli:gemini": [
+    {
+      "id": "default",
+      "label": "Default"
+    },
+    {
+      "id": "auto_edit",
+      "label": "Auto Edit"
+    },
+    {
+      "id": "yolo",
+      "label": "YOLO"
+    },
+    {
+      "id": "plan",
+      "label": "Plan"
+    }
+  ],
+  "getPermissionModesForCli:codex": [
+    {
+      "id": "default",
+      "label": "Default"
+    },
+    {
+      "id": "auto",
+      "label": "Auto"
+    },
+    {
+      "id": "plan",
+      "label": "Plan"
+    },
+    {
+      "id": "bypassPermissions",
+      "label": "Bypass All"
+    }
+  ],
+  "getPermissionModesForCli:unknown": [
+    {
+      "id": "default",
+      "label": "Default"
+    },
+    {
+      "id": "auto",
+      "label": "Auto"
+    },
+    {
+      "id": "plan",
+      "label": "Plan"
+    },
+    {
+      "id": "acceptEdits",
+      "label": "Accept Edits"
+    },
+    {
+      "id": "dontAsk",
+      "label": "Don't Ask"
+    },
+    {
+      "id": "bypassPermissions",
+      "label": "Bypass All"
+    }
+  ],
+  "getEffortLevelsForCli:claude": [
+    "low",
+    "medium",
+    "high",
+    "max"
+  ],
+  "getEffortLevelsForCli:gemini": [],
+  "getEffortLevelsForCli:codex": [
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+  ],
+  "getEffortLevelsForCli:unknown": [
+    "low",
+    "medium",
+    "high",
+    "max"
+  ],
+  "getDefaultModel:claude": "sonnet",
+  "getDefaultModel:gemini": "gemini-2.5-pro",
+  "getDefaultModel:codex": "gpt-5.4",
+  "getDefaultModel:unknown": "sonnet",
+  "getDefaultPermissionMode:claude": "default",
+  "getDefaultPermissionMode:gemini": "auto_edit",
+  "getDefaultPermissionMode:codex": "default",
+  "getDefaultPermissionMode:unknown": "default",
+  "getCliShortLabel:claude": "CLA",
+  "getCliShortLabel:gemini": "GEM",
+  "getCliShortLabel:codex": "COD",
+  "getCliShortLabel:unknown": "CLA",
+  "getCliBadgeClass:claude": "bg-indigo-500/12 text-indigo-300 border-indigo-500/20",
+  "getCliBadgeClass:gemini": "bg-blue-500/12 text-blue-300 border-blue-500/20",
+  "getCliBadgeClass:codex": "bg-emerald-500/12 text-emerald-300 border-emerald-500/20",
+  "getCliBadgeClass:unknown": "bg-indigo-500/12 text-indigo-300 border-indigo-500/20",
+  "getCliSelectedClass:claude": "bg-accent-subtle text-indigo-400 border border-indigo-500/25",
+  "getCliSelectedClass:gemini": "bg-blue-500/15 text-blue-400 border border-blue-500/25",
+  "getCliSelectedClass:codex": "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25",
+  "getCliSelectedClass:unknown": "bg-accent-subtle text-indigo-400 border border-indigo-500/25",
+  "getCliSubtleClass:claude": "text-indigo-400 bg-indigo-500/10",
+  "getCliSubtleClass:gemini": "text-blue-400 bg-blue-500/10",
+  "getCliSubtleClass:codex": "text-emerald-400 bg-emerald-500/10",
+  "getCliSubtleClass:unknown": "text-indigo-400 bg-indigo-500/10",
+  "CLI_TYPES": [
+    {
+      "id": "claude",
+      "label": "Claude"
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini"
+    },
+    {
+      "id": "codex",
+      "label": "Codex"
+    }
+  ],
+  "cap:force_send:claude": true,
+  "cap:terminal_input:codex": "readline",
+  "cap:terminal_input:gemini": "readline",
+  "cap:terminal_input:claude": "ink"
+}

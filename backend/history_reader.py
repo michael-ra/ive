@@ -17,6 +17,7 @@ def list_projects() -> list[dict]:
     results = []
     results.extend(_list_claude_projects())
     results.extend(_list_gemini_projects())
+    results.extend(_list_codex_projects())
     return results
 
 
@@ -89,6 +90,65 @@ def _list_gemini_sessions(chats_dir: Path) -> list[dict]:
             "modified": stat.st_mtime,
         })
     return sessions
+
+
+def _codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or os.path.expanduser(get_profile("codex").home_dir))
+
+
+def _list_codex_projects() -> list[dict]:
+    """List Codex CLI sessions from ~/.codex/session_index.jsonl."""
+    home = _codex_home()
+    index = home / "session_index.jsonl"
+    if not index.exists():
+        return []
+
+    sessions = []
+    try:
+        for line in index.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            session_id = entry.get("id")
+            if not session_id:
+                continue
+            rollout = _find_codex_rollout(home, session_id)
+            stat = rollout.stat() if rollout and rollout.exists() else None
+            sessions.append({
+                "session_id": session_id,
+                "thread_name": entry.get("thread_name", ""),
+                "file": str(rollout) if rollout else "",
+                "size_bytes": stat.st_size if stat else 0,
+                "modified": stat.st_mtime if stat else 0,
+                "updated_at": entry.get("updated_at", ""),
+            })
+    except OSError as e:
+        logger.error("Failed to read Codex session index %s: %s", index, e)
+        return []
+
+    if not sessions:
+        return []
+
+    return [{
+        "dir_name": "sessions",
+        "project_path": "(codex)",
+        "session_count": len(sessions),
+        "sessions": sessions,
+        "cli_type": "codex",
+    }]
+
+
+def _find_codex_rollout(home: Path, session_id: str) -> Path | None:
+    sessions_dir = home / "sessions"
+    if not sessions_dir.exists():
+        return None
+    matches = sorted(sessions_dir.rglob(f"rollout-*{session_id}.jsonl"))
+    if matches:
+        return matches[-1]
+    return None
 
 
 def _reverse_gemini_hash(hash_name: str) -> str | None:

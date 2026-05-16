@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Square, StickyNote, RotateCcw, Shuffle } from 'lucide-react'
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
+import { getCliBadgeClass, getCliHoverClass } from '../../lib/constants'
 
 export default function TopBar() {
   const session = useStore((s) => s.sessions[s.activeSessionId])
@@ -38,13 +39,14 @@ export default function TopBar() {
   const isRunning = session.status === 'running'
   const isExited = session.status === 'exited'
   const currentCli = session.cli_type || 'claude'
+  const cliLabel = currentCli === 'claude' ? 'Claude' : currentCli === 'gemini' ? 'Gemini' : currentCli === 'codex' ? 'Codex' : currentCli
 
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 bg-bg-secondary border-b border-border-primary text-xs overflow-x-auto tab-scroll-hide touch-manipulation">
       {/* Session info */}
       <div className="flex items-center gap-2">
-        {session.cli_type === 'gemini' && (
-          <span className="text-[10px] font-medium bg-blue-500/12 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/15">Gemini</span>
+        {currentCli !== 'claude' && (
+          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${getCliBadgeClass(currentCli)}`}>{cliLabel}</span>
         )}
         {session.model && (
           <span className="text-text-secondary font-mono text-[11px]" title="Model">
@@ -81,7 +83,7 @@ export default function TopBar() {
             data-chrome-button
             onClick={() => setShowSwitcher((s) => !s)}
             className="flex items-center gap-1.5 px-2 py-1 text-text-faint hover:text-text-secondary hover:bg-bg-hover rounded-md transition-colors"
-            title="Switch CLI (Claude ↔ Gemini)"
+            title="Switch CLI"
           >
             <Shuffle size={11} />
             <span className="text-[11px]">switch</span>
@@ -99,6 +101,9 @@ export default function TopBar() {
                 { cli: 'claude', model: 'haiku', label: 'Claude Haiku' },
                 { cli: 'gemini', model: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
                 { cli: 'gemini', model: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+                { cli: 'codex', model: 'gpt-5.5', label: 'Codex GPT-5.5' },
+                { cli: 'codex', model: 'gpt-5.4', label: 'Codex GPT-5.4' },
+                { cli: 'codex', model: 'gpt-5.4-mini', label: 'Codex GPT-5.4 Mini' },
               ]
                 .filter((o) => !(o.cli === currentCli && o.model === session.model))
                 .map((opt) => (
@@ -111,11 +116,7 @@ export default function TopBar() {
                         await api.switchSessionCli(activeSessionId, { cli_type: opt.cli, model: opt.model })
                       } catch (e) { console.error(e) }
                     }}
-                    className={`w-full text-left px-2 py-1.5 text-xs font-medium rounded-md transition-colors border ${
-                      opt.cli === 'gemini'
-                        ? 'text-blue-400 border-blue-500/20 hover:bg-blue-500/10'
-                        : 'text-indigo-400 border-indigo-500/20 hover:bg-accent-subtle'
-                    }`}
+                    className={`w-full text-left px-2 py-1.5 text-xs font-medium rounded-md transition-colors border ${getCliBadgeClass(opt.cli)} ${getCliHoverClass(opt.cli)}`}
                   >
                     {opt.label}
                   </button>

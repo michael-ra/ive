@@ -30,7 +30,7 @@ export const ACTIONS = [
   { id: 'export-session', label: 'Export as Markdown', icon: Download, section: 'Sessions' },
   { id: 'distill-session', label: 'Distill Session', icon: Sparkles, section: 'Sessions' },
   { id: 'search', label: 'Search All Sessions', icon: Search, section: 'Search', shortcut: '⌘F' },
-  { id: 'import-history', label: 'Import Claude Sessions', icon: History, section: 'History' },
+  { id: 'import-history', label: 'Import CLI Sessions', icon: History, section: 'History' },
   { id: 'feature-board', label: 'Feature Board', icon: Kanban, section: 'Orchestration', shortcut: '⌘B' },
   { id: 'pipeline-editor', label: 'Pipeline Editor', icon: GitCompareArrows, section: 'Orchestration', shortcut: '⌘⇧L' },
   { id: 'quick-feature', label: 'Quick Feature', icon: Zap, section: 'Orchestration', shortcut: '⌘⇧N' },

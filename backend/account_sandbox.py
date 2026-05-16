@@ -28,6 +28,16 @@ SYMLINK_DOTFILES = [
 ]
 
 
+def api_key_env_for_cli(cli_type: str, api_key: str) -> dict[str, str]:
+    """Return environment variables used by a CLI for API-key auth."""
+    cli = (cli_type or "claude").lower()
+    if cli == "codex":
+        return {"OPENAI_API_KEY": api_key, "CODEX_API_KEY": api_key}
+    if cli == "gemini":
+        return {"GEMINI_API_KEY": api_key, "GOOGLE_API_KEY": api_key}
+    return {"ANTHROPIC_API_KEY": api_key}
+
+
 def snapshot_current_auth(account_id: str, cli_type: str = "claude") -> dict:
     """
     Snapshot the current CLI auth state for an account.

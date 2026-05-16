@@ -1,4 +1,4 @@
-"""Dynamic model discovery for Claude and Gemini CLIs.
+"""Dynamic model discovery for Claude, Gemini, and Codex CLIs.
 
 Queries available models at server startup so the UI dropdown stays current
 without hardcoding. Falls back to the static list in cli_profiles.py if
@@ -162,10 +162,11 @@ def _gemini_model_desc(model_id: str) -> str:
 def discover_all() -> dict:
     """Run all model discovery and return results.
 
-    Returns {"gemini": [...] | None, "claude": [...] | None}
+    Returns {"gemini": [...] | None, "claude": [...] | None, "codex": [...] | None}
     None means discovery failed — caller should use static fallback.
     """
     return {
         "gemini": discover_gemini_models(),
         "claude": discover_claude_models(),
+        "codex": None,
     }

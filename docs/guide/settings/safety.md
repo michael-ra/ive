@@ -12,10 +12,17 @@ AVCP is a supply-chain scanner that runs on every package install your agents tr
 
 It checks each package across nine signals: typo-squatting against popular names, suspicious post-install scripts, recently uploaded versions from new accounts, executable payloads in unusual file paths, network calls in install hooks, and a few more. Anything that looks like a packaged supply-chain attack gets blocked and surfaced in the **Safety Gate** panel.
 
-### Where it hooks in
+### Hook scope
+
+By default, normal app startup and IVE-managed sessions use session-scoped hook configuration. Starting IVE or opening an IVE-managed Claude/Gemini/Codex session should not modify global CLI hook settings in `~/.claude`, `~/.gemini`, or `~/.codex`.
+
+Global or project-level hooks are only for external terminal auto-register. Enable them explicitly when you want a Claude/Gemini/Codex CLI launched outside IVE to appear in Commander with full hook tracking.
+
+### External terminal hooks
 
 - **Claude Code** — `.claude/settings.json` ships a `PreToolUse` hook on `Bash` that intercepts `npm install`, `pip install`, etc.
 - **Gemini CLI** — same idea, registered as a Gemini extension hook.
+- **Codex CLI** — `~/.codex/hooks.json` or project `.codex/hooks.json` registers a `PreToolUse` hook for shell commands.
 - **Shell wrapper** — optional system-wide protection for non-IVE installs.
 
 ### Configuring

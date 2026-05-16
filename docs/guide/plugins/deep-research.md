@@ -4,7 +4,7 @@ title: Deep Research Plugin
 
 # Deep Research Plugin
 
-The Deep Research plugin turns any Claude Code or Gemini session into a deep researcher, using the session's own LLM reasoning combined with local search and extraction tools.
+The Deep Research plugin turns any Claude Code, Gemini, or Codex session into a deep researcher, using the session's own LLM reasoning combined with local search and extraction tools.
 
 ## Architecture
 

@@ -62,40 +62,11 @@ async def llm_call(
     if system:
         full_prompt = f"{system}\n\n---\n\n{full_prompt}"
 
-    # Build the command.
-    use_file = len(full_prompt.encode()) > _ARG_LIMIT
     tmp_path: str | None = None
-
-    if use_file:
-        # Write prompt to a temp file and have the CLI read it.
-        # Claude: claude -p "$(cat file)"  — but that requires shell.
-        # Safer: pass via stdin by omitting the prompt arg.
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, prefix=f"llm_prompt_{os.getpid()}_"
-        )
-        tmp.write(full_prompt)
-        tmp.close()
-        tmp_path = tmp.name
-
     try:
-        cmd: list[str] = [profile.binary]
-
-        if use_file:
-            # Claude requires --print to read from stdin; Gemini reads stdin
-            # without a special flag.  This is a documented CLI-specific branch
-            # — it's not in the Feature enum because it's a print-mode quirk.
-            if cli == "claude":
-                cmd.append("--print")
-        else:
-            cmd.extend(["-p", full_prompt])
-        if model:
-            cmd.extend(["--model", model])
+        cmd, stdin_data = build_llm_command(cli, model, prompt, system)
 
         log.info("llm_call: %s (model=%s, prompt_len=%d)", cli, model, len(full_prompt))
-
-        stdin_data: bytes | None = None
-        if use_file:
-            stdin_data = full_prompt.encode()
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -127,6 +98,42 @@ async def llm_call(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def build_llm_command(
+    cli: str = "claude",
+    model: str | None = None,
+    prompt: str = "",
+    system: str | None = None,
+) -> tuple[list[str], bytes | None]:
+    """Build a one-shot CLI command and optional stdin payload."""
+    from cli_profiles import get_profile
+
+    profile = get_profile(cli)
+    full_prompt = prompt
+    if system:
+        full_prompt = f"{system}\n\n---\n\n{full_prompt}"
+
+    use_stdin = len(full_prompt.encode()) > _ARG_LIMIT
+    stdin_data = full_prompt.encode() if use_stdin else None
+
+    if profile.id == "codex":
+        cmd = [profile.binary, "exec"]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.extend(["--sandbox", "read-only"])
+        cmd.append("-" if use_stdin else full_prompt)
+        return cmd, stdin_data
+
+    cmd: list[str] = [profile.binary]
+    if use_stdin:
+        if profile.id == "claude":
+            cmd.append("--print")
+    else:
+        cmd.extend(["-p", full_prompt])
+    if model:
+        cmd.extend(["--model", model])
+    return cmd, stdin_data
 
 
 async def llm_call_json(

@@ -2,6 +2,7 @@ import useStore from '../state/store'
 import { clearPromptBuffer } from './outputParser'
 import { api } from './api'
 import { expandPromptTokens } from './tokens'
+import { getCliCapability } from './constants'
 
 /**
  * Detect @ralph in a command and start a RALPH pipeline run.
@@ -125,23 +126,29 @@ function sendRaw(sessionId, data) {
 }
 
 /**
- * Return true if this session runs Gemini CLI (not Claude Code).
- * Gemini's TUI handles escape sequences differently — Escape can interfere
- * with plan review, selection menus, and mode toggles, potentially causing
- * premature exit. We use Ctrl-U (kill line) instead.
+ * Return this session's CLI type.
  */
-function isGeminiSession(sessionId) {
+function getSessionCliType(sessionId) {
   const session = useStore.getState().sessions[sessionId]
-  return session?.cli_type === 'gemini'
+  return session?.cli_type || 'claude'
+}
+
+function isGeminiSession(sessionId) {
+  return getSessionCliType(sessionId) === 'gemini'
+}
+
+function isReadlineSession(sessionId) {
+  const cliType = getSessionCliType(sessionId)
+  return getCliCapability(cliType, 'terminal_input') === 'readline'
 }
 
 /**
  * CLI-aware "clear input line" sequence:
  *   Claude: \x1b + \x7f×N  (Escape + Alt-Backspace to clear Ink input)
- *   Gemini: \x15            (Ctrl-U, readline kill-line — safe for Gemini TUI)
+ *   Gemini/Codex: \x15      (Ctrl-U, readline kill-line)
  */
 function getClearSequence(sessionId) {
-  return isGeminiSession(sessionId) ? '\x15' : '\x1b' + '\x7f'.repeat(50)
+  return isReadlineSession(sessionId) ? '\x15' : '\x1b' + '\x7f'.repeat(50)
 }
 
 /**
@@ -164,9 +171,8 @@ function getClearSequence(sessionId) {
 export function sendForceMessage(sessionId, message) {
   if (!getWs() || !sessionId) return
 
-  if (isGeminiSession(sessionId)) {
-    // Gemini: Ctrl-U to clear, then type and submit.
-    // Gemini doesn't support Escape-based interrupts like Claude's Ink TUI.
+  if (isReadlineSession(sessionId)) {
+    // Readline-style CLIs: Ctrl-U to clear, then type and submit.
     sendRaw(sessionId, '\x15')
     setTimeout(() => {
       if (!getWs()) return
@@ -368,21 +374,24 @@ export function broadcastCommand(sessionIds, command) {
   processed = processPromptTag(processed)
 
   // Clear input for each session using CLI-appropriate sequence.
-  // Claude uses Escape+DEL; Gemini uses Ctrl-U (Escape can interfere
-  // with Gemini's TUI and cause premature exit).
-  const claudeIds = sessionIds.filter((id) => !isGeminiSession(id))
-  const geminiIds = sessionIds.filter((id) => isGeminiSession(id))
-  if (claudeIds.length) {
+  const inkIds = sessionIds.filter((id) => !isReadlineSession(id))
+  const readlineIds = sessionIds.filter((id) => isReadlineSession(id))
+  // Ink bracketed paste is Claude-only. Gemini and Codex (readline /
+  // paste-burst composer) take plain collapsed text — sending them the
+  // \x1b[200~…\x1b[201~ wrapper would echo it literally into the prompt.
+  const pasteIds = sessionIds.filter((id) => !isGeminiSession(id) && !isReadlineSession(id))
+  const plainIds = sessionIds.filter((id) => isGeminiSession(id) || isReadlineSession(id))
+  if (inkIds.length) {
     ws.send(JSON.stringify({
       action: 'broadcast',
-      session_ids: claudeIds,
+      session_ids: inkIds,
       data: '\x1b' + '\x7f'.repeat(50),
     }))
   }
-  if (geminiIds.length) {
+  if (readlineIds.length) {
     ws.send(JSON.stringify({
       action: 'broadcast',
-      session_ids: geminiIds,
+      session_ids: readlineIds,
       data: '\x15',
     }))
   }
@@ -392,20 +401,19 @@ export function broadcastCommand(sessionIds, command) {
     if (!ws2) return
     const isMulti = processed.includes('\n')
     // Always split text and \r into separate frames — combining them lets
-    // Claude's Ink paste detection swallow the trailing CR on bursts above
-    // ~80 chars. Gemini needs newlines collapsed because its TUI treats \n
-    // as Enter (submits partial lines).
-    if (claudeIds.length) {
+    // Claude accept bracketed paste for multi-line text. Gemini and Codex
+    // need newlines collapsed because their TUIs treat \n as Enter.
+    if (pasteIds.length) {
       ws2.send(JSON.stringify({
         action: 'broadcast',
-        session_ids: claudeIds,
-        data: processed,
+        session_ids: pasteIds,
+        data: isMulti ? '\x1b[200~' + processed + '\x1b[201~' : processed,
       }))
     }
-    if (geminiIds.length) {
+    if (plainIds.length) {
       ws2.send(JSON.stringify({
         action: 'broadcast',
-        session_ids: geminiIds,
+        session_ids: plainIds,
         data: isMulti ? processed.replace(/\r?\n/g, ' ') : processed,
       }))
     }

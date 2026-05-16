@@ -11,6 +11,7 @@ title: Installation
 - **Python** 3.9+
 - **Claude Code CLI** — `npm install -g @anthropic-ai/claude-code`
 - **Gemini CLI** (optional) — `npm install -g @google/gemini-cli`
+- **Codex CLI** (optional) — `npm install -g @openai/codex`
 
 ## Quick start
 
@@ -23,7 +24,7 @@ cd ive
 ```
 
 `start.sh` will:
-1. Auto-update the Claude Code and Gemini CLIs to latest
+1. Auto-update the Claude Code, Gemini, and Codex CLIs to latest
 2. Install Python dependencies (`pip3 install -r backend/requirements.txt`)
 3. Install frontend dependencies (`cd frontend && npm install`)
 4. Launch the backend on `:5111`

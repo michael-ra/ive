@@ -211,7 +211,7 @@ EXPERIMENTAL_FEATURES: dict[str, ExperimentalFeature] = {
             "  - Execute Model: used for edits, tool calls, builds (e.g. sonnet)\n\n"
             "The agent decides when to switch — Commander just executes the `/model X` "
             "slash command in the PTY and updates the DB.\n\n"
-            "Works on both Claude Code and Gemini CLI (both support `/model`).\n\n"
+            "Works for CLI profiles whose TUI supports `/model`.\n\n"
             "⚠ Tradeoffs:\n"
             "  - Adds ~400 tokens to the system prompt of every session\n"
             "  - Each model switch adds ~2-3s latency (PTY command + model load)\n"

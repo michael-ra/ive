@@ -63,6 +63,28 @@ def _is_truthy_worktree(value: Any) -> bool:
     return value not in (None, 0, "0", False, "", "false", "False")
 
 
+def _codex_effort(value: Any) -> Optional[list[str]]:
+    """Translate IVE effort values to Codex config overrides."""
+    if not value:
+        return None
+    effort = str(value)
+    if effort == "max":
+        effort = "xhigh"
+    return ["-c", f'model_reasoning_effort="{effort}"']
+
+
+def _codex_permission(value: Any) -> Optional[list[str]]:
+    """Translate IVE permission modes to Codex approval/sandbox flags."""
+    mode = str(value or "default")
+    if mode == "bypassPermissions":
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+    if mode == "plan":
+        return ["--ask-for-approval", "never", "--sandbox", "read-only"]
+    if mode in ("auto", "acceptEdits", "dontAsk", "yolo", "auto_edit"):
+        return ["--ask-for-approval", "never", "--sandbox", "workspace-write"]
+    return ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"]
+
+
 # ─── FeatureBinding ───────────────────────────────────────────────────────
 
 @dataclass
@@ -132,6 +154,13 @@ class CLIProfile:
 
     # ── Session detection ─────────────────────────────────────────────
     session_file_pattern: str = "*.jsonl"
+
+    # ── Hook installer metadata (profile-driven hook_installer) ───────
+    home_env_var: str = ""                      # CLAUDE_CONFIG_DIR / CODEX_HOME / GEMINI_HOME
+    avcp_hook_script: str = ""                   # basename under anti-vibe-code-pwner/hooks/
+    avcp_matcher: str = "*"                      # AVCP entry tool matcher
+    avcp_timeout: int = 30                       # AVCP hook timeout (Gemini uses ms)
+    tool_event_matcher: str = "*"                # myelin/safety-gate tool scope
 
     # ── Feature introspection ─────────────────────────────────────────────
     def supports(self, f: Feature) -> bool:
@@ -330,6 +359,11 @@ CLAUDE_PROFILE = CLIProfile(
     # ── MCP / session detection ───────────────────────────────────────
     mcp_strategy="config_file",
     session_file_pattern="*.jsonl",
+    home_env_var="CLAUDE_CONFIG_DIR",
+    avcp_hook_script="claude-code.sh",
+    avcp_matcher="Bash",
+    avcp_timeout=30,
+    tool_event_matcher="*",
 )
 
 
@@ -492,6 +526,158 @@ GEMINI_PROFILE = CLIProfile(
     # ── MCP / session detection ───────────────────────────────────────
     mcp_strategy="mcp_add",
     session_file_pattern="*.json",
+    home_env_var="GEMINI_HOME",
+    avcp_hook_script="gemini-cli.sh",
+    avcp_matcher="shell_execute|run_shell_command|Bash",
+    avcp_timeout=30000,
+    tool_event_matcher="edit_file|write_file|create_file",
+)
+
+
+# ═══ Codex CLI profile ════════════════════════════════════════════════════
+#
+# Source of truth: `codex --help` from Codex CLI 0.130.0 plus local
+# `~/.codex/config.toml` conventions. Codex exposes approval/sandbox as
+# separate flags, so Commander's canonical permission mode maps to both.
+
+CODEX_PROFILE = CLIProfile(
+    id="codex",
+    label="Codex CLI",
+    binary="codex",
+    features={
+        Feature.MODEL: FeatureBinding(
+            flag="--model",
+            build=lambda v: ["--model", str(v)] if v else None,
+        ),
+        Feature.EFFORT: FeatureBinding(
+            flag="-c model_reasoning_effort",
+            build=_codex_effort,
+            notes="Codex reads reasoning effort from config.toml; IVE emits a per-session -c override.",
+        ),
+        Feature.ADD_DIRS: FeatureBinding(
+            flag="--add-dir",
+            build=lambda v: sum(
+                [["--add-dir", d] for d in _parse_list(v)], []
+            ) or None,
+        ),
+        Feature.RESUME_ID: FeatureBinding(
+            flag="resume",
+            build=lambda v: ["resume", str(v)] if v else None,
+            notes="Codex resumes by UUID or thread name.",
+        ),
+        Feature.PERMISSION_MODE: FeatureBinding(
+            flag="--ask-for-approval/--sandbox",
+            build=_codex_permission,
+            notes="IVE modes map to Codex approval policy plus sandbox mode.",
+        ),
+        Feature.ALLOWED_MCP_SERVERS: FeatureBinding(
+            notes="Codex MCP servers are registered with `codex mcp add`; no per-session allow-list flag.",
+        ),
+        Feature.PROJECT_MEMORY_FILE: FeatureBinding(
+            file_path="AGENTS.md",
+            notes="Codex reads AGENTS.md as project instructions.",
+        ),
+        Feature.GLOBAL_MEMORY_FILE: FeatureBinding(
+            file_path="~/.codex/AGENTS.md",
+        ),
+        Feature.SKILLS_DIR: FeatureBinding(
+            file_path=".agents/skills",
+            notes="Project skills for Codex live under .agents/skills.",
+        ),
+        Feature.SKILLS_FORMAT: FeatureBinding(
+            notes="skill_md",
+        ),
+        Feature.PLAN_MODE: FeatureBinding(
+            notes="Approximated with Codex read-only sandbox for IVE plan mode.",
+        ),
+        Feature.SUBAGENTS: FeatureBinding(
+            notes="Codex supports multi-agent tools when enabled by the installed CLI.",
+        ),
+        # Unsupported / not exposed as direct Codex CLI flags.
+        Feature.WORKTREE: FeatureBinding(
+            supported=False,
+            notes="Codex worktree management is an app capability, not an interactive CLI flag.",
+        ),
+        Feature.APPEND_SYSTEM_PROMPT: FeatureBinding(
+            flag="-c developer_instructions",
+            build=lambda v: ["-c", f"developer_instructions={v}"] if v else None,
+            notes="Codex's --append-system-prompt analogue: `-c "
+                  "developer_instructions=` injects developer/system guidance "
+                  "at launch (value is TOML-parsed with raw-string fallback, "
+                  "robust for large multi-line prompts). Avoids the fragile "
+                  "deferred-TUI-typing path entirely.",
+        ),
+        Feature.BUDGET_USD: FeatureBinding(supported=False),
+        Feature.ALLOWED_TOOLS: FeatureBinding(
+            supported=False,
+            notes="Codex approval and sandbox policy are the portable control surface.",
+        ),
+        Feature.DISALLOWED_TOOLS: FeatureBinding(supported=False),
+        Feature.MCP_CONFIG_PATH: FeatureBinding(
+            supported=False,
+            notes="Codex registers MCP servers via `codex mcp add` in ~/.codex/config.toml.",
+        ),
+        Feature.AGENT: FeatureBinding(supported=False),
+        Feature.PLAN_DEFAULT_ON: FeatureBinding(supported=False),
+    },
+    # Only the 8 events in Codex 0.130.0's `HookEventNameWire` schema. Codex has
+    # no session-end / failure / subagent / notification hooks, so SESSION_STOP,
+    # TURN_FAILURE, POST_TOOL_FAILURE, PERMISSION_DENIED, SUBAGENT_* and
+    # NOTIFICATION are intentionally unmapped (session-end is derived from PTY
+    # exit, not a hook, for Codex).
+    hook_event_map={
+        HookEvent.SESSION_START: "SessionStart",
+        HookEvent.PROMPT_SUBMIT: "UserPromptSubmit",
+        HookEvent.TURN_COMPLETE: "Stop",
+        HookEvent.PRE_TOOL: "PreToolUse",
+        HookEvent.POST_TOOL: "PostToolUse",
+        HookEvent.PERMISSION_REQUEST: "PermissionRequest",
+        HookEvent.PRE_COMPACT: "PreCompact",
+        HookEvent.POST_COMPACT: "PostCompact",
+    },
+    home_dir="~/.codex",
+    settings_file="~/.codex/hooks.json",
+    plugin_cache_dir="~/.codex/plugins/cache",
+    auth_dir_name=".codex",
+    default_model="gpt-5.4",
+    default_permission_mode="auto",
+    default_commander_model="gpt-5.5",
+    default_tester_model="gpt-5.4-mini",
+    available_models=[
+        {"id": "gpt-5.5", "label": "GPT-5.5", "description": "Maximum capability"},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "description": "Balanced"},
+        {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini", "description": "Fast & cost-efficient"},
+        {"id": "gpt-5.3-codex", "label": "GPT-5.3 Codex", "description": "Coding optimized"},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark", "description": "Ultra-fast coding"},
+    ],
+    available_permission_modes=[
+        {"id": "default", "label": "Default", "description": "Ask when needed, workspace sandbox"},
+        {"id": "auto", "label": "Auto", "description": "No prompts, workspace sandbox"},
+        {"id": "plan", "label": "Plan", "description": "Read-only sandbox"},
+        {"id": "acceptEdits", "label": "Accept Edits", "description": "Auto-approve workspace edits"},
+        {"id": "dontAsk", "label": "Don't Ask", "description": "Never prompt; failures return to Codex"},
+        {"id": "bypassPermissions", "label": "Bypass All", "description": "Disable approvals and sandbox"},
+    ],
+    effort_levels=["low", "medium", "high", "xhigh"],
+    model_ladder=["gpt-5.4-mini", "gpt-5.4", "gpt-5.5"],
+    message_markers=["codex", ">"],
+    ui_capabilities={
+        "force_send": False,
+        "theme": "green",
+        "short_label": "COD",
+        "terminal_input": "readline",
+    },
+    default_hook_events=[
+        "SessionStart", "Stop", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+        "PreCompact", "PostCompact",
+    ],
+    mcp_strategy="mcp_add",
+    session_file_pattern="*.jsonl",
+    home_env_var="CODEX_HOME",
+    avcp_hook_script="codex-cli.sh",
+    avcp_matcher="Bash|shell|shell_command",
+    avcp_timeout=30,
+    tool_event_matcher="*",
 )
 
 
@@ -500,6 +686,7 @@ GEMINI_PROFILE = CLIProfile(
 PROFILES: dict[str, CLIProfile] = {
     "claude": CLAUDE_PROFILE,
     "gemini": GEMINI_PROFILE,
+    "codex": CODEX_PROFILE,
 }
 
 

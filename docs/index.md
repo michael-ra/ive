@@ -3,7 +3,7 @@ layout: home
 hero:
   name: "IVE"
   text: "Integrated Vibecoding Environment"
-  tagline: "Run multiple Claude Code and Gemini CLI agents from a single browser UI — with a full terminal emulator, Kanban board, research engine, and MCP integration. Everything local, nothing cloud."
+  tagline: "Run multiple Claude Code, Gemini CLI, and Codex CLI agents from a single browser UI — with a full terminal emulator, Kanban board, research engine, and MCP integration. Everything local, nothing cloud."
   actions:
     - theme: brand
       text: Get Started
@@ -17,7 +17,7 @@ hero:
 features:
   - icon: 🖥️
     title: Multi-session terminal
-    details: Real PTY sessions with xterm.js — Shift+Tab, plan mode, slash commands all work. Switch between Claude Code and Gemini CLI per session.
+    details: Real PTY sessions with xterm.js — Shift+Tab, plan mode, slash commands all work. Switch between Claude Code, Gemini CLI, and Codex CLI per session.
     link: /guide/terminal/overview
   - icon: 📋
     title: Built-in Kanban board

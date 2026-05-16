@@ -31,8 +31,8 @@ Click **View Transcript** to open the full subagent transcript in a side panel, 
 
 Agent tree data comes from CLI hooks, not ANSI parsing. When a subagent starts or stops, the CLI fires a `SubagentStart`/`SubagentStop` hook event, which Commander records.
 
-::: info Gemini CLI limitation
-Gemini CLI does not currently fire subagent lifecycle hooks, so the Agent Tree is Claude Code only. Gemini parity is planned.
+::: info CLI hook coverage
+Claude Code and Codex CLI expose subagent lifecycle hooks. Gemini CLI does not currently fire subagent lifecycle hooks, so Gemini sessions may show less internal tree detail.
 :::
 
 ## Related

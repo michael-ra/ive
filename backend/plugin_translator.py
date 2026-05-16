@@ -25,7 +25,7 @@ from pathlib import Path
 import aiohttp
 
 from cli_features import Feature, HookEvent
-from cli_profiles import CLAUDE_PROFILE, GEMINI_PROFILE
+from cli_profiles import get_profile
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,11 @@ _DOC_URLS = {
         "extensions": "https://geminicli.com/docs/extensions/reference.md",
         "skills": "https://geminicli.com/docs/cli/skills.md",
         "cli_ref": "https://geminicli.com/docs/cli/cli-reference.md",
+    },
+    "codex": {
+        "hooks": "https://developers.openai.com/codex/hooks",
+        "skills": "https://developers.openai.com/codex/skills",
+        "cli_ref": "https://developers.openai.com/codex/cli/reference",
     },
 }
 
@@ -80,7 +85,7 @@ async def _fetch_doc(url: str) -> str:
 async def _fetch_cli_help(cli: str) -> str:
     """Get the CLI's own --help output (always current for installed version)."""
     import asyncio
-    binary = "claude" if cli == "claude" else "gemini"
+    binary = get_profile(cli).binary
     try:
         proc = await asyncio.create_subprocess_exec(
             binary, "--help",
@@ -152,6 +157,17 @@ CLI_PATTERNS = {
         (r'\.gemini/extensions/', "Gemini extensions path"),
         (r'GEMINI\.md\b', "Gemini memory file"),
     ],
+    "codex": [
+        (r'codex\s+exec\b', "non-interactive mode"),
+        (r'codex\s+mcp\s+\w+', "MCP management"),
+        (r'codex\s+plugin\s+\w+', "plugin management"),
+        (r'--ask-for-approval\b', "approval policy flag"),
+        (r'--sandbox\b', "sandbox mode flag"),
+        (r'--add-dir\b', "directory inclusion flag"),
+        (r'\.codex/hooks\.json', "Codex hooks path"),
+        (r'\.codex/config\.toml', "Codex config path"),
+        (r'AGENTS\.md\b', "Codex instructions file"),
+    ],
 }
 
 # ─── Simple deterministic substitutions ──────────────────────────────────
@@ -176,6 +192,33 @@ _DETERMINISTIC_SUBS = {
         ("-i ", "--append-system-prompt "),
         ("--include-directories", "--add-dir"),
     ],
+    ("claude", "codex"): [
+        ("CLAUDE.md", "AGENTS.md"),
+        (".claude/settings.json", ".codex/hooks.json"),
+        (".claude/skills/", ".agents/skills/"),
+        ("--permission-mode", "--ask-for-approval"),
+        ("--append-system-prompt", "# REVIEW: Codex uses prompt/config injection, not --append-system-prompt"),
+        ("--add-dir", "--add-dir"),
+    ],
+    ("gemini", "codex"): [
+        ("GEMINI.md", "AGENTS.md"),
+        (".gemini/settings.json", ".codex/hooks.json"),
+        (".gemini/skills/", ".agents/skills/"),
+        ("--approval-mode", "--ask-for-approval"),
+        ("--include-directories", "--add-dir"),
+    ],
+    ("codex", "claude"): [
+        ("AGENTS.md", "CLAUDE.md"),
+        (".codex/hooks.json", ".claude/settings.json"),
+        (".agents/skills/", ".claude/skills/"),
+        ("--ask-for-approval", "--permission-mode"),
+    ],
+    ("codex", "gemini"): [
+        ("AGENTS.md", "GEMINI.md"),
+        (".codex/hooks.json", ".gemini/settings.json"),
+        (".agents/skills/", ".gemini/skills/"),
+        ("--ask-for-approval", "--approval-mode"),
+    ],
 }
 
 
@@ -188,9 +231,8 @@ def build_translation_context(source_cli: str, target_cli: str, live_docs: str =
     flags, event names, variables, permission modes, tool names, commands,
     plus current documentation fetched from official doc sites.
     """
-    profiles = {"claude": CLAUDE_PROFILE, "gemini": GEMINI_PROFILE}
-    source = profiles.get(source_cli, CLAUDE_PROFILE)
-    target = profiles.get(target_cli, GEMINI_PROFILE)
+    source = get_profile(source_cli)
+    target = get_profile(target_cli)
 
     ctx = f"""You are translating a {source.label} plugin/script to work with {target.label}.
 
@@ -215,9 +257,9 @@ def build_translation_context(source_cli: str, target_cli: str, live_docs: str =
             ctx += f"- `{src_name}` → NOT SUPPORTED in {target.label}\n"
 
     ctx += "\n## Variable Translations\n"
-    ctx += "- `${CLAUDE_PLUGIN_ROOT}` ↔ `${extensionPath}` (plugin/extension install directory)\n"
-    ctx += "- `${CLAUDE_PLUGIN_DATA}` ↔ `${extensionPath}/data` (persistent data)\n"
-    ctx += "- `${workspacePath}` — same in both CLIs\n"
+    ctx += "- `${CLAUDE_PLUGIN_ROOT}` ↔ `${extensionPath}` ↔ `${CODEX_PLUGIN_ROOT}` (plugin/extension install directory)\n"
+    ctx += "- `${CLAUDE_PLUGIN_DATA}` ↔ `${extensionPath}/data` ↔ `${CODEX_PLUGIN_ROOT}/data` (persistent data)\n"
+    ctx += "- `${workspacePath}` — same where supported by the target CLI\n"
 
     ctx += "\n## Permission Mode Translations\n"
     ctx += "- default → default\n"
@@ -229,22 +271,23 @@ def build_translation_context(source_cli: str, target_cli: str, live_docs: str =
 
     ctx += f"\n## CLI Command Translations\n"
     ctx += f"- `{source.binary}` binary → `{target.binary}`\n"
-    ctx += "- `claude --resume <uuid>` → `gemini --resume latest` (Gemini uses index not UUID)\n"
-    ctx += "- `claude plugin install X` → `gemini extensions install X`\n"
-    ctx += "- `claude plugin marketplace` → `gemini extensions` (browse)\n"
-    ctx += "- `claude mcp add` → `gemini mcp add` (same)\n"
-    ctx += "- `claude --print -p` → `gemini -p` (non-interactive mode)\n"
-    ctx += "- `/skill-name` → `/skill-name` (same invocation in both CLIs)\n"
+    ctx += "- Claude resumes with `claude --resume <uuid>`; Gemini resumes by `--resume` index/latest; Codex resumes with `codex resume <uuid>`.\n"
+    ctx += "- Claude plugins use `.claude-plugin/plugin.json`; Gemini extensions use `gemini-extension.json`; Codex plugins use `.codex-plugin/plugin.json` plus marketplace entries.\n"
+    ctx += "- MCP setup maps to `claude mcp add`, `gemini mcp add`, or `codex mcp add <name> --env KEY=VALUE -- <command>`.\n"
+    ctx += "- Non-interactive mode maps among `claude --print -p`, `gemini -p`, and `codex exec`.\n"
+    ctx += "- Skill invocation remains `/skill-name` or explicit skill mention where the target CLI supports it.\n"
 
     ctx += "\n## Tool Name Translations\n"
     ctx += "- Claude: Bash, Read, Write, Edit, Glob, Grep, Agent, Task\n"
     ctx += "- Gemini: Shell, ReadFile, WriteFile, EditFile, FindFiles, SearchText, Spawn\n"
+    ctx += "- Codex: shell/apply_patch/update_plan plus MCP tools exposed by configured servers\n"
 
     ctx += "\n## File Path Translations\n"
     ctx += "- `.claude/skills/` → `.gemini/skills/` (standalone skills)\n"
-    ctx += "- `.claude/plugins/` → `.gemini/extensions/` (packages)\n"
-    ctx += "- `~/.claude/settings.json` → `~/.gemini/settings.json`\n"
-    ctx += "- `CLAUDE.md` → `GEMINI.md` (project memory)\n"
+    ctx += "- Codex repository skills live under `.agents/skills/`; user skills/config live under `~/.codex/`.\n"
+    ctx += "- `.claude/plugins/` → `.gemini/extensions/` → `.codex/plugins/` (packages)\n"
+    ctx += "- `~/.claude/settings.json` → `~/.gemini/settings.json` → `~/.codex/hooks.json` or `~/.codex/config.toml`\n"
+    ctx += "- `CLAUDE.md` → `GEMINI.md` → `AGENTS.md` (project guidance)\n"
 
     ctx += """
 ## Translation Rules
@@ -272,7 +315,7 @@ class PluginTranslator:
 
         Returns:
             {
-                "source_cli": "claude"|"gemini"|None,
+                "source_cli": "claude"|"gemini"|"codex"|None,
                 "patterns": [{"pattern": str, "description": str, "line": int}],
                 "portable": bool,
             }
@@ -320,8 +363,8 @@ class PluginTranslator:
 
         Args:
             text: Script/config text to translate
-            source_cli: "claude" or "gemini"
-            target_cli: "claude" or "gemini"
+            source_cli: "claude", "gemini", or "codex"
+            target_cli: "claude", "gemini", or "codex"
             llm_fn: async callable(prompt: str) -> str for LLM calls
             max_fix_iterations: Max fix loop iterations
 
@@ -519,8 +562,16 @@ Script:
         if not files:
             return {"valid": True, "issues": [], "suggestions": []}
 
-        cli_label = "plugin" if target_cli == "claude" else "extension"
-        var_name = "CLAUDE_PLUGIN_ROOT" if target_cli == "claude" else "extensionPath"
+        cli_label = {
+            "claude": "plugin",
+            "gemini": "extension",
+            "codex": "plugin",
+        }.get(target_cli, "package")
+        var_name = {
+            "claude": "CLAUDE_PLUGIN_ROOT",
+            "gemini": "extensionPath",
+            "codex": "CODEX_PLUGIN_ROOT",
+        }.get(target_cli, "PLUGIN_ROOT")
 
         prompt = f"""Review this {target_cli} {cli_label} package for correctness.
 

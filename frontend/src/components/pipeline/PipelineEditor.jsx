@@ -6,7 +6,14 @@ import {
 } from 'lucide-react'
 import useStore from '../../state/store'
 import { api } from '../../lib/api'
-import { getModelsForCli, getPermissionModesForCli, getEffortLevelsForCli } from '../../lib/constants'
+import {
+  CLI_TYPES,
+  getModelsForCli,
+  getPermissionModesForCli,
+  getEffortLevelsForCli,
+  getCliSubtleClass,
+  getCliShortLabel,
+} from '../../lib/constants'
 
 const STAGE_ICONS = {
   search: Search, code: Code, 'git-branch': GitBranch, 'check-circle': CheckCircle,
@@ -775,10 +782,8 @@ export default function PipelineEditor({ onClose }) {
                       <div className="text-[10px] text-zinc-500 mt-1 truncate flex items-center gap-1">
                         {stage.type === 'condition' ? 'Condition gate' : (session?.name || stage.session_type || 'No session')}
                         {stage.cli_type && (
-                          <span className={`px-1 py-px rounded text-[8px] font-medium ${
-                            stage.cli_type === 'gemini' ? 'bg-blue-900/40 text-blue-300' : 'bg-orange-900/40 text-orange-300'
-                          }`}>
-                            {stage.cli_type === 'gemini' ? 'GEM' : 'CLA'}
+                          <span className={`px-1 py-px rounded text-[8px] font-medium ${getCliSubtleClass(stage.cli_type)}`}>
+                            {getCliShortLabel(stage.cli_type)}
                           </span>
                         )}
                       </div>
@@ -949,8 +954,9 @@ function StageProperties({ stage, sessions, onUpdate, onDelete }) {
               className="w-full bg-zinc-800/50 text-xs text-zinc-200 px-2 py-1.5 rounded border border-zinc-700/50 outline-none"
             >
               <option value="">Any</option>
-              <option value="claude">Claude Code</option>
-              <option value="gemini">Gemini CLI</option>
+              {CLI_TYPES.map((cli) => (
+                <option key={cli.id} value={cli.id}>{cli.label} CLI</option>
+              ))}
             </select>
           </div>
 

@@ -6,6 +6,14 @@ import {
   Zap,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { CLI_TYPES, getCliSubtleClass } from '../../lib/constants'
+
+const ALL_CLI_IDS = CLI_TYPES.map((cli) => cli.id)
+const cliLabel = (id) => CLI_TYPES.find((cli) => cli.id === id)?.label || id
+const nextCliTarget = (installed = []) =>
+  CLI_TYPES.find((cli) => !installed.includes(cli.id))?.id
+  || CLI_TYPES.find((cli) => cli.id !== installed[0])?.id
+  || 'claude'
 
 // ─── Security tier presentation ──────────────────────────────────────────
 // Tier 0 = text-only (safest), tier 3 = unverified raw source.
@@ -530,7 +538,7 @@ export default function MarketplacePanel({ onClose, initialTab, suggestedSkills 
     }
   }
 
-  const handleInstallSkill = async (skill, cliTypes = ['claude', 'gemini']) => {
+  const handleInstallSkill = async (skill, cliTypes = ALL_CLI_IDS) => {
     setBusy(true)
     try {
       // Build full SKILL.md content with frontmatter
@@ -587,7 +595,7 @@ export default function MarketplacePanel({ onClose, initialTab, suggestedSkills 
     }
   }
 
-  const handleUninstallSkill = async (skill, cliTypes = ['claude', 'gemini']) => {
+  const handleUninstallSkill = async (skill, cliTypes = ALL_CLI_IDS) => {
     setBusy(true)
     try {
       await api.uninstallAgentSkill({
@@ -869,9 +877,7 @@ export default function MarketplacePanel({ onClose, initialTab, suggestedSkills 
                                     <span className="text-[10px] text-text-faint font-mono px-1 py-0.5 bg-bg-inset rounded">{skill.category}</span>
                                   )}
                                   {isInstalled && clis.map(c => (
-                                    <span key={c} className={`text-[10px] font-medium uppercase px-1 py-0.5 rounded ${
-                                      c === 'claude' ? 'text-indigo-400 bg-indigo-500/10' : 'text-blue-400 bg-blue-500/10'
-                                    }`}>{c}</span>
+                                    <span key={c} className={`text-[10px] font-medium uppercase px-1 py-0.5 rounded ${getCliSubtleClass(c)}`}>{c}</span>
                                   ))}
                                 </div>
                                 {skill.description && (
@@ -887,12 +893,12 @@ export default function MarketplacePanel({ onClose, initialTab, suggestedSkills 
                                   <>
                                     {clis.length === 1 && (
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); handleSyncSkill(skill, clis[0], clis[0] === 'claude' ? 'gemini' : 'claude') }}
+                                        onClick={(e) => { e.stopPropagation(); handleSyncSkill(skill, clis[0], nextCliTarget(clis)) }}
                                         disabled={busy}
                                         className="px-1.5 py-0.5 text-[10px] text-text-faint hover:text-text-secondary border border-border-primary rounded transition-colors disabled:opacity-30"
-                                        title={`Sync to ${clis[0] === 'claude' ? 'Gemini' : 'Claude'}`}
+                                        title={`Sync to ${cliLabel(nextCliTarget(clis))}`}
                                       >
-                                        sync→{clis[0] === 'claude' ? 'gem' : 'claude'}
+                                        sync→{nextCliTarget(clis)}
                                       </button>
                                     )}
                                     <button
@@ -1024,9 +1030,7 @@ export default function MarketplacePanel({ onClose, initialTab, suggestedSkills 
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   <span className="text-xs text-text-primary font-mono font-medium">{skill.name}</span>
                                   {skill.installed_for?.map((c) => (
-                                    <span key={c} className={`text-[10px] font-medium uppercase px-1 py-0.5 rounded ${
-                                      c === 'claude' ? 'text-indigo-400 bg-indigo-500/10' : 'text-blue-400 bg-blue-500/10'
-                                    }`}>{c}</span>
+                                    <span key={c} className={`text-[10px] font-medium uppercase px-1 py-0.5 rounded ${getCliSubtleClass(c)}`}>{c}</span>
                                   ))}
                                   {skill.has_scripts && (
                                     <span className="text-[10px] text-amber-400/80 px-1 py-0.5 bg-amber-500/10 rounded">scripts</span>
@@ -1039,11 +1043,11 @@ export default function MarketplacePanel({ onClose, initialTab, suggestedSkills 
                               <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 {skill.installed_for?.length === 1 && (
                                   <button
-                                    onClick={() => handleSyncSkill(skill, skill.installed_for[0], skill.installed_for[0] === 'claude' ? 'gemini' : 'claude')}
+                                    onClick={() => handleSyncSkill(skill, skill.installed_for[0], nextCliTarget(skill.installed_for))}
                                     disabled={busy}
                                     className="px-1.5 py-0.5 text-[10px] text-text-faint hover:text-text-secondary border border-border-primary rounded transition-colors disabled:opacity-30"
                                   >
-                                    sync→{skill.installed_for[0] === 'claude' ? 'gemini' : 'claude'}
+                                    sync→{nextCliTarget(skill.installed_for)}
                                   </button>
                                 )}
                                 <button

@@ -1,7 +1,7 @@
 """Commander-level event vocabulary.
 
 This is Commander's own event bus — a layer ABOVE the CLI hook layer. Where
-`cli_features.HookEvent` covers Claude Code and Gemini CLI lifecycle events,
+`cli_features.HookEvent` covers registered CLI lifecycle events,
 `CommanderEvent` covers Commander's own orchestration and state changes:
 
     • Task board (create / status change / plan / done / blocked / ...)
