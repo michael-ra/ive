@@ -19,7 +19,9 @@ Then start it:
 ive
 ```
 
-IVE opens in your browser at `http://127.0.0.1:5111`.
+IVE starts in the background and opens in your browser at
+`http://127.0.0.1:5111`. You can close the terminal; IVE keeps running until
+you run `ive stop`.
 
 The installer puts IVE into `~/.ive`, installs its Python and npm dependencies
 there, builds the app and links the `ive` command into `~/.local/bin`. It does
@@ -43,7 +45,7 @@ On macOS with Homebrew: `brew install python node git`.
 git clone https://github.com/michael-ra/ive.git
 cd ive
 bash install.sh
-bash start.sh
+bin/ive
 ```
 
 `bash install.sh --plan` and `bash start.sh --plan` print every step without
@@ -52,8 +54,12 @@ running it. More options are in [INSTALL.md](INSTALL.md).
 ## Everyday commands
 
 ```bash
-ive                 # start IVE and open it in the browser
-ive --headless      # start without opening a browser
+ive                 # start IVE in the background and open it in the browser
+ive --headless      # start in the background without opening a browser
+ive stop            # stop IVE
+ive status          # is it running, and where
+ive logs            # follow the log (Ctrl+C leaves, IVE keeps running)
+ive run             # run IVE in this terminal instead of the background
 ive update          # pull the latest version and rebuild
 ive uninstall       # remove IVE, its hooks and the ive command
 ```

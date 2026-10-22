@@ -54,6 +54,7 @@ main() {
   case ":$PATH:" in
     *":$bin_dir:"*)
       say "Start it with:  ive"
+      say "IVE then runs in the background and opens in your browser."
       ;;
     *)
       say "Start it with:  $bin_dir/ive"
@@ -61,7 +62,7 @@ main() {
       say "  export PATH=\"$bin_dir:\$PATH\""
       ;;
   esac
-  say "Update later with 'ive update', remove it with 'ive uninstall'."
+  say "Stop it with 'ive stop', update with 'ive update', remove it with 'ive uninstall'."
 }
 
 say() { printf '%s\n' "$*"; }
