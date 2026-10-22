@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$PATH"
 # Keep the builder's home folder out of panic paths in the shipped binary.
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~"
+# The 0x1f-separated form keeps a home folder with spaces in one argument.
+export CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS:+$CARGO_ENCODED_RUSTFLAGS$'\x1f'}--remap-path-prefix=$HOME=~"
 cd "$ROOT"
 if [[ "$(uname -s)" != Darwin ]]; then echo 'Build this installer on macOS.' >&2; exit 1; fi
 command -v cargo >/dev/null || { echo 'Install the Rust toolchain from https://rustup.rs first.' >&2; exit 1; }
