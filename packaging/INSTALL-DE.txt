@@ -1,0 +1,29 @@
+IVE für macOS — Vorschauversion 1.0.0
+
+Installation
+1. Ziehe IVE.app in Programme.
+2. Öffne IVE aus Programme. Der lokale Dienst startet automatisch.
+3. Folge der Einführung und verbinde ein Projekt.
+
+Diese Ausgabe ist für Apple-Silicon-Macs (M1 oder neuer), macOS 13.5 oder neuer.
+Python und ein separat gestarteter IVE-Server sind nicht erforderlich.
+Claude Code bzw. Codex müssen für KI-Sessions auf deinem Mac installiert und
+angemeldet sein. Die Einrichtung in IVE zeigt, welche Anbieter verfügbar sind.
+Node.js / Git / Docker werden benötigt, wenn dein Projekt oder die gewählte
+Zusatzfunktion diese Werkzeuge verwendet. Sie werden nicht mit IVE installiert.
+
+Diese lokale Vorschau ist ad hoc signiert, aber noch nicht von Apple notarisiert.
+Bei einem Download kann macOS die App zunächst blockieren. Für eine öffentliche
+Verteilung ohne diesen Hinweis ist eine Developer-ID-Signatur samt Notarisierung
+nötig. Ändere keine globalen macOS-Sicherheitseinstellungen.
+
+Deine App-Daten liegen getrennt vom Entwicklungsprojekt unter:
+~/Library/Application Support/com.ive.desktop
+Die Entwicklungsdaten werden nicht automatisch importiert.
+Diagnose: desktop-backend.log im selben Ordner.
+IVE nutzt nur die lokale Adresse 127.0.0.1:5112. Mit Cmd+Q werden die App
+und ihr eigener Dienst beendet. Deine Projekte und Verläufe bleiben gespeichert.
+
+Diese Ausgabe enthält den IVE-Workspace und die mitgelieferte Sandbox-Erweiterung.
+Cloud-Zugänge, externe Anbieter, zusätzliche private Erweiterungen und Docker
+sind nicht Bestandteil des Installers. Es gibt noch keine automatischen Updates.

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# The `ive` command that get.sh links into ~/.local/bin.
+set -euo pipefail
+
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+  target="$(readlink "$self")"
+  case "$target" in
+    /*) self="$target" ;;
+    *) self="$(dirname -- "$self")/$target" ;;
+  esac
+done
+IVE_DIR="$(cd -- "$(dirname -- "$self")/.." && pwd -P)"
+
+usage() {
+  cat <<USAGE
+Usage: ive [command] [options]
+
+  ive                 Start IVE and open it in your browser
+  ive --headless      Start IVE without opening a browser
+  ive update          Download the latest version and rebuild
+  ive uninstall       Remove IVE's hooks, the app folder and this command
+                      (quit IVE first; --yes skips the question)
+  ive help            Show this help
+
+IVE lives in $IVE_DIR
+USAGE
+}
+
+uninstall() {
+  # Refuse anything that does not look like an IVE checkout.
+  if [ ! -f "$IVE_DIR/ive-team.json" ] || [ ! -f "$IVE_DIR/bin/ive" ]; then
+    echo "ive uninstall: $IVE_DIR does not look like an IVE folder, nothing removed." >&2
+    exit 1
+  fi
+  local answer=""
+  if [ "${1:-}" = "--yes" ]; then
+    answer=y
+  else
+    printf 'Remove IVE from %s, including its local data? [y/N] ' "$IVE_DIR"
+    read -r answer </dev/tty || true
+  fi
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) echo "Nothing removed."; exit 0 ;;
+  esac
+  source "$IVE_DIR/tools/python.sh"
+  "$(ive_python)" -I "$IVE_DIR/tools/ive_team.py" --root "$IVE_DIR" remove-hooks
+  local link
+  link="$(command -v ive || true)"
+  if [ -L "$link" ] && [ "$(readlink "$link")" = "$IVE_DIR/bin/ive" ]; then
+    rm -f -- "$link"
+  fi
+  rm -r -f -- "$IVE_DIR"
+  echo "IVE is removed. Your projects and your coding CLIs were not touched."
+}
+
+case "${1:-}" in
+  help|-h|--help)
+    usage
+    ;;
+  update)
+    git -C "$IVE_DIR" pull --ff-only
+    exec bash "$IVE_DIR/install.sh"
+    ;;
+  uninstall)
+    uninstall "${2:-}"
+    ;;
+  *)
+    exec bash "$IVE_DIR/start.sh" "$@"
+    ;;
+esac

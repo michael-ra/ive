@@ -1,0 +1,42 @@
+.ive-sidebar-toggle-slot {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.ive-sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--x-line-strong);
+  border-radius: var(--x-radius-s);
+  color: var(--x-ink-secondary);
+  background: var(--x-surface);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ive-sidebar-toggle:hover {
+  color: var(--x-ink);
+  background: var(--x-hover);
+}
+
+.ive-sidebar-toggle:focus-visible {
+  outline: 1px solid var(--x-focus);
+  outline-offset: 2px;
+}
+
+/* Keep the recovery control first and full-sized even in a crowded app bar. */
+@media (max-width: 1535px) {
+  .ive-sidebar-toggle > span { display: none; }
+}
+
+/* The existing mobile drawer owns navigation below the desktop breakpoint. */
+@media (max-width: 767px) {
+  .ive-sidebar-toggle-slot { display: none; }
+}

@@ -1,0 +1,20 @@
+.ive-provider-limits { position: relative; display: flex; align-items: center; flex-shrink: 0; min-height: 36px; gap: 8px; padding: 5px 12px; border-top: 1px solid var(--x-line); background: var(--x-surface); color: var(--x-muted); font-size: 11px; }
+.ive-provider-limits-details { flex: 1; min-width: 0; }
+.ive-provider-limits summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; list-style: none; cursor: pointer; }
+.ive-provider-limits summary::-webkit-details-marker { display: none; }
+.ive-provider-limits-account,.ive-provider-limit { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.ive-provider-limits strong { color: var(--x-ink-secondary); font-weight: 600; }
+.ive-provider-limit { font-variant-numeric: tabular-nums; }
+.ive-provider-limit meter { width: 45px; height: 6px; border: 0; border-radius: 3px; background: var(--x-line); }
+.ive-provider-limit meter::-webkit-meter-bar { border: 0; height: 6px; background: var(--x-line); }
+.ive-provider-limit meter::-webkit-meter-optimum-value { background: var(--x-muted); }
+.ive-provider-limit.is-stale { opacity: .7; }
+.ive-provider-freshness { margin-left: auto; }
+.ive-provider-refresh { display: grid; place-items: center; width: 28px; height: 26px; border-radius: 5px; }
+.ive-provider-refresh:hover { background: var(--x-hover); color: var(--x-ink); }
+.ive-provider-refresh:disabled { opacity: .5; }
+.ive-provider-refresh:focus-visible,.ive-provider-limits summary:focus-visible { outline: 1px solid var(--x-ink-secondary); outline-offset: 2px; }
+.ive-provider-limits-popover { position: absolute; bottom: calc(100% + 8px); left: 12px; z-index: 70; width: min(440px,calc(100vw - 24px)); padding: 16px; border: 1px solid var(--x-line); border-radius: 8px; background: var(--x-surface); box-shadow: var(--x-shadow-3); line-height: 1.6; }
+.ive-provider-limits-popover p { margin-top: 8px; }
+@media (max-width: 1100px) { .ive-provider-reset { display: none; } }
+@media (max-width: 640px) { .ive-provider-limits summary { gap: 5px 12px; } .ive-provider-limits-account span,.ive-provider-limit meter,.ive-provider-freshness { display: none; } }

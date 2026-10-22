@@ -1,0 +1,11 @@
+# IVE workbench + IVE-owned Research/Delivery/Secure + Sandbox runtime.
+# Direct versions match the inspected development environment. This is not a
+# transitive/hash lock; a clean dependency installation has not been exercised.
+aiohttp==3.14.1
+aiosqlite==0.22.1
+cryptography==49.0.0
+keyring==25.7.0
+playwright==1.61.0
+pyte==0.8.2
+pywebpush==2.3.0
+PyYAML==6.0.3

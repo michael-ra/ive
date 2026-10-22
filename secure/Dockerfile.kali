@@ -1,0 +1,45 @@
+# Secure-agent Kali image — built ONLY from the vetted subset of secure/kali-manifest.yaml.
+# SECURE_AGENT_DESIGN.md §3.8: build-time has internet, RUNTIME HAS NONE (Mode A). The image is
+# immutable and the agent NEVER apt-installs at runtime — there is no route to a mirror anyway.
+#
+# Build (only after `python3 backend/secure_build_vet.py vet` PASSES):
+#   container build -t ive-secure-kali:latest -f secure/Dockerfile.kali secure/
+# then point the backend at it:  export SECURE_CONTAINER_IMAGE=ive-secure-kali:latest
+#
+FROM kalilinux/kali-rolling
+
+# Tools from the OFFICIAL signed Kali repo only (every `kali-repo` entry in the manifest that the
+# vetting gate APPROVED). Keep in sync with the approved manifest. --no-install-recommends keeps the
+# image lean; clean the apt lists so no stale package index ships inside the immutable image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nmap masscan dnsutils dnsrecon dnsenum fierce whatweb wafw00f sslscan \
+        nikto dirb gobuster ffuf feroxbuster wfuzz sqlmap commix wpscan nuclei zaproxy \
+        metasploit-framework exploitdb \
+        hydra medusa john \
+        seclists wordlists \
+        proxychains4 netcat-traditional socat curl wget jq git python3 python3-pip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Networking essentials the control plane + agent need (the kali-rolling base omits `ip`/`ping`).
+# Separate layer so editing it doesn't invalidate the big tool layer above.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        iproute2 iputils-ping \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Bake nuclei templates at BUILD time. The runtime network clamp blocks github, so the templates
+# must ship inside the image; at runtime nuclei runs with -disable-update-check against this cache.
+# Separate layer (only rebuilds when this line changes); `|| true` so a transient fetch never breaks the build.
+RUN nuclei -update-templates 2>&1 | tail -3 || true
+
+# Version pinning: reproducible pins require a Kali snapshot repo (snapshot.kali.org) pinned in
+# /etc/apt/sources.list — the manifest records the intended versions. Add the snapshot pin here
+# when bit-for-bit reproducibility is required; the default rolling install is fine for most runs.
+
+# Advisory in-box default-deny (defense in depth only — the agent is root in this VM and can flush
+# it, so the REAL containment is the host-side network clamp; this is a fail-safe, not the brakes):
+#   COPY in-box-deny.rules /etc/iptables.rules   # optional
+
+WORKDIR /work
+# Pentest tools generally need root. That in-box root is contained by design: a disposable,
+# network-clamped micro-VM with NO host filesystem access.
+CMD ["sleep", "infinity"]

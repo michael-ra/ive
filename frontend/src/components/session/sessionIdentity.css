@@ -1,0 +1,60 @@
+/* Session identity is a quiet colored frame/title. State remains a separate
+   labelled status dot, so a red/green-like identity never means error/ready. */
+.ive-session-identity {
+  --ive-session-color: var(--ive-session-light);
+  --ive-session-border: color-mix(in srgb, var(--ive-session-color) 52%, var(--x-line));
+  --ive-session-glow: color-mix(in srgb, var(--ive-session-color) 18%, transparent);
+}
+html[data-theme="dark"] .ive-session-identity {
+  --ive-session-color: var(--ive-session-dark);
+}
+.ive-session-identity .ive-session-heading {
+  background: color-mix(in srgb, var(--ive-session-color) 7%, var(--x-surface-2));
+  border-bottom-color: var(--ive-session-border);
+  box-shadow: inset 3px 0 0 var(--ive-session-color);
+  padding-left: 10px;
+}
+.ive-session-identity .ive-session-title {
+  color: var(--ive-session-color);
+}
+.ive-session-tab::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--ive-session-color);
+  opacity: .55;
+  pointer-events: none;
+}
+.ive-session-tab[aria-selected="true"]::before { opacity: 1; }
+.ive-session-tab[aria-selected="true"] {
+  background: color-mix(in srgb, var(--ive-session-color) 7%, var(--x-surface));
+}
+.ive-terminal-switcher .ive-session-chip {
+  border-color: var(--ive-session-border);
+  box-shadow: inset 0 3px 0 var(--ive-session-color);
+}
+.ive-terminal-switcher .ive-session-chip[aria-pressed="true"] {
+  border-color: var(--ive-session-color);
+  background: color-mix(in srgb, var(--ive-session-color) 7%, var(--x-surface));
+}
+
+.ive-session-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--x-faint);
+  cursor: pointer;
+}
+.ive-session-close:hover { color: var(--x-ink); background: var(--x-hover); }
+.ive-session-close:focus-visible { outline: 1px solid var(--x-focus); outline-offset: 1px; }
+.ive-session-close:disabled { opacity: .6; cursor: wait; }
+@media (pointer: coarse) {
+  .ive-session-close { flex-basis: 40px; width: 40px; height: 40px; }
+}

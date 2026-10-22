@@ -1,0 +1,2 @@
+-r ../backend/requirements.txt
+PyInstaller==6.22.0

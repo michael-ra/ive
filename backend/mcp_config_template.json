@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "commander": {
+      "command": "python3",
+      "args": ["{{MCP_SERVER_PATH}}"],
+      "env": {
+        "COMMANDER_API_URL": "http://127.0.0.1:{{PORT}}",
+        "COMMANDER_WORKSPACE_ID": "{{WORKSPACE_ID}}"
+      }
+    }
+  }
+}
