@@ -375,7 +375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for step in steps:
                 subprocess.run(step["argv"], cwd=step["cwd"], env=env, check=True)
             validate_frontend(root)
-            print("Installed. No services started. Run ./start.sh when you are ready.")
+            print("Installed. Nothing was started. Run bin/ive to start IVE in the background, or bash start.sh to run it in this terminal.")
             return 0
         validate_frontend(root)
         executable = root / ".venv/bin/python"
