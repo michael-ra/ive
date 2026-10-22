@@ -38,7 +38,7 @@ STAGE="$(mktemp -d /tmp/ive-dmg.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 /usr/bin/ditto "$APP" "$STAGE/IVE.app"
 ln -s /Applications "$STAGE/Applications"
-cp packaging/INSTALL-DE.txt "$STAGE/Bitte zuerst lesen.txt"
+cp packaging/DMG-README.txt "$STAGE/Read me.txt"
 /usr/bin/hdiutil create -volname IVE -srcfolder "$STAGE" -ov -format UDZO "$DEST.dmg"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$DEST.zip"
 /usr/bin/codesign --verify --deep --strict "$APP"
