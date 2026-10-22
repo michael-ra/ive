@@ -11,20 +11,144 @@ while [ -L "$self" ]; do
   esac
 done
 IVE_DIR="$(cd -- "$(dirname -- "$self")/.." && pwd -P)"
+STATE_DIR="$IVE_DIR/.ive-team-state"
+PID_FILE="$STATE_DIR/ive.pid"
+PORT_FILE="$STATE_DIR/ive.port"
+LOG_FILE="$STATE_DIR/ive.log"
 
 usage() {
   cat <<USAGE
 Usage: ive [command] [options]
 
-  ive                 Start IVE and open it in your browser
-  ive --headless      Start IVE without opening a browser
+  ive                 Start IVE in the background and open it in your browser
+  ive --headless      Start IVE in the background without opening a browser
+  ive stop            Stop IVE
+  ive status          Show whether IVE is running and where
+  ive logs            Follow IVE's log (Ctrl+C to leave, IVE keeps running)
+  ive run             Run IVE in this terminal instead of the background
   ive update          Download the latest version and rebuild
   ive uninstall       Remove IVE's hooks, the app folder and this command
-                      (quit IVE first; --yes skips the question)
+                      (--yes skips the question)
   ive help            Show this help
 
 IVE lives in $IVE_DIR
 USAGE
+}
+
+# Prints the PID of this installation's running server, if any.
+running_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  # A stale PID file must never make us signal an unrelated process.
+  ps -p "$pid" -o command= 2>/dev/null | grep -qF "$IVE_DIR/backend/server.py" || return 1
+  echo "$pid"
+}
+
+url() {
+  echo "http://127.0.0.1:$(cat "$PORT_FILE" 2>/dev/null || echo 5111)/"
+}
+
+open_browser() {
+  if [ "$(uname -s)" = Darwin ]; then
+    open "$1"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$1" >/dev/null 2>&1 || true
+  else
+    echo "Open $1 in your browser."
+  fi
+}
+
+start() {
+  local headless="" port=5111 arg previous=""
+  for arg in "$@"; do
+    case "$arg" in
+      --headless) headless=1 ;;
+      --port=*) port="${arg#--port=}" ;;
+    esac
+    [ "$previous" = "--port" ] && port="$arg"
+    previous="$arg"
+  done
+
+  local pid
+  if pid="$(running_pid)"; then
+    echo "IVE is already running at $(url)"
+    [ -n "$headless" ] || open_browser "$(url)"
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR"
+  # Keep one old log around instead of growing forever.
+  if [ -f "$LOG_FILE" ] && [ "$(wc -c <"$LOG_FILE")" -gt 10485760 ]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.1"
+  fi
+  echo "$port" >"$PORT_FILE"
+  printf '\n--- %s: ive start %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE"
+
+  # The server keeps this PID: start.sh and the launcher exec into it.
+  nohup bash "$IVE_DIR/start.sh" --headless "$@" >>"$LOG_FILE" 2>&1 </dev/null &
+  pid=$!
+  echo "$pid" >"$PID_FILE"
+
+  printf 'Starting IVE'
+  local i
+  for i in $(seq 1 120); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo ""
+      echo "IVE stopped while starting. Last lines of $LOG_FILE:" >&2
+      tail -n 20 "$LOG_FILE" >&2
+      rm -f "$PID_FILE"
+      exit 1
+    fi
+    if curl -fs -o /dev/null "$(url)" 2>/dev/null; then
+      echo ""
+      echo "IVE is running at $(url)"
+      echo "You can close this terminal. Stop IVE with: ive stop"
+      [ -n "$headless" ] || open_browser "$(url)"
+      return 0
+    fi
+    printf '.'
+    sleep 0.5
+  done
+  echo ""
+  echo "IVE is still starting. Check 'ive status' or 'ive logs'." >&2
+}
+
+stop() {
+  local pid
+  if ! pid="$(running_pid)"; then
+    echo "IVE is not running."
+    rm -f "$PID_FILE"
+    return 0
+  fi
+  printf 'Stopping IVE'
+  kill -TERM "$pid" 2>/dev/null || true
+  local i
+  for i in $(seq 1 120); do
+    kill -0 "$pid" 2>/dev/null || break
+    printf '.'
+    sleep 0.5
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo ""
+    echo "IVE did not stop within a minute; forcing it." >&2
+    kill -KILL "$pid" 2>/dev/null || true
+  else
+    echo ""
+  fi
+  rm -f "$PID_FILE"
+  echo "IVE is stopped."
+}
+
+status() {
+  local pid
+  if pid="$(running_pid)"; then
+    echo "IVE is running at $(url) (process $pid)."
+  else
+    echo "IVE is not running. Start it with: ive"
+    return 1
+  fi
 }
 
 uninstall() {
@@ -44,13 +168,15 @@ uninstall() {
     y|Y|yes|YES) ;;
     *) echo "Nothing removed."; exit 0 ;;
   esac
+  stop
   source "$IVE_DIR/tools/python.sh"
   "$(ive_python)" -I "$IVE_DIR/tools/ive_team.py" --root "$IVE_DIR" remove-hooks
   local link
-  link="$(command -v ive || true)"
-  if [ -L "$link" ] && [ "$(readlink "$link")" = "$IVE_DIR/bin/ive" ]; then
-    rm -f -- "$link"
-  fi
+  for link in "$(command -v ive || true)" "${IVE_BIN_DIR:-$HOME/.local/bin}/ive"; do
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$IVE_DIR/bin/ive" ]; then
+      rm -f -- "$link"
+    fi
+  done
   rm -r -f -- "$IVE_DIR"
   echo "IVE is removed. Your projects and your coding CLIs were not touched."
 }
@@ -59,14 +185,35 @@ case "${1:-}" in
   help|-h|--help)
     usage
     ;;
+  stop)
+    stop
+    ;;
+  status)
+    status
+    ;;
+  logs)
+    touch "$LOG_FILE"
+    exec tail -n 100 -f "$LOG_FILE"
+    ;;
+  run)
+    shift
+    exec bash "$IVE_DIR/start.sh" "$@"
+    ;;
   update)
+    was_running=""
+    if running_pid >/dev/null; then was_running=1; stop; fi
     git -C "$IVE_DIR" pull --ff-only
-    exec bash "$IVE_DIR/install.sh"
+    bash "$IVE_DIR/install.sh"
+    if [ -n "$was_running" ]; then start --headless --port "$(cat "$PORT_FILE" 2>/dev/null || echo 5111)"; fi
     ;;
   uninstall)
     uninstall "${2:-}"
     ;;
+  start)
+    shift
+    start "$@"
+    ;;
   *)
-    exec bash "$IVE_DIR/start.sh" "$@"
+    start "$@"
     ;;
 esac

@@ -62,6 +62,15 @@ def main(args: list[str] | None = None) -> int:
         else:
             runpy.run_module(HELPERS[args[1]],run_name="__main__",alter_sys=True)
         return 0
+    if args == ["--remove-hooks"]:
+        # For uninstalling the app: undo what it wrote into ~/.claude, ~/.codex
+        # and ~/.gemini. Point config at the app's own data dir, not ~/.ive.
+        os.environ.setdefault("IVE_DATA_DIR", str(Path.home()/"Library/Application Support/com.ive.desktop"))
+        import hook_installer
+        hook_installer.uninstall_all()
+        hook_installer.uninstall_safety_gate_hooks()
+        print("Removed IVE hooks from the Claude Code, Codex and Gemini CLI settings.")
+        return 0
     if args == ["--bundle-info"]:
         manifest=project_root()/"bundle-info.json"
         print(manifest.read_text() if manifest.is_file() else json.dumps({"frozen":False}))
