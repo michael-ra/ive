@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>IVE benötigt das Mikrofon, wenn du Spracheingabe verwendest.</string>
+  <string>IVE uses the microphone only when you dictate.</string>
   <key>NSCameraUsageDescription</key>
-  <string>IVE benötigt die Kamera nur für eine von dir gestartete Aufnahme.</string>
+  <string>IVE uses the camera only for a recording you start.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>IVE verbindet deinen lokalen Workspace mit von dir ausgewählten Geräten und Diensten.</string>
+  <string>IVE connects your local workspace to devices and services you choose.</string>
 </dict></plist>

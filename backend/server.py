@@ -23707,11 +23707,14 @@ async def put_app_setting(request: web.Request) -> web.Response:
     # ── Side-effects for specific settings ──────────────────────────
     if key == "experimental_avcp_protection":
         from hook_installer import install_avcp_hooks, uninstall_avcp_hooks
+        from avcp_installer import install_avcp, uninstall_avcp
         try:
             if value == "on":
                 install_avcp_hooks()
+                install_avcp()
             else:
                 uninstall_avcp_hooks()
+                uninstall_avcp(only_this_install=True)
         except Exception as e:
             logger.warning(f"AVCP hook toggle failed: {e}")
             return web.json_response({
@@ -31241,15 +31244,28 @@ async def on_startup(app: web.Application):
     finally:
         await db_seed.close()
 
-    # AVCP (IVE's supply-chain guard) — ensure the shell guard is installed in the user's rc
-    # (idempotent; no-op once present). Makes IVE own install-gating for npm/pip/cargo/etc.
-    # Best-effort; never blocks boot.
+    # AVCP (IVE's supply-chain guard) edits the user's shell rc files, so it is
+    # opt-in: keep its block only while the setting is on, and remove a block
+    # this installation wrote earlier when it is off. Best-effort; never blocks boot.
     try:
-        from avcp_installer import install_avcp, avcp_status
-        if not avcp_status()["installed_in"]:
-            logger.info("AVCP: installing shell guard -> %s", install_avcp().get("installed"))
+        from avcp_installer import install_avcp, uninstall_avcp, avcp_status
+        db_avcp = await get_db()
+        try:
+            cur_avcp = await db_avcp.execute(
+                "SELECT value FROM app_settings WHERE key = 'experimental_avcp_protection'"
+            )
+            avcp_row = await cur_avcp.fetchone()
+        finally:
+            await db_avcp.close()
+        if avcp_row and avcp_row["value"] == "on":
+            if not avcp_status()["installed_in"]:
+                logger.info("AVCP: installing shell guard -> %s", install_avcp().get("installed"))
+        else:
+            removed = uninstall_avcp(only_this_install=True)["removed"]
+            if removed:
+                logger.info("AVCP: removed shell guard from %s (setting is off)", removed)
     except Exception:
-        logger.exception("AVCP startup install failed (non-fatal)")
+        logger.exception("AVCP startup check failed (non-fatal)")
 
     # WS-5: periodically reap orphaned session-sandbox containers (a session that died but left its
     # `ive-sess-*` container). Conservative — only reaps containers whose session_id is absent from
@@ -31547,7 +31563,7 @@ async def on_startup(app: web.Application):
         await observatory.scheduler.start()
         app["_observatory_started"] = True
 
-    logger.info(f"IVE v{VERSION} backend on http://{HOST}:{PORT}")
+    logger.info(f"IVE v{VERSION} backend on http://{_BIND_HOST or HOST}:{_BIND_PORT or PORT}")
 
 
 async def _stop_all_ptys_expected() -> None:
@@ -33874,7 +33890,11 @@ def _print_banner(host, port, token, tunnel_url=None):
             lines.append(f"  \033[1mBonjour:\033[0m   http://{hostname}:{port}")
     if tunnel_url:
         lines.append(f"  \033[1mTunnel:\033[0m    {tunnel_url}")
-    if token:
+    # Only offer sharing when others can actually reach this server. A
+    # loopback-only server has nothing to share, and its log should not carry
+    # the token.
+    reachable = bool(tunnel_url) or host not in ("127.0.0.1", "localhost", "::1")
+    if token and reachable:
         share_base = tunnel_url or (f"http://{lan_ips[0]}:{port}" if lan_ips else local_url)
         lines.append("")
         lines.append(f"  \033[1;33mToken:\033[0m     {token}")

@@ -37,7 +37,16 @@ def helper_command(name: str, *args: str) -> list[str]:
 
 
 def shell_python_function() -> str:
-    """A private Bash helper, scoped to generated IVE hook processes."""
+    """A private Bash helper, scoped to generated IVE hook processes.
+
+    If the app was moved or deleted, the hook steps aside (exit 0) instead of
+    failing closed and blocking every tool call of the coding CLIs.
+    """
     if not is_frozen():
         return ""
-    return "python3() { " + shlex.join(python_command()) + ' "$@"; }\nexport -f python3\n'
+    guard = (
+        f"[ -x {shlex.quote(sys.executable)} ] || {{ echo '[IVE] IVE.app was moved or deleted, so its hooks"
+        " are inactive. Reinstall IVE and run its ive-backend --remove-hooks, or delete the IVE entries"
+        " from your coding CLI settings.' >&2; exit 0; }\n"
+    )
+    return guard + "python3() { " + shlex.join(python_command()) + ' "$@"; }\nexport -f python3\n'

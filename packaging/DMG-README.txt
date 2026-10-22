@@ -17,12 +17,24 @@ Your data
 Projects and settings live in ~/Library/Application Support/com.ive.desktop.
 IVE only listens on 127.0.0.1:5112. Cmd+Q quits the app and its service.
 
+What IVE changes
+IVE adds hooks to Claude Code, Codex and Gemini CLI so it can follow your
+agents and stop risky commands. They stay active, also while IVE is not
+running, until you remove them. If you turn on the optional package scanner,
+IVE also adds a marked block to ~/.zshrc and ~/.bashrc.
+
 Uninstall
-While it runs, IVE adds hooks to the settings of your coding CLIs. Quit IVE,
-then remove them in Terminal:
+1. Quit IVE (Cmd+Q).
+2. In Terminal, remove its hooks and shell block:
 
-  "/Applications/IVE.app/Contents/Resources/backend/ive-backend" --remove-hooks
+   "/Applications/IVE.app/Contents/Resources/backend/ive-backend" --remove-hooks
 
-Then drag IVE to the Trash.
+3. Drag IVE to the Trash.
+4. Optional: delete ~/Library/Application Support/com.ive.desktop with your
+   IVE settings and history.
+
+If you deleted the app first, IVE's hooks stay inactive and print a short note.
+Install IVE again and run step 2, or remove the IVE entries from your coding
+CLI settings by hand.
 
 Source code, issues and license (Apache 2.0): https://github.com/michael-ra/ive

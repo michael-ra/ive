@@ -310,7 +310,8 @@ def run_plan(root: Path, server_args: Sequence[str]) -> dict[str, object]:
 
 REMOVE_HOOKS = (
     "import hook_installer as h; "
-    "h.uninstall_all(); h.uninstall_safety_gate_hooks(); h.uninstall_own_avcp_hooks()"
+    "h.uninstall_all(); h.uninstall_safety_gate_hooks(); h.uninstall_own_avcp_hooks(); "
+    "import avcp_installer as a; a.uninstall_avcp(only_this_install=True)"
 )
 
 

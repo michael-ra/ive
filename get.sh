@@ -5,8 +5,9 @@
 #
 # Downloads IVE from GitHub into ~/.ive, installs its Python and npm
 # dependencies there, builds the app and links an `ive` command into
-# ~/.local/bin. Running it again updates an existing installation.
-# Nothing outside those two places is changed and IVE is not started.
+# ~/.local/bin. A fresh install does not start IVE. Running it again
+# updates an existing installation and restarts IVE if it was running.
+# The installer itself changes nothing outside those two places.
 #
 # Settings: IVE_DIR (install folder), IVE_BIN_DIR (where `ive` goes),
 # IVE_REPO (git URL to install from), IVE_PYTHON (Python to use).
@@ -58,7 +59,11 @@ main() {
   ln -sfn "$dir/bin/ive" "$bin_dir/ive"
 
   say ""
-  say "IVE is installed."
+  if [ -n "$updated" ]; then
+    say "IVE is updated."
+  else
+    say "IVE is installed."
+  fi
   case ":$PATH:" in
     *":$bin_dir:"*)
       say "Start it with:  ive"
