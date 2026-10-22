@@ -60,9 +60,12 @@ ive stop            # stop IVE
 ive status          # is it running, and where
 ive logs            # follow the log (Ctrl+C leaves, IVE keeps running)
 ive run             # run IVE in this terminal instead of the background
-ive update          # pull the latest version and rebuild
-ive uninstall       # remove IVE, its hooks and the ive command
+ive update          # pull the latest version, rebuild and restart a running IVE
+ive uninstall       # stop IVE, remove its hooks, the app folder and the ive command
 ```
+
+`ive` returns once IVE is up. For systemd, launchd or a container, use
+`ive run --headless`, which stays in the foreground.
 
 ## What IVE changes on your machine
 
@@ -82,7 +85,7 @@ ive uninstall       # remove IVE, its hooks and the ive command
 ## Telemetry
 
 Off by default. If you want to help with anonymous usage numbers, start IVE
-with `IVE_TELEMETRY=on ive`. It then sends a hashed install ID, the IVE version,
+with `IVE_TELEMETRY=on ive` (run `ive stop` first if it is already running). It then sends a hashed install ID, the IVE version,
 your platform, the number of sessions, uptime and, after a crash, the first
 500 characters of the error message to PostHog. No code and no prompts.
 [backend/telemetry.py](backend/telemetry.py) shows exactly what is sent.

@@ -1321,14 +1321,22 @@ def _avcp_gemini_entry() -> dict:
     }
 
 
-def _remove_avcp_from_settings(settings: dict) -> dict:
-    """Remove all AVCP hooks from a settings dict (any CLI)."""
+def _remove_avcp_from_settings(settings: dict, only_paths: set[Path] | None = None) -> dict:
+    """Remove AVCP hooks from a settings dict (any CLI).
+
+    With ``only_paths``, remove only the hooks that run one of those scripts.
+    """
+    def _drop(hook: dict) -> bool:
+        if not _is_avcp_hook(hook):
+            return False
+        return only_paths is None or _hook_command_path(hook.get("command", "")) in only_paths
+
     hooks = settings.get("hooks", {})
     for event in list(hooks.keys()):
         groups = hooks[event]
         cleaned = []
         for group in groups:
-            filtered = [h for h in group.get("hooks", []) if not _is_avcp_hook(h)]
+            filtered = [h for h in group.get("hooks", []) if not _drop(h)]
             if filtered:
                 group["hooks"] = filtered
                 cleaned.append(group)
@@ -1379,6 +1387,17 @@ def uninstall_avcp_hooks():
     for path in (CLAUDE_SETTINGS, GEMINI_SETTINGS):
         if _update_settings(path, _remove_avcp_from_settings, create=False):
             logger.info(f"AVCP hooks removed from {path}")
+
+
+def uninstall_own_avcp_hooks():
+    """Remove only the AVCP hooks that run this installation's bundled scanner.
+
+    A separately installed AVCP runs its own scripts and is left alone.
+    """
+    own = {AVCP_CLAUDE_HOOK.resolve(), AVCP_GEMINI_HOOK.resolve()}
+    for path in (CLAUDE_SETTINGS, GEMINI_SETTINGS):
+        if _update_settings(path, lambda s: _remove_avcp_from_settings(s, own), create=False):
+            logger.info("AVCP hooks of this installation removed from %s", path)
 
 
 def check_avcp_installation() -> dict:

@@ -308,17 +308,24 @@ def run_plan(root: Path, server_args: Sequence[str]) -> dict[str, object]:
     return {"cwd": str(root / "backend"), "argv": [str(root / ".venv/bin/python"), "-s", str(root / "backend/server.py"), *server_args]}
 
 
-# AVCP hooks are left alone: their markers also match a separately installed AVCP.
-REMOVE_HOOKS = "import hook_installer as h; h.uninstall_all(); h.uninstall_safety_gate_hooks()"
+REMOVE_HOOKS = (
+    "import hook_installer as h; "
+    "h.uninstall_all(); h.uninstall_safety_gate_hooks(); h.uninstall_own_avcp_hooks()"
+)
 
 
 def remove_hooks(root: Path, env: Mapping[str, str]) -> None:
-    """Undo what a running IVE wrote into ~/.claude, ~/.codex and ~/.gemini."""
+    """Undo what a running IVE wrote into ~/.claude, ~/.codex and ~/.gemini.
+
+    Raises ProfileError when that fails, so the caller keeps the installation
+    and the scripts its hooks point to.
+    """
     executable = root / ".venv/bin/python"
-    if not executable.is_file():
-        print("No installed IVE Python found; no hooks to remove.")
-        return
-    subprocess.run([str(executable), "-s", "-c", REMOVE_HOOKS], cwd=root / "backend", env=env, check=True)
+    # A Python upgrade can leave the venv link dangling; fall back to the
+    # Python 3.11+ that runs this launcher.
+    python = str(executable) if os.access(executable, os.X_OK) else sys.executable
+    if subprocess.run([python, "-s", "-c", REMOVE_HOOKS], cwd=root / "backend", env=env).returncode:
+        raise ProfileError("Could not remove IVE's hooks (see above); nothing was deleted")
     print("Removed IVE hooks from the Claude Code, Codex and Gemini CLI settings.")
 
 
@@ -375,7 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for step in steps:
                 subprocess.run(step["argv"], cwd=step["cwd"], env=env, check=True)
             validate_frontend(root)
-            print("Installed. Nothing was started. Run bin/ive to start IVE in the background, or bash start.sh to run it in this terminal.")
+            print(f"Installed. Nothing was started. Run {root}/bin/ive to start IVE in the background, or bash {root}/start.sh to run it in this terminal.")
             return 0
         validate_frontend(root)
         executable = root / ".venv/bin/python"
