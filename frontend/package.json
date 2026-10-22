@@ -1,0 +1,76 @@
+{
+  "name": "ive-frontend",
+  "version": "1.0.15",
+  "private": true,
+  "type": "module",
+  "description": "IVE frontend \u2014 React + Vite + xterm.js UI for the Integrated Vibecoding Environment",
+  "license": "Apache-2.0",
+  "author": "AIFOREU GmbH",
+  "homepage": "https://github.com/michael-ra/ive#readme",
+  "bugs": {
+    "url": "https://github.com/michael-ra/ive/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/michael-ra/ive.git",
+    "directory": "frontend"
+  },
+  "keywords": [
+    "claude-code",
+    "gemini-cli",
+    "agent",
+    "terminal",
+    "developer-tools"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test:recovery": "node --test tests/task-flow-recovery.mjs",
+    "test:pty-start": "node --test tests/pty-start-unit.mjs",
+    "test:session-chips": "node tests/session-chips.mjs",
+    "test:terminal-open": "node tests/terminal-open.mjs",
+    "test:quick-start": "node tests/quick-start.mjs",
+    "test:overview-grid": "node tests/overview-grid.mjs",
+    "test:onboarding": "node --test tests/onboarding-unit.mjs tests/guided-tour-unit.mjs",
+    "test:message-cursor": "node --test tests/message-cursor-unit.mjs",
+    "test:onboarding:browser": "vite build --configLoader runner --logLevel warn && node --test tests/onboarding.mjs",
+    "test:onboarding:webkit": "vite build --configLoader runner --logLevel warn && IVE_QA_BROWSER=webkit node --test tests/onboarding.mjs",
+    "test:mobile": "node --test tests/mobile.mjs",
+    "test:phone": "node --test tests/phone.mjs",
+    "test:phone-keys": "node --test tests/phone-keys-unit.mjs",
+    "test:e2e": "node ../e2e/run.mjs",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "desktop:build": "../packaging/build-macos.sh",
+    "test:effort": "node --test tests/effort-unit.mjs",
+    "test:find": "node --test tests/find-in-session-unit.mjs && node tests/find-in-session.mjs",
+    "test:terminal-reveal": "node tests/terminal-reveal.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/xterm": "^5.5.0",
+    "lucide-react": "^1.7.0",
+    "mermaid": "^11.14.0",
+    "prismjs": "^1.30.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/vite": "^4.2.0",
+    "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-react": "^5.2.0",
+    "playwright": "^1.62.1",
+    "tailwindcss": "^4.2.0",
+    "vite": "^7.3.6"
+  }
+}

@@ -1,0 +1,23 @@
+# Secure-agent egress GATEWAY image — the NO-SUDO single-IP allowlist (SECURE_AGENT_DESIGN.md §8.6).
+#
+# A dual-homed container (inner `--internal` net + outer NAT net, `--cap-add NET_ADMIN`) that the
+# Kali box routes through. Its iptables allowlist FORWARDs the box to ONLY the authorized target
+# IP(s) and DROPs everything else — host Mac, LAN, and the rest of the internet. No host privilege:
+# the filtering runs inside this container's OWN micro-VM kernel, which the Kali box cannot reach.
+#
+# iptables is BAKED IN here so the backend doesn't need a runtime `apk add` (works even when the
+# outer net is locked down). The rules themselves are programmed by backend/secure_net.py via
+# `container exec` (so a single image serves any single- or multi-target allowlist); the bundled
+# /entrypoint.sh is an equivalent STANDALONE self-config path driven purely by env.
+#
+# Build:   container build -t ive-secure-gateway:latest -f secure/Dockerfile.gateway secure/
+# Use:     export SECURE_GATEWAY_IMAGE=ive-secure-gateway:latest
+#
+FROM alpine:3.20
+RUN apk add --no-cache iptables iproute2
+COPY gateway-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+# Default: stay up so the backend can program the allowlist via `container exec`.
+# For standalone self-config instead, run with /entrypoint.sh and the env contract:
+#   KALI_SUBNET=192.168.NN.0/24  TARGET_IP=<ip>  TARGET_PORTS=80,443  OUTER_GW=192.168.MM.1
+CMD ["sleep", "infinity"]

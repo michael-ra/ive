@@ -1,0 +1,400 @@
+/* The coach stays separate from the working surface: only its card receives
+   pointer events. Positioning and the current learning step belong to React. */
+.ive-tour-coach,
+.ive-tour-welcome,
+.ive-tour-minimized {
+  box-sizing: border-box;
+  color: var(--x-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.ive-tour-coach {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  width: min(340px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--x-surface);
+  border: 1px solid var(--x-line-strong);
+  border-top: 3px solid var(--x-accent);
+  border-radius: 11px;
+  box-shadow: var(--x-shadow-3);
+  pointer-events: auto;
+  scrollbar-width: thin;
+}
+
+.ive-tour-welcome {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--x-scrim);
+}
+
+.ive-tour-welcome > section {
+  box-sizing: border-box;
+  position: relative;
+  inset: auto;
+  display: flex;
+  flex-direction: column;
+  width: min(460px, 100%);
+  max-width: 460px;
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  background: var(--x-surface);
+  border: 1px solid var(--x-line-strong);
+  border-top: 3px solid var(--x-accent);
+  border-radius: 12px;
+  box-shadow: var(--x-shadow-3);
+}
+
+.ive-tour-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--x-line);
+}
+
+.ive-tour-header > div { min-width: 0; }
+.ive-tour-header svg,
+.ive-tour-actions svg,
+.ive-tour-footer svg,
+.ive-tour-minimized svg { flex-shrink: 0; }
+
+.ive-tour-kicker {
+  margin: 0;
+  color: var(--x-accent-ink);
+  font: 500 10px/1.5 var(--font-mono);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.ive-tour-progress {
+  margin: 3px 0 0;
+  color: var(--x-muted);
+  font: 11px/1.4 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ive-tour-body {
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.ive-tour-title {
+  margin: 0;
+  color: var(--x-ink);
+  font: 650 21px/1.2 var(--font-display);
+  letter-spacing: -.025em;
+  overflow-wrap: anywhere;
+}
+
+.ive-tour-description {
+  margin: 9px 0 0;
+  color: var(--x-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ive-tour-task {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-left: 2px solid var(--x-accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--x-tint);
+  color: var(--x-ink);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ive-tour-task > :first-child,
+.ive-tour-benefit > :first-child { margin-top: 0; }
+.ive-tour-task > :last-child,
+.ive-tour-benefit > :last-child { margin-bottom: 0; }
+.ive-tour-task strong { font-weight: 650; }
+
+.ive-tour-benefit {
+  margin: 12px 0 0;
+  color: var(--x-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ive-tour-benefit strong { color: var(--x-ink-secondary); font-weight: 600; }
+
+.ive-tour-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+.ive-tour-body .ive-tour-actions { padding: 14px 0 0; }
+
+.ive-tour-primary,
+.ive-tour-secondary,
+.ive-tour-text-button,
+.ive-tour-reference,
+.ive-tour-minimized,
+.ive-tour-header button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 8px 11px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: 600 13px/1.35 var(--font-sans);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 100ms var(--x-ease), border-color 100ms var(--x-ease);
+}
+
+.ive-tour-primary {
+  background: var(--x-accent);
+  border-color: var(--x-accent);
+  color: var(--x-on-accent);
+}
+.ive-tour-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--x-accent) 90%, var(--x-ink));
+  border-color: color-mix(in srgb, var(--x-accent) 90%, var(--x-ink));
+}
+.ive-tour-secondary { background: var(--x-surface); border-color: var(--x-line-strong); color: var(--x-ink); }
+.ive-tour-text-button,
+.ive-tour-reference,
+.ive-tour-header button { background: transparent; color: var(--x-muted); font-weight: 400; }
+.ive-tour-secondary:hover:not(:disabled),
+.ive-tour-text-button:hover:not(:disabled),
+.ive-tour-reference:hover:not(:disabled),
+.ive-tour-header button:hover:not(:disabled) { background: var(--x-hover); color: var(--x-ink); }
+.ive-tour-reference { justify-content: flex-start; color: var(--x-accent-ink); text-align: left; }
+.ive-tour-header button { min-width: 32px; min-height: 32px; padding: 6px; }
+
+.ive-tour-coach :is(button, a, input, select, summary, [tabindex]):focus-visible,
+.ive-tour-welcome :is(button, a, input, select, summary, [tabindex]):focus-visible,
+.ive-tour-minimized:focus-visible {
+  outline: 1px solid var(--x-focus);
+  outline-offset: 3px;
+}
+.ive-tour-coach button:disabled,
+.ive-tour-welcome button:disabled { opacity: .55; cursor: not-allowed; }
+
+.ive-tour-footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--x-line);
+  color: var(--x-muted);
+  font-size: 12px;
+}
+.ive-tour-footer .ive-tour-text-button,
+.ive-tour-footer .ive-tour-reference { min-height: 32px; padding: 6px 4px; font-size: 12px; }
+
+.ive-tour-status,
+.ive-tour-error,
+.ive-tour-success {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ive-tour-status { color: var(--x-muted); }
+.ive-tour-error { color: var(--x-danger); }
+.ive-tour-success { color: var(--x-good); }
+.ive-tour-status svg,
+.ive-tour-error svg,
+.ive-tour-success svg { flex: 0 0 auto; margin-top: 2px; }
+
+.ive-tour-checklist { display: grid; gap: 3px; margin: 14px 0 0; padding: 0; list-style: none; }
+.ive-tour-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--x-muted);
+  font: 400 12px/1.4 var(--font-sans);
+  text-align: left;
+}
+.ive-tour-step > :is(svg, span:first-child) { flex-shrink: 0; }
+button.ive-tour-step:hover:not(:disabled) { background: var(--x-hover); cursor: pointer; }
+.ive-tour-step:is(.is-current, [aria-current="step"]) { background: var(--x-tint); border-color: var(--x-tint-line); color: var(--x-accent-ink); font-weight: 600; }
+.ive-tour-step.is-complete { color: var(--x-good); }
+
+.ive-tour-loop { margin: 14px 0 0; }
+.ive-tour-loop > ol,
+ol.ive-tour-loop { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; list-style: none; }
+.ive-tour-loop > ol { margin: 0; }
+.ive-tour-loop-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid var(--x-line-strong);
+  border-radius: 5px;
+  background: var(--x-surface);
+  color: var(--x-muted);
+  font: 11px/1.35 var(--font-mono);
+}
+.ive-tour-loop-node.is-current { border-color: var(--x-accent); background: var(--x-tint); color: var(--x-accent-ink); font-weight: 500; }
+.ive-tour-loop-node.is-complete { border-color: color-mix(in srgb, var(--x-good) 45%, var(--x-line)); background: var(--x-good-tint); color: var(--x-good); }
+
+.ive-tour-spotlight {
+  box-sizing: border-box;
+  position: fixed;
+  z-index: 150;
+  pointer-events: none;
+  border: 2px solid var(--x-accent);
+  border-radius: 8px;
+  box-shadow: 0 0 0 4px var(--x-focus-ring), 0 4px 16px color-mix(in srgb, var(--x-accent) 10%, transparent);
+}
+.ive-tour-beacon {
+  box-sizing: border-box;
+  position: fixed;
+  z-index: 151;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  border: 2px solid var(--x-surface);
+  border-radius: 50%;
+  background: var(--x-accent);
+  color: var(--x-on-accent);
+  box-shadow: 0 0 0 1px var(--x-accent);
+  font: 500 11px/1 var(--font-mono);
+}
+
+.ive-tour-minimized {
+  position: fixed;
+  z-index: 200;
+  right: 16px;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  gap: 8px;
+  max-width: calc(100vw - 24px);
+  min-height: 42px;
+  padding: 10px 14px;
+  background: var(--x-surface);
+  border: 1px solid var(--x-tint-line);
+  border-radius: 999px;
+  color: var(--x-accent-ink);
+  box-shadow: var(--x-shadow-3);
+}
+.ive-tour-minimized:hover { background: var(--x-tint); }
+.ive-tour-welcome .ive-tour-body { padding: 22px; }
+.ive-tour-welcome .ive-tour-title { font-size: 27px; }
+.ive-tour-welcome .ive-tour-actions { padding-inline: 22px; padding-bottom: 20px; }
+
+@media (min-width: 1100px) {
+  /* React adds this body class only while the nonmodal coach is expanded.
+     Shared Modal and NewSessionDialog both use this exact wrapper contract.
+     Keep their real controls in the area left of the 340px coach + gutter. */
+  body.ive-tour-guided .fixed.inset-0:has(> [role="dialog"]) {
+    box-sizing: border-box;
+    padding-left: 20px;
+    padding-right: 372px;
+  }
+  body.ive-tour-guided .fixed.inset-0 > [role="dialog"] {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+  }
+  body.ive-tour-guided:has(.fixed.inset-0 > [role="dialog"]) .ive-tour-coach {
+    max-height: calc(100vh - 102px);
+    max-height: calc(100dvh - 102px);
+  }
+}
+
+@media (max-width: 640px) {
+  /* Override the desktop anchor coordinates supplied by React. */
+  .ive-tour-coach {
+    top: auto !important;
+    left: 8px !important;
+    right: 8px !important;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: auto;
+    max-width: none;
+    max-height: 48vh;
+    max-height: 48dvh;
+    border-radius: 10px;
+  }
+  .ive-tour-header { padding: 7px 11px; }
+  .ive-tour-body { padding: 11px 13px; }
+  .ive-tour-title { font-size: 19px; }
+  .ive-tour-description { margin-top: 6px; font-size: 13px; }
+  .ive-tour-actions { gap: 6px; padding: 0 13px 9px; }
+  .ive-tour-primary,
+  .ive-tour-secondary { min-height: 40px; }
+  .ive-tour-footer { padding: 4px 10px; }
+  .ive-tour-welcome { padding: 12px; }
+  .ive-tour-welcome > section { max-height: calc(100dvh - 24px); }
+  .ive-tour-welcome > .ive-tour-coach { inset: auto !important; width: 100%; max-width: 460px; }
+  .ive-tour-welcome .ive-tour-body { padding: 18px; }
+  .ive-tour-welcome .ive-tour-title { font-size: 25px; }
+  .ive-tour-welcome .ive-tour-actions { padding: 0 18px 16px; }
+  .ive-tour-minimized { right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ive-tour-coach,
+  .ive-tour-coach *,
+  .ive-tour-welcome,
+  .ive-tour-welcome *,
+  .ive-tour-minimized,
+  .ive-tour-spotlight,
+  .ive-tour-beacon { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+@media (forced-colors: active) {
+  .ive-tour-coach,
+  .ive-tour-welcome > section,
+  .ive-tour-minimized,
+  .ive-tour-primary,
+  .ive-tour-secondary { border-color: ButtonText; }
+  .ive-tour-spotlight { border-color: Highlight; box-shadow: none; }
+  .ive-tour-step.is-current,
+  .ive-tour-loop-node.is-current { outline: 1px solid Highlight; }
+}
+
+/* Keep the collapsed guide below dialogs, clear of their primary action. */
+@media (max-width: 640px) {
+  body:has(.ive-tour-minimized) .fixed.inset-0:has(> [role="dialog"]) {
+    padding-bottom: max(72px, calc(env(safe-area-inset-bottom) + 64px));
+  }
+  body:has(.ive-tour-minimized) .fixed.inset-0 > [role="dialog"] {
+    max-height: calc(100dvh - 96px);
+  }
+}

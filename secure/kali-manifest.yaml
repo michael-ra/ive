@@ -1,0 +1,70 @@
+# Secure-agent Kali tool manifest (SECURE_AGENT_DESIGN.md §3.8, Phase 1.1) — FULL arsenal.
+#
+# Each entry is a TOOL baked into the immutable Kali pentest image at BUILD TIME.
+#   name    : apt package name (installable from the source below)
+#   source  : kali-repo | github | pypi | url
+#             kali-repo = the official Kali signed apt repo (GPG-verified by Offensive
+#             Security) — the ONLY source eligible for an automatic "allow". github / pypi /
+#             url require explicit human approval (vetted -> "review").
+#   version : "rolling" = take the current pinned version at build time (kali-rolling)
+#   purpose : one line — what the tool is for in an authorized self-attack
+#
+# Vet before building:  python3 backend/secure_build_vet.py vet
+# Build (approved subset only):  container build -t ive-secure-kali:latest -f secure/Dockerfile.kali secure/
+#
+# Everything here is source=kali-repo (official, signed). To add a github/pypi tool, append it
+# with that source — it will be forced to "review" and require explicit operator approval.
+
+tools:
+  # ── Information gathering / recon ──
+  - { name: nmap,        source: kali-repo, version: rolling, purpose: network + service/port discovery }
+  - { name: masscan,     source: kali-repo, version: rolling, purpose: fast large-range port scanning }
+  - { name: dnsutils,    source: kali-repo, version: rolling, purpose: dig/nslookup DNS lookups }
+  - { name: dnsrecon,    source: kali-repo, version: rolling, purpose: DNS enumeration }
+  - { name: dnsenum,     source: kali-repo, version: rolling, purpose: DNS enumeration }
+  - { name: fierce,      source: kali-repo, version: rolling, purpose: DNS recon / subdomain scan }
+  - { name: whatweb,     source: kali-repo, version: rolling, purpose: web technology fingerprinting }
+  - { name: wafw00f,     source: kali-repo, version: rolling, purpose: WAF detection }
+  - { name: sslscan,     source: kali-repo, version: rolling, purpose: TLS/SSL configuration scanning }
+
+  # ── Web application testing ──
+  - { name: nikto,       source: kali-repo, version: rolling, purpose: web server misconfig / known-vuln scan }
+  - { name: dirb,        source: kali-repo, version: rolling, purpose: web content brute forcing }
+  - { name: gobuster,    source: kali-repo, version: rolling, purpose: directory/DNS/vhost brute forcing }
+  - { name: ffuf,        source: kali-repo, version: rolling, purpose: fast web fuzzing }
+  - { name: feroxbuster, source: kali-repo, version: rolling, purpose: recursive content discovery }
+  - { name: wfuzz,       source: kali-repo, version: rolling, purpose: web application fuzzing }
+  - { name: sqlmap,      source: kali-repo, version: rolling, purpose: SQL injection detection + exploitation }
+  - { name: commix,      source: kali-repo, version: rolling, purpose: command-injection detection + exploitation }
+  - { name: wpscan,      source: kali-repo, version: rolling, purpose: WordPress vulnerability scanning }
+  - { name: nuclei,      source: kali-repo, version: rolling, purpose: template-based vulnerability scanning }
+  - { name: zaproxy,     source: kali-repo, version: rolling, purpose: OWASP ZAP web app proxy/scanner }
+
+  # ── Exploitation ──
+  - { name: metasploit-framework, source: kali-repo, version: rolling, purpose: exploitation framework (baked-in modules only) }
+  - { name: exploitdb,   source: kali-repo, version: rolling, purpose: local exploit-db / searchsploit (offline reference) }
+
+  # ── Credential testing (in-scope only) ──
+  - { name: hydra,       source: kali-repo, version: rolling, purpose: network login brute forcing }
+  - { name: medusa,      source: kali-repo, version: rolling, purpose: parallel login brute forcing }
+  - { name: john,        source: kali-repo, version: rolling, purpose: offline password hash cracking (CPU) }
+
+  # ── Wordlists ──
+  - { name: seclists,    source: kali-repo, version: rolling, purpose: curated wordlists for fuzzing/brute forcing }
+  - { name: wordlists,   source: kali-repo, version: rolling, purpose: rockyou + standard wordlists }
+
+  # ── Utilities / scripting ──
+  - { name: proxychains4, source: kali-repo, version: rolling, purpose: route tools through a proxy }
+  - { name: netcat-traditional, source: kali-repo, version: rolling, purpose: raw TCP/UDP connections + listeners }
+  - { name: socat,       source: kali-repo, version: rolling, purpose: advanced relays / port forwarding }
+  - { name: curl,        source: kali-repo, version: rolling, purpose: HTTP client }
+  - { name: wget,        source: kali-repo, version: rolling, purpose: HTTP client / fetch }
+  - { name: jq,          source: kali-repo, version: rolling, purpose: JSON processing }
+  - { name: git,         source: kali-repo, version: rolling, purpose: VCS (for local tooling; no internet at runtime) }
+  - { name: python3,     source: kali-repo, version: rolling, purpose: scripting + LLM-written exploits }
+  - { name: python3-pip, source: kali-repo, version: rolling, purpose: python package manager (build-time only) }
+  - { name: iproute2,    source: kali-repo, version: rolling, purpose: ip route/addr — networking essentials (control plane needs `ip`) }
+  - { name: iputils-ping, source: kali-repo, version: rolling, purpose: ping for liveness checks }
+
+  # ── Non-official examples (DEFAULT-DENIED — require explicit approval via secure_build_vet) ──
+  # - { name: some-poc, source: github, version: "v1.2.3", purpose: example only — forced to review }

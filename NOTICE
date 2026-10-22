@@ -1,0 +1,24 @@
+IVE
+Copyright 2026 AIFOREU GmbH
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes the following third-party material:
+
+- anti-vibe-code-pwner/: bundled supply-chain scanner, MIT license. Its license
+  and copyright notice are kept in anti-vibe-code-pwner/LICENSE.
+- backend/wordlists/eff_long.py: EFF's Long Wordlist, used for spoken invitation
+  codes. Source attribution is kept in that file:
+  https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
+- frontend/public/fonts/: Archivo, IBM Plex Mono, Inter, JetBrains Mono and
+  Source Sans 3, SIL Open Font License 1.1. The license texts sit next to the
+  font files.
+- frontend/src/assets/providers/: logos of Anthropic, Claude, OpenAI, Google,
+  Gemini and Antigravity, used only to label which provider a session runs on.
+  They are trademarks of their owners and are not covered by IVE's license.
+  Sources are listed in frontend/src/assets/providers/SOURCES.md.
+
+Python, npm and Rust dependencies are not bundled in this repository. They are
+installed separately and keep their own licenses, listed in
+backend/requirements.txt, frontend/package-lock.json and
+frontend/src-tauri/Cargo.lock.

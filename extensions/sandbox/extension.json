@@ -1,0 +1,27 @@
+{
+  "id": "sandbox",
+  "api_version": 1,
+  "ownership": "ive-plugin",
+  "visibility": "public-candidate",
+  "requires": [],
+  "backend": { "entry": "backend/plugin.py" },
+  "legacy_modules": {
+    "sandbox_engine": "backend/sandbox_engine.py",
+    "sandbox_runtime": "backend/sandbox_runtime.py",
+    "sandbox_provider": "backend/sandbox_provider.py",
+    "sandbox_egress": "backend/sandbox_egress.py",
+    "sandbox_daytona": "backend/sandbox_daytona.py",
+    "sidecars": "backend/sidecars.py",
+    "app_container": "backend/app_container.py",
+    "browser_container": "backend/browser_container.py",
+    "sandbox_exec": "backend/sandbox_exec.py",
+    "container_registry": "backend/container_registry.py"
+  },
+  "publication": {
+    "ready": false,
+    "blockers": [
+      "Internal source candidate only; public release and security approval remain outstanding.",
+      "Real startup, container, VM, and isolation acceptance have not been run for this package."
+    ]
+  }
+}
