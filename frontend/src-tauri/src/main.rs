@@ -100,7 +100,7 @@ fn ready(port: u16, nonce: &str) -> bool {
 }
 
 fn show_failure(window: &tauri::WebviewWindow, failure: &Failure, detail: String) {
-    *failure.lock().unwrap() = Some(("IVE konnte nicht weiterlaufen".into(), detail.clone()));
+    *failure.lock().unwrap() = Some(("IVE stopped unexpectedly".into(), detail.clone()));
     let _ = window.navigate("tauri://localhost/desktop-startup.html".parse().unwrap());
 }
 
@@ -111,11 +111,11 @@ fn spawn_backend(app: &tauri::AppHandle, data_dir: &Path, port: u16, nonce: &str
     let output = OpenOptions::new().create(true).append(true).open(&log).map_err(|e| e.to_string())?;
     let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
     let executable = resources.join("backend/ive-backend");
-    if !executable.is_file() { return Err(format!("Der mitgelieferte Dienst fehlt: {}", executable.display())); }
+    if !executable.is_file() { return Err(format!("The bundled service is missing: {}", executable.display())); }
     // A stable, dedicated port preserves localStorage across launches. Never
     // attach to an unrelated listener or the developer workspace on port 5111.
     let probe = TcpListener::bind(("127.0.0.1", port))
-        .map_err(|_| format!("Der lokale Port {port} wird bereits verwendet. Beende die andere IVE-App und starte erneut."))?;
+        .map_err(|_| format!("Local port {port} is already in use. Quit the other IVE app and open IVE again."))?;
     let mut command = Command::new(executable);
     for (key, _) in std::env::vars_os() {
         let k = key.to_string_lossy();
@@ -129,13 +129,13 @@ fn spawn_backend(app: &tauri::AppHandle, data_dir: &Path, port: u16, nonce: &str
         .stdin(Stdio::null()).stdout(Stdio::from(output.try_clone().map_err(|e| e.to_string())?))
         .stderr(Stdio::from(output));
     drop(probe);
-    let mut child = command.spawn().map_err(|e| format!("Lokaler Dienst konnte nicht starten: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("The local service could not start: {e}"))?;
     let pid = child.id();
     let state = app.state::<Backend>();
     let mut guard = state.0.lock().unwrap();
     if state.1.load(Ordering::SeqCst) {
         let _ = child.kill(); let _ = child.wait();
-        return Err("IVE wird beendet.".into());
+        return Err("IVE is quitting.".into());
     }
     *guard = Some(child);
     drop(guard);
@@ -189,11 +189,11 @@ fn main() {
                 let deadline = Instant::now() + Duration::from_secs(75);
                 loop {
                     let exited = handle.state::<Backend>().0.lock().unwrap().as_mut().and_then(|p| p.try_wait().ok().flatten());
-                    if let Some(status) = exited { show_failure(&window, &failure, format!("Der lokale Dienst wurde beendet ({status}).\nDiagnose: {}", log.display())); return; }
+                    if let Some(status) = exited { show_failure(&window, &failure, format!("The local service stopped ({status}).\nDiagnostics: {}", log.display())); return; }
                     if ready(port, &nonce) { break; }
                     if Instant::now() > deadline {
                         handle.state::<Backend>().stop();
-                        show_failure(&window, &failure, format!("Der lokale Dienst antwortet nicht.\nDiagnose: {}", log.display())); return;
+                        show_failure(&window, &failure, format!("The local service is not responding.\nDiagnostics: {}", log.display())); return;
                     }
                     thread::sleep(Duration::from_millis(200));
                 }
@@ -207,13 +207,13 @@ fn main() {
                     let Some(child) = guard.as_mut() else { return; };
                     if let Ok(Some(status)) = child.try_wait() {
                         drop(guard);
-                        show_failure(&window, &failure, format!("Der lokale Dienst wurde beendet ({status}).\nDiagnose: {}", log.display())); return;
+                        show_failure(&window, &failure, format!("The local service stopped ({status}).\nDiagnostics: {}", log.display())); return;
                     }
                 }
             });
             Ok(())
         })
-        .build(tauri::generate_context!()).expect("IVE Desktop konnte nicht starten");
+        .build(tauri::generate_context!()).expect("IVE could not start");
     app.run(|handle, event| {
         if matches!(event, tauri::RunEvent::Exit) { handle.state::<Backend>().stop(); }
         if let tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::CloseRequested { .. }, .. } = event { handle.exit(0); }

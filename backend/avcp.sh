@@ -67,15 +67,15 @@ avcp-status() {
 }
 
 # Package-manager wrappers — gate install-like subcommands, then exec the real tool.
-npm()    { case "$1" in install | i | add | update | upgrade | ci) _avcp_check npm "$@"    || return 1 ;; esac; command npm "$@"; }
-pnpm()   { case "$1" in install | i | add | update | up)           _avcp_check pnpm "$@"   || return 1 ;; esac; command pnpm "$@"; }
-yarn()   { case "$1" in add | install | up | upgrade)              _avcp_check yarn "$@"   || return 1 ;; esac; command yarn "$@"; }
-pip()    { case "$1" in install)                                   _avcp_check pip "$@"    || return 1 ;; esac; command pip "$@"; }
-pip3()   { case "$1" in install)                                   _avcp_check pip3 "$@"   || return 1 ;; esac; command pip3 "$@"; }
-uv()     { case "$1" in add | pip)                                 _avcp_check uv "$@"     || return 1 ;; esac; command uv "$@"; }
-brew()   { case "$1" in install | upgrade)                         _avcp_check brew "$@"   || return 1 ;; esac; command brew "$@"; }
-cargo()  { case "$1" in add | install)                             _avcp_check cargo "$@"  || return 1 ;; esac; command cargo "$@"; }
-bun()    { case "$1" in add | install | i | update)                _avcp_check bun "$@"    || return 1 ;; esac; command bun "$@"; }
-bundle() { case "$1" in install | add | update)                    _avcp_check bundle "$@" || return 1 ;; esac; command bundle "$@"; }
-gem()    { case "$1" in install | update)                          _avcp_check gem "$@"    || return 1 ;; esac; command gem "$@"; }
-go()     { case "$1" in get | install)                             _avcp_check go "$@"     || return 1 ;; esac; command go "$@"; }
+typeset -f npm >/dev/null 2>&1 || function npm { case "$1" in install | i | add | update | upgrade | ci) _avcp_check npm "$@"    || return 1 ;; esac; command npm "$@"; }
+typeset -f pnpm >/dev/null 2>&1 || function pnpm { case "$1" in install | i | add | update | up)           _avcp_check pnpm "$@"   || return 1 ;; esac; command pnpm "$@"; }
+typeset -f yarn >/dev/null 2>&1 || function yarn { case "$1" in add | install | up | upgrade)              _avcp_check yarn "$@"   || return 1 ;; esac; command yarn "$@"; }
+typeset -f pip >/dev/null 2>&1 || function pip { case "$1" in install)                                   _avcp_check pip "$@"    || return 1 ;; esac; command pip "$@"; }
+typeset -f pip3 >/dev/null 2>&1 || function pip3 { case "$1" in install)                                   _avcp_check pip3 "$@"   || return 1 ;; esac; command pip3 "$@"; }
+typeset -f uv >/dev/null 2>&1 || function uv { case "$1" in add | pip)                                 _avcp_check uv "$@"     || return 1 ;; esac; command uv "$@"; }
+typeset -f brew >/dev/null 2>&1 || function brew { case "$1" in install | upgrade)                         _avcp_check brew "$@"   || return 1 ;; esac; command brew "$@"; }
+typeset -f cargo >/dev/null 2>&1 || function cargo { case "$1" in add | install)                             _avcp_check cargo "$@"  || return 1 ;; esac; command cargo "$@"; }
+typeset -f bun >/dev/null 2>&1 || function bun { case "$1" in add | install | i | update)                _avcp_check bun "$@"    || return 1 ;; esac; command bun "$@"; }
+typeset -f bundle >/dev/null 2>&1 || function bundle { case "$1" in install | add | update)                    _avcp_check bundle "$@" || return 1 ;; esac; command bundle "$@"; }
+typeset -f gem >/dev/null 2>&1 || function gem { case "$1" in install | update)                          _avcp_check gem "$@"    || return 1 ;; esac; command gem "$@"; }
+typeset -f go >/dev/null 2>&1 || function go { case "$1" in get | install)                             _avcp_check go "$@"     || return 1 ;; esac; command go "$@"; }

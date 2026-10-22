@@ -69,6 +69,9 @@ def main(args: list[str] | None = None) -> int:
         import hook_installer
         hook_installer.uninstall_all()
         hook_installer.uninstall_safety_gate_hooks()
+        hook_installer.uninstall_own_avcp_hooks()
+        import avcp_installer
+        avcp_installer.uninstall_avcp(only_this_install=True)
         print("Removed IVE hooks from the Claude Code, Codex and Gemini CLI settings.")
         return 0
     if args == ["--bundle-info"]:

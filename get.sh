@@ -5,8 +5,9 @@
 #
 # Downloads IVE from GitHub into ~/.ive, installs its Python and npm
 # dependencies there, builds the app and links an `ive` command into
-# ~/.local/bin. Running it again updates an existing installation.
-# Nothing outside those two places is changed and IVE is not started.
+# ~/.local/bin. A fresh install does not start IVE. Running it again
+# updates an existing installation and restarts IVE if it was running.
+# The installer itself changes nothing outside those two places.
 #
 # Settings: IVE_DIR (install folder), IVE_BIN_DIR (where `ive` goes),
 # IVE_REPO (git URL to install from), IVE_PYTHON (Python to use).
@@ -17,6 +18,7 @@ main() {
   local repo="${IVE_REPO:-https://github.com/michael-ra/ive.git}"
   local dir="${IVE_DIR:-$HOME/.ive}"
   local bin_dir="${IVE_BIN_DIR:-$HOME/.local/bin}"
+  local updated=""
 
   case "$(uname -s)" in
     Darwin|Linux) ;;
@@ -29,7 +31,12 @@ main() {
   node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)' \
     || fail "IVE needs Node.js 22.12 or newer, you have $(node -v). On macOS: brew upgrade node"
 
-  if [ -d "$dir/.git" ]; then
+  if [ -d "$dir/.git" ] && [ -f "$dir/bin/ive" ]; then
+    # Stops a running IVE, updates, rebuilds and starts it again.
+    say "Updating IVE in $dir"
+    bash "$dir/bin/ive" update
+    updated=1
+  elif [ -d "$dir/.git" ]; then
     say "Updating IVE in $dir"
     git -C "$dir" pull --ff-only --quiet
   elif [ -e "$dir" ]; then
@@ -43,14 +50,20 @@ main() {
   source "$dir/tools/python.sh"
   ive_python >/dev/null || exit 1
 
-  say "Installing dependencies and building the app. This takes a few minutes."
-  bash "$dir/install.sh"
+  if [ -z "${updated:-}" ]; then
+    say "Installing dependencies and building the app. This takes a few minutes."
+    bash "$dir/install.sh"
+  fi
 
   mkdir -p "$bin_dir"
   ln -sfn "$dir/bin/ive" "$bin_dir/ive"
 
   say ""
-  say "IVE is installed."
+  if [ -n "$updated" ]; then
+    say "IVE is updated."
+  else
+    say "IVE is installed."
+  fi
   case ":$PATH:" in
     *":$bin_dir:"*)
       say "Start it with:  ive"
