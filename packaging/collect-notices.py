@@ -25,7 +25,7 @@ def notice(name, version, directory):
     if files:
         sections.append(f'\n{"="*72}\n{name} {version}\n' + ''.join(f'\n--- {label} ---\n{text}\n' for label,text in files))
 
-notice('IVE', '1.0.0', ROOT)
+notice('IVE', json.loads((ROOT/'frontend/src-tauri/tauri.conf.json').read_text())['version'], ROOT)
 notice('Python', sys.version.split()[0], Path(sys.base_prefix)/'lib/python3.12')
 notice('cloudflared (https://github.com/cloudflare/cloudflared)', '2026.10.0',
        ROOT/'packaging/artifacts/cloudflared-2026.10.0')

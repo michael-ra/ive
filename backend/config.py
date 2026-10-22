@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from resource_path import backend_dir, project_root, is_frozen
 
-VERSION = "1.0.16"
+VERSION = "1.0.17"
 
 # ─── CLI profiles (single source of truth for CLI-specific data) ─────
 # All model lists, permission modes, defaults, and the mode translation
