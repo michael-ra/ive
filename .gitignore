@@ -31,6 +31,11 @@ test-results/
 *.app/
 IVE-*.zip
 
+# Native iPhone and Apple Watch companion projects are maintained privately.
+/apps/ios/
+/apps/watch/
+/apps/watchos/
+
 # Local test evidence and agent notes.
 .playwright-mcp/
 review-*/
