@@ -124,7 +124,6 @@ your platform, the number of sessions, uptime and, after a crash, the first
 | `extensions/sandbox/` | Optional sandbox runtime (Docker or Apple container) |
 | `deep_research/` | Research and discovery features |
 | `anti-vibe-code-pwner/` | Bundled supply-chain scanner (MIT, see its LICENSE) |
-| `apps/ios/` | iPhone companion app (remote control for IVE on your Mac) |
 | `packaging/` | Scripts for the signed macOS desktop build |
 | `e2e/` | End-to-end tests against an isolated backend with fake CLIs |
 
